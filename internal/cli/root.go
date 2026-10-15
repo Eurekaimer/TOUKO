@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
+	"github.com/Eurekaimer/TOUKO/internal/github"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/spf13/cobra"
@@ -122,6 +124,10 @@ func errorCode(err error) (string, int) {
 			return entry.code, 1
 		}
 	}
+	var api interface{ APIStatus() int }
+	if errors.As(err, &api) {
+		return "api_error", 1
+	}
 	return "io_error", 1
 }
 
@@ -149,6 +155,8 @@ func (r *runtime) backend(ctx context.Context, s *app.Service) (repository.Git, 
 	switch location.Backend {
 	case "localgit":
 		return localgit.Open(ctx, location.Path, location.Branch)
+	case "github":
+		return github.New(location, os.Getenv("GITHUB_TOKEN"))
 	default:
 		return nil, fmt.Errorf("unsupported backend %q", location.Backend)
 	}
@@ -168,7 +176,7 @@ func (r *runtime) command() *cobra.Command {
 	root.PersistentFlags().StringVar(&r.stateDir, "state-dir", "", "Local state directory")
 	root.PersistentFlags().BoolVar(&r.json, "json", false, "Write JSON output")
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.AddCommand(r.repoCommand(), r.syncCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand())
+	root.AddCommand(r.repoCommand(), r.syncCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand(), r.authCommand(), r.urlCommand())
 	return root
 }
 

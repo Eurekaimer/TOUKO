@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
+	"github.com/Eurekaimer/TOUKO/internal/delivery"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
+	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/spf13/cobra"
 )
 
@@ -18,11 +20,11 @@ func (r *runtime) addCommand() *cobra.Command {
 		if cmd.Flags().Changed("output") && r.json {
 			return usage("--output cannot be combined with --json")
 		}
-		if output != "" && output != "id" {
-			return usage("--output must be id")
+		if output != "" && output != "id" && output != "markdown" {
+			return usage("--output must be id or markdown")
 		}
 		if cmd.Flags().Changed("output") && output == "" {
-			return usage("--output must be id")
+			return usage("--output must be id or markdown")
 		}
 		stdin := len(args) == 1 && args[0] == "-"
 		for _, path := range args {
@@ -64,6 +66,16 @@ func (r *runtime) addCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		var location repository.Location
+		if output == "markdown" {
+			location, err = s.Location(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if location.Backend != "github" || location.Private {
+				return fmt.Errorf("%w: Markdown requires a public GitHub repository", domain.ErrDeliveryUnavailable)
+			}
+		}
 		assets, err := s.Add(cmd.Context(), inputs, opts)
 		if err != nil {
 			return err
@@ -76,6 +88,19 @@ func (r *runtime) addCommand() *cobra.Command {
 			}
 			return nil
 		}
+		if output == "markdown" {
+			for _, view := range assets {
+				link, err := delivery.BuildURL(location, repository.BuildObjectPath(view.Asset.Namespace, view.Asset.Object), delivery.JSDelivr)
+				if err != nil {
+					return err
+				}
+				if _, err = fmt.Fprintf(r.stdout, "![%s](%s)\n", markdownAlt(view.Asset.Title), link); err != nil {
+					return err
+				}
+			}
+			_, err = fmt.Fprintln(r.stderr, "staged; not published until commit")
+			return err
+		}
 		return r.printAssets(assets)
 	}}
 	cmd.Flags().StringVar(&namespace, "namespace", "default", "Object namespace")
@@ -83,7 +108,7 @@ func (r *runtime) addCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Tag; repeat for multiple tags")
 	cmd.Flags().StringArrayVar(&collections, "collection", nil, "Collection; repeat for multiple collections")
 	cmd.Flags().StringVar(&name, "name", "", "Original filename for stdin input")
-	cmd.Flags().StringVar(&output, "output", "", "Output format: id (default: human-readable)")
+	cmd.Flags().StringVar(&output, "output", "", "Output format: id or markdown (default: human-readable)")
 	return cmd
 }
 

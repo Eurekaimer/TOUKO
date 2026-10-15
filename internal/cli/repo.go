@@ -2,9 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
+	"github.com/Eurekaimer/TOUKO/internal/github"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/spf13/cobra"
@@ -48,26 +51,46 @@ func (r *runtime) repoCommand() *cobra.Command {
 	}}
 	init.Flags().StringVar(&initPath, "local", "", "Create a local bare Git repository at PATH")
 	var usePath, branch string
-	use := &cobra.Command{Use: "use --local PATH", Short: "Select an existing local Git repository without writing to it", Args: arguments(cobra.NoArgs), RunE: func(cmd *cobra.Command, args []string) error {
-		if usePath == "" {
-			return usage("repo use requires --local PATH")
+	use := &cobra.Command{Use: "use [OWNER/REPO | --local PATH]", Short: "Select an existing repository without remote writes", Args: arguments(cobra.MaximumNArgs(1)), RunE: func(cmd *cobra.Command, args []string) error {
+		local := cmd.Flags().Changed("local")
+		if local && (usePath == "" || len(args) != 0) || !local && len(args) != 1 {
+			return usage("choose --local PATH or OWNER/REPO")
 		}
-		if branch == "" {
+		if cmd.Flags().Changed("branch") && branch == "" {
 			return usage("--branch must not be empty")
 		}
-		path, err := filepath.Abs(usePath)
-		if err != nil {
-			return err
-		}
-		if _, err := localgit.Open(cmd.Context(), path, branch); err != nil {
-			return err
+		var location repository.Location
+		if local {
+			if branch == "" {
+				branch = "main"
+			}
+			path, err := filepath.Abs(usePath)
+			if err != nil {
+				return err
+			}
+			if _, err = localgit.Open(cmd.Context(), path, branch); err != nil {
+				return err
+			}
+			location = repository.Location{Backend: "localgit", Branch: branch, Path: path}
+		} else {
+			parts := strings.Split(args[0], "/")
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return usage("repository must be OWNER/REPO")
+			}
+			client, err := github.New(repository.Location{Backend: "github", Owner: parts[0], Name: parts[1], Branch: "main"}, os.Getenv("GITHUB_TOKEN"))
+			if err != nil {
+				return &usageError{err}
+			}
+			location, err = client.Discover(cmd.Context(), parts[0], parts[1], branch)
+			if err != nil {
+				return err
+			}
 		}
 		s, err := r.service(cmd.Context())
 		if err != nil {
 			return err
 		}
-		location := repository.Location{Backend: "localgit", Branch: branch, Path: path}
-		if err := s.Select(cmd.Context(), location); err != nil {
+		if err = s.Select(cmd.Context(), location); err != nil {
 			return err
 		}
 		if r.json {
@@ -75,11 +98,15 @@ func (r *runtime) repoCommand() *cobra.Command {
 				Location repository.Location `json:"location"`
 			}{location})
 		}
-		_, err = fmt.Fprintf(r.stdout, "Selected %s (branch %s)\n", path, branch)
+		name := location.Path
+		if location.Backend == "github" {
+			name = location.Owner + "/" + location.Name
+		}
+		_, err = fmt.Fprintf(r.stdout, "Selected %s (branch %s)\n", name, location.Branch)
 		return err
 	}}
 	use.Flags().StringVar(&usePath, "local", "", "Existing local Git repository")
-	use.Flags().StringVar(&branch, "branch", "main", "Git branch")
+	use.Flags().StringVar(&branch, "branch", "", "Git branch (local: main; GitHub: repository default)")
 	repo.AddCommand(init, use)
 	return repo
 }
