@@ -11,3 +11,9 @@ Asset UUID, content SHA-256, and Git blob SHA-1 are distinct identities. Repeate
 Asset embeds the complete immutable ContentObject description. Descriptions of the same SHA-256 must agree across all Assets. Metadata ID/filename mismatch, invalid namespaces, duplicate IDs, missing referenced objects, conflicting descriptions, malformed metadata and unsupported versions are corruption; readers must not construct a partial gallery. UTF-8 titles, original filenames, tags and collections are supported. URL delivery is derived, never persisted as metadata.
 
 Selectors accept a full UUID or an unambiguous UUID prefix of at least eight characters. Filenames are not identities. Deletion removes metadata and, only for the last reference in that namespace, the current-tree object. Git history is not purged.
+
+## Atomic planning
+
+`PlanCommit` applies a normalized batch to a copy of the base Asset map before calculating placements. A stale base, duplicate operation, missing target, or invalid metadata rejects the entire batch. Metadata writes and path deletions are stable-sorted. Deleting one of several references preserves the binary; removing the final reference deletes only that canonical placement. Delete plus same-bytes add retains it, regardless of operation order. Namespace reference counts are independent.
+
+The plan never performs file/database/network/clock/random IO. It leaves unrelated files and unknown orphan objects untouched. Existing hash paths are never overwritten; publication must verify reused bytes. Empty or metadata-identical plans create no commit.
