@@ -301,25 +301,3 @@ func (s *Service) Remove(ctx context.Context, selectors []string) error {
 	}
 	return s.cleanup(ctx, st)
 }
-
-// ResetLocal discards unjournaled local changes only. Publication-aware reset is added by the coordinator.
-func (s *Service) ResetLocal(ctx context.Context) error {
-	unlock, err := s.Lock(ctx)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	st, err := s.Store.Load(ctx)
-	if err != nil {
-		return err
-	}
-	if st.Publication != nil {
-		return fmt.Errorf("%w: unresolved publication; run sync", domain.ErrConflict)
-	}
-	st.Changes = make(map[domain.AssetID]domain.Change)
-	st.BaseHead = ""
-	if err = s.Store.Save(ctx, st); err != nil {
-		return err
-	}
-	return s.cleanup(ctx, st)
-}

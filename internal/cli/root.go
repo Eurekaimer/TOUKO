@@ -168,7 +168,7 @@ func (r *runtime) command() *cobra.Command {
 	root.PersistentFlags().StringVar(&r.stateDir, "state-dir", "", "Local state directory")
 	root.PersistentFlags().BoolVar(&r.json, "json", false, "Write JSON output")
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.AddCommand(r.repoCommand(), r.syncCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand())
+	root.AddCommand(r.repoCommand(), r.syncCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand())
 	return root
 }
 
@@ -237,7 +237,11 @@ func (r *runtime) resetCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		if err := s.ResetLocal(cmd.Context()); err != nil {
+		git, err := r.backend(cmd.Context(), s)
+		if err != nil {
+			return err
+		}
+		if err := s.Reset(cmd.Context(), git); err != nil {
 			return err
 		}
 		return r.mutationResult()
