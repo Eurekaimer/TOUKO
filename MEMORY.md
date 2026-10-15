@@ -2,7 +2,15 @@
 
 ## 当前恢复状态
 
-用户已要求继续，并新增要求：每个实现 commit 后立即更新本文件；最终提供按模块、函数和设计理念组织的详细中文教程。步骤5已提交为 `7a82b24 feat(app): publish recoverable commits and verify current-state deletion`。提交前完整 go test/vet/race 及实际用户 logo CLI 发布/恢复/共享删除/末引用删除 smoke 已通过；原 logo 未修改、未提交。步骤6 adapter 的取消阻塞已修复且 HTTP 测试通过，但 CLI 尚待接线。下文保留上次暂停时的历史快照，**最新进度以本节及后续进度记录为准**，不再表示当前暂停。
+用户已要求继续，并新增要求：每个实现 commit 后立即更新本文件；最终提供按模块、函数和设计理念组织的详细中文教程。步骤5已提交 `7a82b24 feat(app): publish recoverable commits and verify current-state deletion`；步骤6已提交 `7cad22f feat(github): support safe repository publication and derived delivery URLs`。两步均已通过完整 go test/vet/race；实际用户 logo 的发布/恢复/共享删除/末引用删除、CLI Markdown转义/staged提示/URL JSON/缺token错误 smoke 已执行。原 logo 未修改、未提交；GitHub live smoke 无专用仓库/token，未执行。步骤7样例/demo/100图重试回归和中文教程待完成。下文为上次暂停历史快照，**最新进度以本节为准**。
+
+### 用户确认的下一阶段：Webview（本轮不实现）
+
+- 本轮用户明确选择「下一阶段实现 Webview」，当前交付仍是 CLI/demo/详细教程，不创建占位 GUI。
+- 视觉要求：简洁、美观，参考 PicList 的图库界面与操作体验；不是只输出 CLI 结果的网页壳。
+- 整理要求：可在界面内部为图片管理 tags（标签）与分类。现有领域字段为 Tags / Collections；分类是否直接对应 Collections、是否需要层级结构，由下一阶段明确，当前不擅自加 schema。
+- 应复用现有 app 层的 UUID、staged overlay、edit/rm、commit/sync/recovery，避免在 Webview 另写一套状态与存储逻辑。界面必须区分未发布与 committed 状态。
+- 下一阶段开始前先与用户确认布局/交互和发布方式，并用实际浏览器验证视觉与标签/分类操作；不要声称本轮已经有 Webview。
 
 批准的完整 7 步计划保存在 `local://touko-demo-core-plan.md`。后续会话若读不到该内部路径，以本文件和仓库现有代码恢复；不要猜测不可读取的原文。目标是同时交付真实离线 Git demo 和真实 GitHub adapter，不是 scaffold。验收闭环：repo init/use → add → status → commit → sync → ls/find/show/url → edit/rm → commit → verify。用户暂停并未批准缩减最终交付范围。
 
