@@ -570,7 +570,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `refreshState` | 读取完整state、清理失效selection/卡片缓存并渲染；sequence拒绝旧刷新响应覆盖新结果。 |
 | `showDialog`、`hideDialog`、`closeNavigation` | 原生modal焦点约束、处理期间禁止关闭、移动导航状态；close事件恢复可用原焦点。详情默认聚焦关闭按钮，不跳过原图滚到编辑栏。 |
 | `resetFilters`、`ready` | 清除查询/namespace/分类/标签；上传前要求选仓并初始化，不自动写远端。 |
-| `renderWorkspace`、`counts`、`renderFilters` | 用真实Asset/changes计算统计、namespace、仓库状态和动态分类/标签计数；分类与标签可组合筛选。 |
+| `renderWorkspace`、`counts`、`renderFilters`、`renderTrail` | 用真实Asset/changes计算统计、namespace、仓库状态和动态分类/标签计数；分类与标签可组合筛选。`renderTrail` 把当前生效的查询/命名空间/分类/标签各渲染成一枚可单独取消的凭条，让「为什么只剩这几张」可见且可逐项撤销。 |
 | `visibleAssets` | 搜索title/filename/tags/collections，namespace/分类/标签AND组合；时间/标题排序，ID稳定tie-break。不改SQLite。 |
 | `imageURL`、`card`、`renderGallery` | UUID原图端点、lazy img、可访问选择/详情按钮、state/chips/尺寸/体积；过滤期间复用卡片DOM，显示空/错误/选择状态，无seed图库。 |
 | `openPreview` | 填真实原图与完整metadata，编辑控件可清空列表；只public GitHub显示URL控件，新增提示prospective。 |
