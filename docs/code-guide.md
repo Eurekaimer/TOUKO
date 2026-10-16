@@ -516,6 +516,7 @@ JSON `publication` 存在不一定表示远程失败，也可能是远程已成�
 6. **编辑、目录与链接**：原 metadata 编辑仍支持多个 tags/collections，留空清空。`assetPath` 用真实 path 或 canonical 派生筛选/显示；Copy Markdown 转义 alt 并派生 Raw/jsDelivr URL。剪贴板 API 受浏览器权限约束，失败提供可手动复制框，不能把“生成正确文本”当作“自动复制成功”。DOM 不拼接不可信 HTML。
 7. **原图读取**：`imageSnapshot` 锁内取一致视图，新增 payload 打开后解锁；导入但未发布的 Asset 在缓存固定 tree 读原 path。已提交 explicit path 从本地 Git 对象库按缓存 tree 取不可变 blob，不能信任可变 checkout 同名文件；缺少本地不可变数据可回退 API。网络流不占工作区锁，不追当前 branch URL；clone 状态与离线能力不伪装。
 8. **发布、同步与重建**：commit/reset 继续原 coordinator；sync 在同锁中先更新 clone 再读，journal 走 API；verify 不 fetch。reindex 使用现有 Service 连接重建，未决 journal 仍需 sync。409/conflict 保留修改、不自动 reset；移除/reset 明确确认，journal 单独显示，toast 不是发布事实。
+9. **桌面窗口**：`cmd/touko-desktop → desktop.Run` 在主 goroutine 上开 MyGo 窗口，复用同一个 `webview.Listen` 与内嵌 UI；`browser.Open` 是 serve 与托盘菜单共用的系统打开方式。窗口关闭默认只是隐藏并继续本地服务，托盘菜单负责“显示主窗口 / 在浏览器中打开 / 打开工作区目录 / 退出”。两个必须保留的约束：被点击的托盘菜单项要被 Go 侧一直引用（MyGo 用弱引用按 uid 找回 `*MenuItem`，被回收后菜单可见但点击无效），而 `Window.OnClose` 的 `PreventDefault` 必须让退出流程放行（MyGo 遇到任何拒绝关闭的窗口就取消整次退出）。面板/任务栏里的图标不由应用绘制：窗口的 Wayland app_id 是**可执行文件基名**，因此发行包装必须安装与之同名的 `touko-desktop.desktop` 并把图标放进 hicolor 主题，这与微信、qBittorrent 等普通应用完全同一条路径。
 
 修改页面前，先决定变化属于“过滤/展示”还是“实际 metadata/发布协议”。前者留在 app.js；后者沿 API → Service → domain/planner 检查，不能在前端写 Git tree 或另存一套分类 JSON。完整接口与各具名函数见 [函数导航的 Webview 章节](function-reference.md#14-internalwebview本地图库边界与浏览器控制器)。
 

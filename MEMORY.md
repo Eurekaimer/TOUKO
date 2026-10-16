@@ -4,7 +4,45 @@
 
 ## 当前交付状态
 
-**最新交接（2026-10-17）。** 上一轮留在工作区的增量实现已按模块分阶段提交（见下表；本文件所在提交即记录这些 hash 的 memory 提交）；下表记录每个阶段的实际提交与实测结果。`logo/` 始终是用户文件，禁止擅自提交或清理。
+**最新交接（2026-10-17，第二轮）。** 上一轮的六阶段提交（`3a99579`…`76ff6ce`）之后，本轮做的是**桌面壳 + 托盘 + 应用图标 + 本地打包**，同样分阶段提交（下表）。`logo/` 始终是用户文件，禁止擅自提交或清理。
+
+### 本轮（桌面/打包）实测
+
+- **窗口**：`touko-desktop` 在这台机器（niri/Wayland + GTK3 + WebKitGTK 4.1）真实打开窗口，`niri msg windows` 可见 app_id `touko-desktop`，并派生 `WebKitWebProcess` + `WebKitNetworkProcess`。
+- **托盘**：StatusNotifier 项在会话总线注册成功（`RegisteredStatusNotifierItems` 可见 `mygo_<pid>_1`）。菜单项：显示主窗口 / 在浏览器中打开 / 打开工作区目录 / 分隔线 / 退出 TOUKO。
+- **关闭即隐藏**：从窗口管理器关闭后窗口消失、进程仍存活、页面仍 200、托盘项仍在；“显示主窗口”把它叫回来（用 `com.canonical.dbusmenu.Event` 真实点击验证）。
+- **退出**：托盘“退出 TOUKO”与 `SIGTERM` 都走完整收尾，exit 0、端口释放、托盘项注销。此前第一版必须再补一次信号才退出——根因见下方陷阱。
+- **两个真实点击路径**（在浏览器中打开 / 打开工作区目录）用 PATH 前置的 `xdg-open` stub 验证：各触发一次，参数分别为 loopback URL 与 state 目录。
+- **图标**：`packaging/make-icons.py` 从 `logo/TOUKO.png` 裁出 760×760 方形（头像 + 照片卡），生成 16/24/32/48/64/128/256 PNG 到 `internal/desktop/assets/`。窗口图标用嵌入的 256px，托盘用 64px。
+- **任务栏图标机制（实测对比）**：未安装同名桌面条目时任务栏槽位是通用占位图标；把 `touko-desktop.desktop` + hicolor 图标装进 XDG 数据目录后，同一窗口立刻显示 TOUKO 图标（grim 截图前后对比）。**这不是 Noctalia 补丁**：任务栏按窗口 app_id 查 `*.desktop` 的 `Icon=`，托盘图标由应用自己提供，与微信（`wechat.desktop` + hicolor 16–512px + app_id `wechat`）、qBittorrent 完全同一条 freedesktop 路径。
+
+**两个 MyGo 0.5.5 陷阱（踩过，务必记住）：**
+
+1. **托盘菜单点击会静默失效。** mygo 用弱引用表按 uid 找回被点击的 `*MenuItem`；`*Tray`/`*Menu` 一旦被 GC 回收，菜单仍然正常显示、点击完全没反应。必须在 Go 侧长期持有（当前是包级 `trayHandle`/`trayMenuRef`）。
+2. **`Window.OnClose` 无条件 `PreventDefault` 会阻止 `App.Quit()`。** MyGo 的退出流程逐个关闭窗口，任何窗口拒绝就让整次退出取消——表现为“托盘退出没反应”“第一次 SIGTERM 无效、第二次才强制 143 退出”。隐藏窗口前必须先判断是否已在退出。
+
+### 提交进度（第二轮：桌面与打包）
+
+| 阶段 | 内容 | commit |
+| --- | --- | --- |
+| 7 | 桌面壳：托盘、窗口图标、关闭即隐藏、菜单（含两处 MyGo 陷阱修复） | 本提交 |
+| 8 | 本地打包：PKGBUILD、桌面条目、图标阶梯、生成脚本 | 待提交 |
+| 9 | 文档与记忆 | 待提交 |
+
+### 本地包（用户可直接测）
+
+`packaging/PKGBUILD` 是**从当前 checkout 构建**的本地测试包（`pkgname=touko-git`，`pkgver()` 取 `r<提交数>.<短hash>`，因此含未提交改动也能测），安装 `touko`、`touko-desktop`、`touko-desktop.desktop`、hicolor 16–256px 图标、`pixmaps/touko.png`、LICENSE 与 docs：
+
+```bash
+cd packaging && makepkg -si     # 需要 fakeroot + sudo
+touko-desktop                   # 菜单里也会出现 TOUKO
+```
+
+实测：`makepkg -f` 成功产出 `touko-git-r40.f8c5798-1-x86_64.pkg.tar.zst`；解包到临时根目录后 CLI 真实完成 repo init/add/commit/verify，桌面二进制启动窗口正常。发布版应改为固定 tag 的源码包 + 校验和，并加 `depends`/`optdepends`（gtk3、webkit2gtk-4.1、libayatana-appindicator、github-cli）。
+
+未完成：完整进程树内存量测（含 renderer）、桌面壳剪贴板权限实测（权限处理器仍一律拒绝 camera/microphone/geolocation/notifications，页面复制仍回退手动复制框）、512px 图标、AUR 发布准备。
+
+（第二轮 commit hash 记录见下表；第一轮实测与架构记录保留在下方。）
 
 本轮在隔离 state（`/tmp/touko-e2e.GzXGj8Ox`）与端口 `17888` 上用真实 `gh` 登录实测（binary `/tmp/touko-review`）：
 

@@ -494,8 +494,8 @@ Cobra 命令构造函数返回 `*cobra.Command`；真正业务发生在其匿名
 
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
-| `(*runtime).serveCommand` | serve --port/--no-open → webview.Listen。 | 仅loopback，打印实际URL；默认openBrowser，失败stderr提示但继续服务；--no-open禁自动打开。显式env token或空交后端，gh在Web边界Resolve而非CLI永久缓存。取消后先Host.Close等待handler，再由Run关闭根Service。 |
-| `openBrowser` | ctx、loopback URL → OS浏览器启动结果。 | 按平台启动外部浏览器程序；失败不伪装页面已打开。 |
+| `(*runtime).serveCommand` | serve --port/--no-open → webview.Listen。 | 仅loopback，打印实际URL；默认用 `browser.Open` 打开浏览器，失败stderr提示但继续服务；--no-open禁自动打开。显式env token或空交后端，gh在Web边界Resolve而非CLI永久缓存。取消后先Host.Close等待handler，再由Run关闭根Service。 |
+| `browser.Open` | ctx、URL或目录 → 交给系统默认处理程序。 | 实现在 [`internal/browser`](../internal/browser/browser.go)，serve 与桌面托盘菜单共用；按平台选 xdg-open/open/rundll32，失败返回错误、不伪装已打开。 |
 
 ## 11. `cmd/touko`：进程边界
 
@@ -680,3 +680,27 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `openImport` | 显示原路径导入表单与未初始化提示；提交directory/namespace/tags/collections后显示imported/skipped与必须commit的提示，不自动初始化/发布。 |
 | `copyDelivery` | 读取真实URL；Markdown转义alt/换行，生成安全目标链接；尝试clipboard.writeText，失败显示并选中可手动复制框。生成文本不等于权限受限浏览器已自动复制。 |
 | `bindEvents` | 注册上传directory、导入、reindex、同锁sync、verify、commit/reset、编辑、原图URL/Markdown、工作区导航及仓库/分支两级下拉（读取auth/repos/branches，显示private/can_push，切仓库即清旧分支）；匿名回调复用真实API，不另造业务层，不接收token。 |
+
+## 15. `internal/desktop` 与 `internal/browser`：MyGo 窗口与系统打开
+
+### [`cmd/touko-desktop/main.go`](../cmd/touko-desktop/main.go)、[`desktop/app.go`](../internal/desktop/app.go)
+
+| 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
+| --- | --- | --- |
+| `main` | `--state-dir`、`--port` → `desktop.Run`。 | 与 CLI 相同的 state 选择规则；参数非法退出码 2，Run 出错退出码 1。窗口壳不另写业务状态。 |
+| `Run` | stateDir、port、输出 → 直到退出的错误。 | 必须在主 goroutine 上运行：MyGo 在该线程驱动系统 WebView。复用 `app.Open` + `webview.Listen`（同一内嵌 UI 与 API），窗口关闭时隐藏而不退出，真正退出时先取消并 join 请求再关 SQLite。 |
+| `session.onClose` | window close 事件。 | 未在退出流程时 `PreventDefault` 并隐藏窗口；MyGo 只要有一个窗口拒绝关闭就整体放弃退出，因此退出标志必须放行，否则托盘“退出”会静默挂住。 |
+| `session.addTray` | 托盘图标与菜单。 | 菜单项：显示主窗口（`Show`+`Focus`）、在浏览器中打开（`browser.Open` 到 loopback URL）、打开工作区目录、分隔线、退出 TOUKO。AppIndicator 不提供点击事件，所以“重新打开窗口”必须是一个菜单项；打开失败写 stdout，不静默。 |
+| `openWindow` | origin → `*mygo.Window`。 | 只允许导航回同一 loopback origin，`SetWindowOpenHandler` 返回 nil 拒绝弹窗，权限处理器一律拒绝；DevTools 关闭。窗口图标用嵌入的 256px PNG。 |
+
+**两个 MyGo 0.5.5 陷阱（改这里前必须知道）：**
+
+1. 托盘与被点击的菜单项必须一直被 Go 侧引用。`mygo` 用弱引用表按 uid 找回 `*MenuItem`，若 `*Tray`/`*Menu` 被 GC 回收，菜单仍然显示、点击却完全没有反应（症状与“菜单坏了”一样）。因此包级变量持有 `trayHandle`/`trayMenuRef`。
+2. `Window.OnClose` 里无条件 `PreventDefault` 会同时阻止 `App.Quit()`：MyGo 的退出流程逐个关闭窗口，任何一个窗口拒绝就让整次退取消。隐藏窗口的逻辑必须先判断是否已在退出。
+
+### [`internal/browser/browser.go`](../internal/browser/browser.go)
+
+| 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
+| --- | --- | --- |
+| `Open` | ctx、target（URL 或本地路径）→ 启动结果。 | `touko serve` 打开页面与桌面托盘的两个“打开”项共用；只负责把目标交给系统默认处理程序，不猜测应用、不等待处理程序加载完。 |
+| `launcher` | target → 平台命令与参数。 | darwin `open`、windows `rundll32 url.dll,FileProtocolHandler`、其余 `xdg-open`。 |

@@ -1,13 +1,11 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	goruntime "runtime"
 
+	"github.com/Eurekaimer/TOUKO/internal/browser"
 	"github.com/Eurekaimer/TOUKO/internal/webview"
 	"github.com/spf13/cobra"
 )
@@ -37,7 +35,7 @@ func (r *runtime) serveCommand() *cobra.Command {
 			return err
 		}
 		if !noOpen {
-			if openErr := openBrowser(cmd.Context(), host.URL); openErr != nil {
+			if openErr := browser.Open(cmd.Context(), host.URL); openErr != nil {
 				if _, err := fmt.Fprintf(r.stderr, "Could not open browser: %v. Open %s manually; the server is still running.\n", openErr, host.URL); err != nil {
 					return err
 				}
@@ -48,24 +46,4 @@ func (r *runtime) serveCommand() *cobra.Command {
 	cmd.Flags().IntVar(&port, "port", 7788, "Loopback HTTP port (0 selects an available port)")
 	cmd.Flags().BoolVar(&noOpen, "no-open", false, "Do not automatically open the browser")
 	return cmd
-}
-
-func openBrowser(ctx context.Context, url string) error {
-	var name string
-	var args []string
-	switch goruntime.GOOS {
-	case "darwin":
-		name, args = "open", []string{url}
-	case "windows":
-		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
-	default:
-		name, args = "xdg-open", []string{url}
-	}
-	if err := exec.CommandContext(ctx, name, args...).Run(); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("%s failed: %w", name, err)
-	}
-	return nil
 }

@@ -176,19 +176,28 @@ CLI `reindex` 对 GitHub 先更新 clone，完整验证源快照与 hash 后恢�
 
 实测（2026-10-17，真实 `gh` 登录）：自动读到 63 个仓库；`Eurekaimer/touko-gallery-test` 的 4 个分支与 `gh api repos/.../branches` 逐项一致，默认分支 `main` 自动预选；快速连切两个仓库后只保留最后所选仓库的分支；重开已连接工作区预选当前仓库与当前分支。分页逻辑另有单元测试；空/失败/未登录分支由 `branches_test.go` 覆盖。尚未实测：读满 100 条以上仓库或分支时的真实多页翻页（只有测试覆盖）。
 
-### B. MyGo 独立窗口与内存验证（尚未实现）
+### B. MyGo 独立窗口、托盘与图标（已实现并实测）
 
-用户目标是像 PicGo 一样启动后出现独立应用窗口：没有浏览器地址栏，不额外打开完整 Chrome/Firefox，不采用 Electron。已有 `cmd/touko-desktop` 与 `internal/desktop/app.go`，应复用同一个 HTTP 后端和 embedded Web UI，而不是重写图片管理逻辑。
+单独运行 `touko-desktop` 会像 PicGo 一样出现独立窗口，没有浏览器地址栏，也不启动完整 Chrome/Firefox，不使用 Electron。它复用同一个 `webview.Listen` 后端与内嵌 UI，不另写图片管理逻辑。
 
-**系统 WebView 仍有渲染内核。** MyGo 使用操作系统 WebView；当前代码要求 Linux GTK3 + WebKitGTK 4.1、Windows WebView2 或 macOS WKWebView。没有完整浏览器窗口不等于没有 renderer，也不能据此承诺内存必定低于 PicGo。
+- **窗口生命周期**：关闭窗口只是**隐藏**并继续本地服务（HTTP + SQLite 保留），托盘菜单的“显示主窗口”再把它叫回来；“退出 TOUKO”、窗口管理器请求或 SIGINT/SIGTERM 才走完整退出：取消并 join 请求 → `Host.Close` → `Service.Close`，端口释放。实测：关闭窗口后进程仍在、页面仍 200、托盘项仍在；托盘“退出”与 `SIGTERM` 都是 exit 0 且端口释放。
+- **托盘菜单**：显示主窗口 / 在浏览器中打开 / 打开工作区目录 / 分隔线 / 退出。GNU/Linux 走 StatusNotifier（AppIndicator），点击图标直接弹出这个菜单；菜单项由 `browser.Open` 调用系统默认处理程序，失败写 stdout 而不是静默。
+- **没有托盘宿主时**：若 `libayatana-appindicator` 或托盘宿主不可用，程序明确打印“关闭窗口即停止 TOUKO”，并且不再隐藏窗口——不会出现窗口关掉又没有任何入口的僵死状态。
+- **系统 WebView 仍有渲染内核**：需要 Linux GTK3 + WebKitGTK 4.1、Windows WebView2 或 macOS WKWebView；窗口进程会派生 WebKitWebProcess/WebKitNetworkProcess，因此**不能**承诺“没有内核”或“一定比 PicGo 省内存”。
 
-实施顺序：
+#### 面板/任务栏图标（不是 Noctalia 专属）
 
-1. 先完成仓库/分支下拉及当前 Webview 的上传、编辑、链接、删除、同步、工作区隔离和恢复验收，供用户确认。
-2. 用户确认 Webview 后再优化既有 MyGo 入口与窗口体验，检查本地图片、字体、文件选择、拖放、剪贴板和关闭窗口后的 HTTP/SQLite 释放。现有桌面权限处理一律拒绝，剪贴板能力需要实际检查，不直接放开所有权限。
-3. 实测完整进程树的内存（包含 renderer 等子进程），分别记录空闲、固定数量图库加载、上传时的状态；明确 RSS/PSS 口径和环境，不只报 Go 主进程，也不先承诺“无内核/零开销”。
-4. MyGo 也经用户确认后，再做 AUR 打包与发布准备；本轮尚未开始新的桌面优化、内存测量或 AUR 实现。
+任务栏与托盘是两套机制：托盘图标由**应用自己**提供（StatusNotifierItem 的 PNG），任务栏/侧栏/应用菜单则按窗口的 **app_id** 去查找 `*.desktop` 再取 `Icon=`。这套规则来自 freedesktop 桌面条目与 XDG 图标主题规范，Quickshell/Noctalia、Waybar、GNOME、KDE、Hyprland 等都用同一条路径——和微信、qBittorrent 在系统里的呈现方式完全相同，不需要给某个桌面环境打补丁。
+
+因此发行包装必须做到两点，缺一项就会看到“托盘有图标、任务栏没有”：
+
+1. 安装的桌面条目文件名与窗口 app_id 相同。MyGo/GTK3 下 app_id 是**可执行文件基名**（`touko-desktop`），所以装的是 `/usr/share/applications/touko-desktop.desktop`（同时写 `StartupWMClass=touko-desktop` 兼顾 X11 的 WM_CLASS 匹配）。把二进制改名后 app_id 会跟着变，图标查找随即失效。
+2. 图标按尺寸装进 `hicolor/<N>x<N>/apps/touko.png`（另放 `/usr/share/pixmaps/touko.png` 兼容旧面板）。
+
+图标由 `packaging/make-icons.py` 从用户原始 logo 裁出方形（头像与照片卡那一块）再生成 16/24/32/48/64/128/256 阶梯；原图本身不进入仓库与包，只有派生 PNG 被提交。实测：未安装条目时任务栏槽位是通用占位图标，装入 `touko-desktop.desktop` 与 hicolor 图标后同一窗口变成 TOUKO 图标。
+
+仍未做：完整进程树的内存量测（含 renderer）、桌面壳的剪贴板权限实测（当前权限处理器仍一律拒绝 camera/microphone/geolocation/notifications）、AUR 发布准备。64 位以上面板用的 512px 图标也还没加。
 
 ### C. 当前交接边界
 
-本轮增量代码与文档已按“format v2 → index 恢复 → credential/分支列表 → CLI → Webview → 文档”六个阶段提交，hash 见 [MEMORY](../MEMORY.md)。未完成的组合验收（Web 端冲突现场、删除/重启/多筛选组合、剪贴板自动复制、真实多页翻页）不等于已通过。用户正在操作的页面、待上传表单和原 7799 服务应保留；自动化使用隔离 state、端口和窗口，更新 UI 时不要强制刷新用户的未提交表单。
+上一轮增量代码与文档已按“format v2 → index 恢复 → credential/分支列表 → CLI → Webview → 文档”六个阶段提交；本轮桌面壳/托盘/图标与本地打包另按阶段提交，hash 见 [MEMORY](../MEMORY.md)。未完成的组合验收（Web 端冲突现场、删除/重启/多筛选组合、剪贴板自动复制、真实多页翻页、桌面内存量测）不等于已通过。用户正在操作的页面、待上传表单和原 7799 服务应保留；自动化使用隔离 state、端口和窗口，更新 UI 时不要强制刷新用户的未提交表单。
