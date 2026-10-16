@@ -36,7 +36,7 @@ ID=$(/tmp/touko add logo/TOUKO.png --namespace blog --tag demo --output id)
 # /tmp/touko --state-dir "$HOME/.local/share/touko-galleries" serve --port 7788 --no-open
 ```
 
-`serve` 默认打开浏览器，打开失败会提示手动访问且继续服务。“连接 / 切换仓库”里可“读取 GitHub 登录 / 加载仓库”，从带 private/can_push 信息的列表选择，或手填 `OWNER/REPO`。没有 token 输入框；gh 在终端完成登录后可直接重新读取，无需重启。若改的是环境变量，需要重启进程才能获得新环境。
+`serve` 默认打开浏览器，打开失败会提示手动访问且继续服务。“连接 / 切换仓库”里选择 GitHub 后自动读取登录与仓库列表，先选仓库再从它的分支下拉里选分支（默认分支已预选）；没有 token 输入框，也不需要手填 `OWNER/REPO`。gh 在终端完成登录后可直接重新读取，无需重启。若改的是环境变量，需要重启进程才能获得新环境。
 
 每个仓库/分支是独立 URL 工作区（新工作区为 `/w/<key>/`），各自保存 clone、index、stage/journal；切换不会清空旧暂存，不必停止服务换 state。根工作区保持兼容，新工作区存于 `<state-root>/workspaces/<key>/`。独立 CLI 仍需按实际工作区路径传 `--state-dir`，不要拿根 state-dir 操作所有仓库。
 

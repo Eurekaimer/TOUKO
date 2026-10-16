@@ -2,7 +2,7 @@
 
 这篇教程面向会编程、但没有参与本轮实现的读者。目标不是记住目录，而是能回答三个问题：**一条命令到底改了什么？中途失败留下什么？修改某个功能时，哪些边界不能破坏？**
 
-当前实现管理 PNG/JPEG/GIF，提供 CLI 和本地浏览器 Webview：以 Git 保存图片和元数据，以 SQLite 保存本地快照、暂存修改及发布日志。后端是实际本地 Git 与 GitHub Git Data API；没有缩略图服务、R2、插件框架或自动冲突合并。Webview 不引入第二套存储或发布流程。
+当前实现管理 PNG/JPEG/GIF，提供 CLI 和本地浏览器 Webview：以 Git 保存图片和完整元数据，以 SQLite schema2 保存 committed cache，以独立 `workspace.json` 耐久保存暂存修改及发布日志。后端保留本地 Git 与 GitHub Git Data API 写入，GitHub 常规读取使用本地 clone；没有缩略图服务、R2、插件框架或自动冲突合并。Webview 复用业务核心，并为多个仓库隔离工作区。
 
 本文的函数名以源码为准，不依赖容易变化的行号。逐函数查询见 [函数参考](function-reference.md)，日常操作和 GitHub 接入见 [使用教程](usage.md)。本文中的命令是供你执行的练习，**不是已经运行过的验收记录，也没有虚构运行输出**。GitHub HTTP 测试不等于使用真实 token 完成了线上验收。
 
@@ -16,7 +16,7 @@
 | 内容 SHA-256 | `domain.ObjectHash [32]byte` | 原始输入 bytes 的内容身份，文本是 64 位小写十六进制 | 不是 Asset ID，也不是 Git blob ID |
 | Git 对象 SHA | `domain.RepositoryHead`、`repository.BlobID`、`repository.TreeID` | commit、blob、tree 的 Git 身份；当前后端采用 SHA-1 Git 仓库 | 不等于直接对图片 bytes 求 SHA-256 |
 
-例如，连续两次添加同一张图片会生成两个 UUID，但 `Object.Hash` 相同。同 namespace 时两条记录共用一个 object path。只改 title 会改变 metadata 的 Git blob 和新 commit，但不会改变图片 SHA-256、图片路径或 Asset UUID。
+例如，连续两次默认添加同一图片会生成两个UUID，Object.Hash相同；同namespace且同目标目录时共用placement。相同bytes放在不同显式目录仍是不同路径。只改title会改变metadata的Git blob和新commit，不改变图片SHA-256、路径或Asset UUID。
 
 `RepositoryID` 保存在 `.touko/repository.json`。它用于识别“同一个 gallery”，而不是识别 Git 托管平台。`sameRepository` 会阻止把一个不同 RepositoryID 的快照悄悄覆盖到现有缓存中。
 
@@ -29,13 +29,13 @@
 | 状态 | 物理位置 | 核心内容 | 丢失或失败意味着什么 |
 | --- | --- | --- | --- |
 | remote | 选定 Git 仓库的分支及其对象库 | manifest、Asset JSON、图片 blob、提交历史 | 最新分支 HEAD 决定已发布状态；历史不因普通 `rm` 消失 |
-| cache | `<state-dir>/index.db` 的 `assets` 与 `repository_state` 中 committed 字段 | 上次完整扫描的 Asset、HEAD、tree、manifest | 没有未发布工作时，可从 remote 重建 |
-| stage | SQLite `changes`、`staging_base_head`，以及 `stage/objects/` | 尚未发布的 add/update/delete 和新增图片 payload | 不能从 remote 恢复；删库可能丢掉这些修改 |
-| journal | SQLite `publication` | `base_head`、`candidate_head`、`candidate_tree` | 用于判定“远程可能已成功、本地尚未记账”，不能当临时垃圾随意删除 |
+| cache | `<state-dir>/index.db` 的 `assets/repository_state` | 上次完整扫描的 Asset、HEAD、tree、manifest | schema2 可保留 durable stage/journal 后 reindex，不必先丢未发布修改 |
+| stage | `workspace.json` 的 `changes/base_head`，以及 `stage/objects/` | 尚未发布的 add/update/delete 和新增图片 payload | 不能从 remote 恢复；schema2 删 cache 不丢 stage，但不能丢耐久工作区或所需 payload |
+| journal | `workspace.json` 的 `publication` | `BaseHead`、`CandidateHead`、`CandidateTree` | 用于判定“远程可能已成功、本地尚未记账”，不能当临时垃圾随意删除 |
 
-此外，`config.json` 保存 `repository.Location`：`backend,branch,path,owner,name,private`。它只是定位信息，不是 gallery 元数据，也不保存 token。`GITHUB_TOKEN` 只用于运行时构造请求。
+此外，`config.json` 保存 `repository.Location`：`backend,branch,path,owner,name,private`。它只是定位信息，不保存 token。`credential.Resolve` 按 `GITHUB_TOKEN`、`GH_TOKEN`、gh keyring 顺序取得运行时凭据；显式凭据无效不静默回退。
 
-`index.State` 是上述本地状态的一次读写单位：`Head/Tree/Manifest/Assets` 是缓存，`BaseHead/Changes` 是暂存状态，`Publication` 是恢复日志。不要因为它们恰好住在同一个数据库，就把整个数据库都叫“随便可删的缓存”。
+`index.State` 仍是业务读写单位：`Head/Tree/Manifest/Assets` 是 cache，`BaseHead/Changes` 是 stage，`Publication` 是恢复日志。但它们不在同一存储事务里：Store 在互斥保护下组合 SQLite 与耐久工作区。
 
 `ls/find/show` 展示的是 **cache 叠加 stage**，并非每次重新读取 remote：
 
@@ -44,7 +44,7 @@
 - `modified`：本地修改了已有 Asset 的 metadata；
 - staged delete：不出现在可见列表中，但仍存在于 `status` 的 changes。
 
-所以“列表里能看见图片记录”不等于“已经提交”，而 `verify` 检查的则是选定 remote HEAD，不是这个暂存视图。
+所以“列表里能看见图片记录”不等于“已经提交”。`verify` 不检查暂存 overlay；GitHub CLI/Web 路径验证当前 clone 的固定 HEAD，不 fetch，也不保证它就是最新远端。
 
 ## 2. 建议阅读顺序：先确定规则，再读副作用
 
@@ -53,14 +53,14 @@
 | 顺序 | 文件 | 阅读目标 |
 | --- | --- | --- |
 | 1 | `internal/domain/identity.go`、`asset.go`、`change.go`、`errors.go` | 谁是身份？什么记录合法？业务冲突如何被 `errors.Is/As` 识别？ |
-| 2 | `internal/repository/format.go`、`path.go`、`snapshot.go` | 哪些 bytes 构成 format v1？如何从不可变 Git tree 读出完整 gallery？ |
+| 2 | `internal/repository/format.go`、`path.go`、`snapshot.go` | 哪些 bytes 构成 format v1/v2？怎样在兼容读取与显式 path 升级间保持原子性？ |
 | 3 | `internal/image/ingest.go`、`internal/staging/files.go` | 大图片如何进入临时文件并被可靠安装？谁拥有并关闭 reader？ |
-| 4 | `internal/index/store.go`，再读 `internal/app/state.go` | 数据库怎样整体 Load/Save？state-dir、选择仓库和本地锁怎样工作？ |
+| 4 | `internal/index/{store,workspace,rebuild}.go`，再读 `internal/app/{state,reindex}.go` | committed cache 与耐久工作区怎样组合？schema1 怎样安全迁移？损坏 cache 怎样绕过 Open 重建？ |
 | 5 | `internal/app/stage.go`，再读 `internal/repository/planner.go` | 用户多次操作如何压缩为最终 change？怎样由最终引用集合决定删除？ |
-| 6 | `internal/app/commit.go`、`sync.go`、`repo.go`、`verify.go` | 哪一步使修改对外可见？各个中断窗口怎样恢复？ |
+| 6 | `internal/app/{commit,sync,refresh,repo,verify,import}.go` | 哪一步使修改对外可见？更新 clone 与读取怎样持同锁？原路径导入及中断恢复怎样工作？ |
 | 7 | `internal/repository/git.go`、`internal/localgit/repository.go`、`internal/github/{client,repository}.go`、`internal/delivery/url.go` | 同一端口怎样落到真实 Git 命令和 HTTP？两者原子性有何差别？ |
 | 8 | `cmd/touko/main.go`、`internal/cli/{root,repo,assets,publication,delivery}.go` | 参数、标准输入、输出契约和后端装配如何连接前面的业务？ |
-| 9 | `internal/cli/serve.go`、`internal/webview/{server,api,preview,static}.go`、`static/{index.html,style.css,app.js}` | 本地 HTTP 边界怎样接到相同 Service？网页状态为什么不能取代 SQLite stage？ |
+| 9 | `internal/cli/serve.go`、`internal/webview/{server,api,auth,read,workspaces,preview,static,host}.go`、`static/{index.html,style.css,app.js}` | 多工作区 HTTP 边界怎样接到各自 Service？网页状态为什么不能取代耐久 stage？ |
 
 第一遍读每个函数时只标注四件事：**输入、输出、不变量、副作用**。第二遍再跟错误分支。最后通过测试理解为什么需要这些防线，比照着代码逐行翻译更有效。
 
@@ -98,13 +98,13 @@ flowchart TD
 
 `domain.Asset` 内嵌一个 `ContentObject`，其中有 `hash,mime,ext,size,width,height`。没有再平行存一个可独立修改的 ObjectHash 字段，因此不会出现“Asset 声称一个 hash、Object 又声称另一个”的双写源。
 
-`ContentObject.Validate` 固定支持格式、MIME 对应关系、正数尺寸和 byte 上限；`Asset.Validate` 检查身份、namespace 和时间关系。它们不访问文件、数据库或网络。领域错误让 CLI 与调用者判断“找不到”“有歧义”“冲突”“损坏”，而不是依赖错误文案。
+`ContentObject.Validate` 固定支持格式、MIME 对应关系、正数尺寸和 byte 上限；`Asset.Validate` 检查身份、namespace、时间关系与可选真实 `Path`。`ValidateRepositoryPath` 拒绝绝对路径、非规范 POSIX 路径、穿越、反斜杠、控制字符及 `.git/.touko` 段，允许 Unicode 与无后缀原名。它们不访问文件、数据库或网络。领域错误区分“找不到”“有歧义”“冲突”“损坏”，而不是依赖错误文案。
 
 **禁止**在这个包里加入 Cobra、GitHub token、SQL、派生 URL，或按文件名偷偷分配身份。
 
 ### 3.2 repository：持久化格式与 Git 协议，不是通用云存储框架
 
-`format.go` 负责稳定 JSON、字段校验及大小限制；`path.go` 是 committed 路径的唯一生成规则：
+`format.go` 负责稳定 JSON、字段校验及大小限制；`path.go` 区分 canonical 新放置与实际图片路径：
 
 ```text
 .touko/repository.json
@@ -112,7 +112,9 @@ flowchart TD
 objects/<namespace>/sha256/<前2位>/<接着2位>/<完整hash>.<ext>
 ```
 
-`EncodeAsset` 将时间归一为 UTC，空 tags/collections 编码为 `[]`，JSON 末尾有换行。解码拒绝未知字段和尾随 JSON；manifest 最大 64 KiB，单条 metadata 最大 1 MiB。未知格式版本失败，不自动迁移或重写。
+`ObjectPath(asset)` 优先取非空 `Asset.Path`，否则调用 `BuildObjectPath`。默认上传继续 canonical；`--directory` 上传使用 `<directory>/<hash>.<ext>`，导入 PicGo 则保留原路径，不搬动、不重传 bytes。所有读取、删除、引用计数与 URL 都必须使用实际路径，不能各处重新假设 canonical。
+
+`EncodeAsset` 将时间归一为 UTC，空 tags/collections 编码为 `[]`，JSON 末尾有换行。解码拒绝未知字段和尾随 JSON；manifest 最大 64 KiB，单条 metadata 最大 1 MiB。支持 format v1/v2，v1 禁止非空 path。新仓库仍 init v1；只有最终集合出现显式 path 的发布批次才把 v2 manifest 与 metadata 写入同一 commit，普通 v1 上传/编辑不升级，v2 不降级。未知版本失败，不擅自重写。
 
 `ReadSnapshot` 的输入是固定 commit ID，输出 `Snapshot{Manifest,Head,Tree,Assets,Entries}`。它验证安全路径、完整 metadata、UUID 与文件名一致性、同 hash 描述一致性，以及引用对象的路径、mode、类型、大小。任何坏记录都使整个读取失败，而不是跳过坏文件组成一个看似正常的部分 gallery。普通扫描不下载每张图片来重新求 hash。
 
@@ -130,11 +132,15 @@ objects/<namespace>/sha256/<前2位>/<接着2位>/<完整hash>.<ext>
 
 ### 3.4 index：可靠保存本地状态，不代替 remote
 
-`Store.Load` 在事务内读取一致的状态，`Store.Save` 在一个事务内保存整个状态。它会再次验证 map key、metadata ID、change kind 等关系，SQL 中途失败会回滚，而不是只写了一半 Asset。
+`Store.Load` 在 Store 互斥保护下先读 `workspace.json`，再以只读 SQLite 事务取 committed cache，并核对 repository identity。SQL/JSON/metadata 损坏都显式失败，不拼半份状态。
 
-当前实现用 `database/sql` 与纯 Go SQLite driver，单连接、WAL、`foreign_keys=ON`，`user_version=1`。`SavePublication` 有独立事务：先把 candidate 记牢，再允许更新远程 ref。这不是多余的小接口，而是为“远程成功、本地缓存更新失败”留下恢复依据。
+当前 SQLite 单连接、WAL、`foreign_keys=ON`、`user_version=2`，仅有 committed `repository_state/assets`。耐久 workspace 使用自己的 `version:1`，保存 repository identity、base、changes、publication；它与仓库 format v1/v2、SQLite schema 版本不是一回事。`SavePublication` 只原子替换这个 JSON，必须在远程 ref 更新之前成功。
 
-**禁止**把 `changes/publication` 当作可重建缓存，或在网络发布完成前清掉 stage。当前 Save 是整体保存，不是增量 SQL 优化；先保持事务语义，再考虑性能。
+`Save` 先验证两半，**先提交 cache 事务，再写 workspace 临时文件、Sync/Close、Rename、同步目录**。这不是跨资源事务：cache 已前进但 workspace 替换失败时，旧 stage/journal 仍是恢复依据，不能当成第二批未发布操作；rename 后目录 sync 报错也不能假定回滚。
+
+schema1 打开时先验证并耐久复制旧 changes/base/publication，之后才事务删除旧表/列、升级 schema2。中断后两份一致可继续，不一致/坏 stage 则保留源并失败。未迁移的 schema1 若物理不可读，旧库可能是唯一 stage 副本，不能承诺无损恢复。`app.Reindex` 绕过普通 `app.Open` 读 durable state，验证完整固定快照（包括 bytes）后重建 cache；物理坏库及 sidecar 留在 `index-corrupt-*`，健康库原地更新。运行中 Web 使用 `Service.Reindex`，不换仍在使用的 DB 文件。
+
+**禁止**删除 workspace 或为重建抹掉未决 journal。reindex 保留 journal，但恢复发布关系还须 API `sync`；浅 clone 既可能没有 candidate/base，也不能证明完整 ancestry。stage 无 journal 且源 HEAD 变了，reindex 同样报冲突。
 
 ### 3.5 application：编排状态，不决定 HTTP 细节
 
@@ -146,7 +152,7 @@ objects/<namespace>/sha256/<前2位>/<接着2位>/<完整hash>.<ext>
 
 - `localgit` 使用 `exec.CommandContext` 和 Git plumbing；argv 不经 shell 拼接。`hash-object` 写 blob，tree 构造保留 base 中的其他文件、mode、symlink、gitlink，`commit-tree` 创建 candidate，`update-ref` 才发布。
 - `github` 处理 header、HTTP status、流式 base64、Git Data API 字段映射和 token 脱敏。recursive tree 返回 `truncated:true` 就失败，不能更新一个不完整缓存。
-- `delivery.BuildURL` 接收 Location、canonical object path 和 provider，只为 public GitHub 推导 branch URL。local/private 返回 `ErrDeliveryUnavailable`。URL 不进入 Asset JSON；推导成功不表示 CDN 已传播，也不是一次 HTTP 可用性探测。
+- `delivery.BuildURL` 接收 Location、**安全真实仓库相对路径**和 provider，只为 public GitHub 推导 branch URL；不再要求 canonical 哈希目录或后缀。调用方应传 `ObjectPath(asset)`。local/private 返回 `ErrDeliveryUnavailable`。URL 不进 Asset JSON，推导成功不表示 CDN 已传播或 HTTP 可用。
 - `cli` 的 runtime 装配 service/backend，把 flags 变为 options，区分 stdout/stderr，返回退出码。它不应重新实现引用计数或 publication recovery。
 
 ## 4. 顺着命令追踪状态：逐步调用链
@@ -162,7 +168,7 @@ CLI addCommand
     → Lock → Store.Load → mutable
     → 对每个 input：Ingest → staging.Install → NewAssetID
     → normalize tags/collections → 构造完整 Asset 与 add change
-    → bindBase → Store.Save（整批一个事务）
+    → bindBase → Store.Save（先 cache 事务，再耐久 workspace）
   → 输出 AssetView 或 UUID / Markdown
 ```
 
@@ -222,7 +228,7 @@ CLI commitCommand → Service.Commit
 
 **规划阶段。** `PlanCommit(base, ChangeSet)` 先检查 base HEAD，再复制 Asset map 并应用所有 normalized changes，生成 `FinalAssets`。随后比较 before/after 的完整 placement 引用集合，生成 metadata writes、new/reused objects 和 deletions，稳定排序输出。它没有 IO；相同输入不取决于网络、时钟或随机数。
 
-关键例子：同 namespace 的红图被两个 Asset 引用。删一个只删 metadata；删最后一个才删 binary。一次 batch 中“删旧 UUID + add 相同 bytes”必须保留 binary。跨 namespace 则按完整 path 分开计算。planner 只删本批移除最后引用的已有 canonical placement，不顺便垃圾回收未知 orphan，也不删无关 Git 文件。
+关键例子：两个 Asset 引用同一路径，删一个只删 metadata；删最后一个才删 binary。一次 batch 中“删旧 UUID + add 相同路径/bytes”必须保留 binary。相同 bytes 若路径不同则分别计数；显式 path 即使 namespace 不同也按完整 path 共享引用。planner 只删本批移除最后引用的已有 placement，不顺便垃圾回收未知 orphan，也不删无关 Git 文件。
 
 **准备阶段。** 上传新 payload 时，`uploadStaged` 再测实际 size、流式重算 hash；只相信 add 时计算过一次 hash 不足以发现后来磁盘损坏。复用远程 placement 也要验证 bytes，不能因为路径看起来像 hash 就覆盖或盲信它。metadata 是小 JSON，可直接用 bytes reader。
 
@@ -234,17 +240,17 @@ CLI commitCommand → Service.Commit
 | --- | --- | --- | --- | --- |
 | 远程 HEAD 已不是 B | R 不变 | 仍 B | stage 保留，尚未上传本次 blobs | conflict；如果 staged update 的 Asset 已被远程删除，reason 为 `delete_modify` |
 | blob/tree/commit 准备失败 | 仍 B | 仍 B | stage 保留；尚未保存 journal 时 journal 为空 | 修复原因后重试；可能已有不可达 Git 对象，不代表发布了部分 gallery |
-| journal 保存失败 | 仍 B | 仍 B | 原 stage 保留，旧数据库事务不被部分替换 | 不允许继续 UpdateRef |
+| journal 保存失败 | 仍 B | 仍 B | stage 保留；以耐久文件实际状态为准，目录 sync 错误也显式返回 | 不允许继续 UpdateRef |
 | UpdateRef 明确没发布 | 一般仍 B | 仍 B | stage 与 candidate journal 保留 | commit 可重试同一 candidate；sync 可确认后取消未发布 journal |
 | UpdateRef 响应丢失 | 不能只凭错误判断 | 可能仍 B | 保留恢复依据 | read-back + ancestry；仍读不清则报 candidate 与 outcome unknown，运行 sync |
-| remote 已发布，SQLite Save 失败 | C 或后代 | 仍旧快照 | 旧 stage/journal 因事务回滚而保留 | sync 完成本地记账，不重复发布 |
+| remote 已发布，Save 失败 | C 或后代 | 可能旧快照，也可能 cache 已提交 | workspace 替换前失败保留旧 stage/journal；rename 后错误须重读 | sync 完成本地记账，不重复发布 |
 | 本地 Save 成功，payload 清理失败 | 已发布 | 新快照 | stage/journal 已清 | 报 published head 和清理错误，不能声称远程提交失败 |
 
 没有 stage 时 Commit 会走 sync，不创建空提交。正常提交成功后，stage、journal 与 base 一起清空；本地结果可以来自 C 的合法后代，而不一定机械地停在 C。
 
 ### 4.4 sync / recovery：先查发布关系，再决定能否覆盖本地
 
-普通同步是 `Sync → Lock → syncLocked → Head → ReadSnapshot(固定 head) → sameRepository → Store.Save`。
+普通 GitHub CLI/Web 同步是 `SyncWith → Lock → Load 判断 journal → prepare(创建/更新 clone) → syncLocked → clone.Head → ReadSnapshot(固定 head) → sameRepository → Store.Save`。更新与读 HEAD 在同一个工作区锁内，第一次 sync 就读更新后的快照，而不是后台 fetch、下次才生效；这是显式网络动作。底层 `Sync` 本身只读取传入的 Git adapter，不自动 fetch。
 
 - 先把分支解析成一个 immutable commit，再按它的 tree 和 blob ID 读取，避免扫描期间外部分支变化导致“半个旧 gallery 加半个新 gallery”。
 - 没有 stage 时，可扫描并替换 cache。
@@ -256,22 +262,24 @@ CLI commitCommand → Service.Commit
 
 | 观察到的远程关系 | 含义 | sync | commit/init |
 | --- | --- | --- | --- |
-| HEAD 是 C，或 C 是 HEAD 的祖先 | candidate 已发布，后面可能还有合法提交 | 验证 candidate，读取最新快照，原子记账并清旧 stage/journal | 同左，不再次发布 |
+| HEAD 是 C，或 C 是 HEAD 的祖先 | candidate 已发布，后面可能还有合法提交 | 验证candidate、读最新快照，先cache后durable清旧stage/journal | 同左，不再次发布 |
 | HEAD 仍为 B | candidate 尚未可见 | 清 journal，但保留 stage 与 base | 验证并重试同一 candidate |
 | HEAD 与 B/C 无上述关系 | 已有其他分支推进或 rewrite | conflict，保留 stage/journal | 同左 |
 | 读 HEAD/祖先关系失败 | 结果未知 | 保留 stage/journal，报 outcome unknown | 同左，不能猜“未发布” |
 
 为什么要查祖先而不是只比较 `HEAD == C`？如果 C 发布后另一设备又提交 D，HEAD=D 也证明 C 已成功；把它当失败重发，会制造重复发布或错误冲突。
 
-`reset --staged` 不是远程回滚。没有 journal 时，它可离线清掉本地 changes/base 并清理 payload；有 journal 时必须先读取远程关系：已发布则完成记账，无法判断则拒绝，确认没有发布后才允许显式丢弃本地计划。它不会从远程删除那个已发布 commit。
+GitHub 的 journal 路径由 `SyncWith` 选择 API backend，再在恢复成功后刷新 clone。不能用浅 clone 的 `IsAncestor` 失败/缺对象推断“没有发布”，也不能拿可能过期的 clone HEAD 代替远端证据。reindex 可以先恢复 cache 以便打开 Service，但不会替用户清 journal。
+
+`reset --staged` 不是远程回滚。没有journal时Service只清本地changes/base并回收payload；GitHub CLI构造APIclient但不发HTTP，有journal则必须用权威API先查关系，已发布先记账、未知拒绝、确认未发布才丢计划，不能拿浅clone证明结果。CLI localgit仍会打开本地仓库，所以仓库缺失时不能承诺reset可用；Web lazyGit则延后到实际需要远端时才装配。
 
 `Initialize` 也使用同一 journal 和发布流程，不是 CLI 偷偷插入 manifest。已有合法格式 init 是幂等读取；已有损坏 `.touko` 或被占用的保留路径不能被“初始化”覆盖。GitHub 完全空仓库要先在 GitHub 初始化 README，Git Data API 不能创建空仓库的首个 ref。
 
-### 4.5 verify：检查固定远程快照的 bytes，不修改任何状态
+### 4.5 verify：检查当前 reader 固定快照的 bytes，不修改状态
 
-`Service.Verify → Head → ReadSnapshot → VerifySnapshot → VerifyObject`。
+`Service.Verify → Head → ReadSnapshot → VerifySnapshot → VerifyObject`。GitHub CLI/Web 使用当前 clone，不 fetch；clone 缺失时 reader 的建立可能需要网络，但验证不会主动刷新已有 clone。要检查刚更新的远端，先显式 sync，再 verify。
 
-1. 固定本次 remote HEAD，先做与 sync 相同的完整格式/引用验证。
+1. 固定本次 reader HEAD，先做与 sync 相同的完整格式/引用验证。
 2. 从 Asset 集合生成 unique placement，按路径稳定遍历。
 3. 核对对应 Git entry 类型、mode、size，再打开 blob 流式计算 SHA-256、实际 byte 数，读取 header 核对格式及宽高；MIME 一致性由 ContentObject 的格式校验保证。
 4. 同一 Git blob 的相同描述可复用校验结果，不重复下载求 hash；同一 blob 配上矛盾描述则损坏。
@@ -299,8 +307,8 @@ hash/size 不符是 `ErrHashMismatch`，格式或描述冲突是 repository corr
 | --- | --- | --- |
 | `context.Context` / timeout | 调用链取消、网络等待与子进程生命周期 | 已发布状态回滚、跨资源事务 |
 | state-dir 的 `.lock` / `flock.TryLock` | 同一本地状态目录的业务写操作互斥；避免文件安装与 SQLite 修改相互踩踏 | 另一设备、另一个 state-dir 的并发提交 |
-| SQLite transaction | 本地 assets/head/stage/journal 的整体 Save 或 rollback | GitHub 与数据库的分布式原子提交、文件系统 payload 同步回滚 |
-| 临时文件 + Sync/Close + Rename | 完整 payload 安装，避免把半写内容当正式文件 | 整批 stage rows 与文件的单事务持久性 |
+| SQLite transaction | committed assets/head/tree/manifest 的整体 cache Save 或 rollback | workspace 的跨文件原子提交、远端发布或 payload 同步回滚 |
+| 临时文件 + Sync/Close + Rename + 目录 Sync | 完整 workspace 耐久替换；payload 安装也使用临时文件与 rename | SQLite/workspace/payload 三者的单事务持久性 |
 | Git 不可变对象 + ref 更新 | 先准备完整候选树，再一次公开整个 batch | 对象库中完全没有失败尝试留下的不可达对象 |
 | publication journal | 跨远程发布和本地记账的中断恢复 | 阻止不受控外部管理员重写分支 |
 
@@ -315,9 +323,9 @@ hash/size 不符是 `ErrHashMismatch`，格式或描述冲突是 repository corr
 
 ### namespace 是物理路由，不只是筛选标签
 
-`blog` 与 `notes` 中相同 bytes 拥有同一 SHA-256，但 object path 不同。同 namespace 同 bytes 共用一条 placement；跨 namespace 在树中有两条 placement。引用计算必须按完整 path，否则删除 blog 最后引用时可能错误地认为 notes 引用可以保住 blog 路径，或反向误删。
+默认 canonical 路由下，`blog` 与 `notes` 中相同 bytes 拥有同一 SHA-256，但路径不同；引用计算必须按完整 path，否则会误删某个 namespace 的副本。显式 `Asset.Path` 则直接指定真实位置，namespace 不会搬动它；多个 namespace 的记录也可能引用同一原路径。
 
-Git 底层仍可能为相同 bytes 复用同一个 blob ID；那是 Git 对象层的去重，不改变 TOUKO format 的 placement 规则。要改为跨 namespace 只保留一个路径，必须重新设计格式与迁移，不能只改 `BuildObjectPath` 一行。
+Git 底层可以为相同 bytes 复用 blob ID；这是 Git 对象去重，不改变 placement 规则。修改路由须同时检查 `ObjectPath`、完整路径引用、format v1/v2 与发布候选验证，不能只改 `BuildObjectPath`。
 
 ### 不可变 blob，使检查与恢复可以引用确定对象
 
@@ -343,7 +351,7 @@ candidate 不是随意接到发布瞬间的新 HEAD，而是以 stage base 为�
 
 ## 7. 把测试当作故障说明书阅读
 
-不要只看 `if err != nil`。先找每个测试的 **准备状态 → 故障注入点 → 外部观察 → 恢复动作**。优先观察 HEAD、fresh sync 的 gallery、树中实际路径，以及 SQLite 的 stage/journal，而不是内部调用次数。
+不要只看 `if err != nil`。先找每个测试的 **准备状态 → 故障注入点 → 外部观察 → 恢复动作**。优先观察 HEAD、fresh sync gallery、树中实际路径，以及 `workspace.json` 的 stage/journal，而不是内部调用次数。
 
 | 文件/测试 | 建议理解的问题 |
 | --- | --- |
@@ -351,7 +359,7 @@ candidate 不是随意接到发布瞬间的新 HEAD，而是以 stage base 为�
 | `image/ingest_test.go`：`TestIngestContentIdentityAndFormats`、`TestIngestFailuresRemoveTemporary`、`TestIngestAcceptsExactByteLimit` | source 一次读取后如何识别格式？到限与超限怎样区分？失败是否留下可用结果？ |
 | `staging/files_test.go`：`TestInstallRejectsCorruptExistingWithoutOverwrite`、`TestCleanupPreservesReferencedPayloadAndUnrelatedFiles` | 相同路径下坏 bytes 为什么必须拒绝，而非覆盖？清理范围如何受限？ |
 | `app/stage_test.go`：`TestStagingNormalizationAndSharedPayload`、`TestBatchFailureAndCommittedTransitions` | 用户连续命令如何变成最终 change，而不是操作日志？一个坏输入是否使批量失败？ |
-| `index/store_test.go`：`TestSaveRollbackAndIndependentPublication`、`TestFailedJournalReplacementPreservesPublication` | 主状态回滚与 journal 独立事务为何同时必要？ |
+| `index/store_test.go`、`index/recovery_test.go` | cache SQL 失败和 cache 已提交/workspace 未清怎样区分？schema1 迁移何时才可删除旧源？ |
 | `repository/planner_test.go`：`TestPlanDeleteSharedObject`、`TestPlanDeleteLastReference`、`TestPlanDeleteAndAddSameBytes`、`TestPlanNamespaceReferenceIsolation` | 删除要看最终引用，不可按 change 顺序立即删 object |
 | `app/sync_test.go`：`TestFreshSyncRestoresCompleteMetadata`、`TestSyncRejectsMissingObjectAndRepositoryIdentity` | fresh machine 能还原的是完整记录；坏 remote 不能换掉好 cache |
 | `app/commit_test.go`：`TestDeleteModifyConflictDoesNotResurrect` | A 删除、B 旧 edit 后提交，为什么不能复活 Asset？ |
@@ -452,14 +460,16 @@ git --git-dir="$ROOT/gallery.git" ls-tree -r refs/heads/main
 git --git-dir="$ROOT/gallery.git" show refs/heads/main:.touko/repository.json
 ```
 
-需要进一步检查 journal 且本机装有 `sqlite3` 时，可在没有写命令运行期间只读查询；不要 UPDATE/DELETE 手工“修复”它：
+需要进一步检查 durable journal 时，在没有写命令运行期间读取 workspace；本机装有 `sqlite3` 时可额外只读检查 **committed cache**。不要 UPDATE/DELETE 或手工编辑 JSON 来“修复”状态：
 
 ```bash
+"$BIN" --state-dir "$A" status --json
+cat "$A/workspace.json"
 sqlite3 -readonly "$A/index.db" \
-  'SELECT head, staging_base_head FROM repository_state; SELECT * FROM publication;'
+  'PRAGMA user_version; SELECT head, tree FROM repository_state; SELECT id FROM assets;'
 ```
 
-`publication` 有行不一定表示远程失败，它也可能表示远程已成功、本地未完成。处理顺序是 sync/read-back，不是删日志。不要通过删除 `.lock` 绕开正在运行的操作，也不要在有 stage/journal 时做“删库重建”。验证 committed 可重建性，最安全的方法是创建第三个 state-dir，`repo use` 后 `sync`，无需删除任何现有数据库。
+JSON `publication` 存在不一定表示远程失败，也可能是远程已成功、本地未完成；先 sync/read-back，不删日志。不要删除 `.lock` 绕过操作。schema2 cache 删除/损坏可用 `reindex` 保留 stage 重建，但不要删除 workspace 或未迁移旧库；未决 journal 重建后仍须 API sync。验证 committed 可重建性最安全的方法仍是第三个 state-dir `repo use; sync`，无需破坏现有状态。
 
 ### 8.5 第一次改代码：收窄 title 筛选，而不是改格式
 
@@ -478,34 +488,34 @@ sqlite3 -readonly "$A/index.db" \
 1. `internal/domain/asset.go`：`ContentObject.Validate` 的 canonical ext/MIME 白名单。明确真实格式名、固定 ext、MIME 和 byte/dimension 约束。
 2. `internal/image/ingest.go`：注册可用的 header decoder，并在 `format → ext/mime` 映射中处理新格式。不要根据用户文件扩展名放行。
 3. `internal/repository/verify.go`：注册同样可用的 decoder，核对 `DecodeConfig` 返回格式与 canonical ext 的映射；当前 jpeg→jpg 的特殊关系说明了为什么映射不能漏。
-4. `internal/delivery/url.go`：canonical object path 的扩展名白名单，否则已入库图片可能无法推导 URL。
+4. `internal/delivery/url.go`：路径校验不再限制图片扩展名；调用方应继续使用实际 `ObjectPath`，不要重新引入 canonical-only 假设。
 5. `internal/image/ingest_test.go`、`repository/verify_test.go`、`delivery/url_test.go` 和必要的 CLI round-trip：验证真实新格式 bytes 的 ingest/commit/fresh sync/verify/URL，而不是只构造一个看似合法的 ContentObject。
-6. `docs/repository-format.md` 与使用说明：当前 format v1 的读者只接受既定格式。扩展接受集合会造成旧程序不能读取新记录；先决定版本兼容/迁移策略，不能单方面把旧格式的保证悄悄改掉。
+6. `docs/repository-format.md` 与使用说明：format v1/v2 目前都只接受既定内容格式。扩展接受集合会造成旧程序不能读取新记录；先决定版本兼容/迁移策略，不能悄悄改变保证。
 
 不要为了格式扩展添加对象替换、namespace move 或迁移空命令。一个 decoder 可以解 header，也不自动意味着完整图片解码、缩略图或编辑能力已经存在。
 
 ### 8.7 GitHub 调试与当前范围
 
-接入时使用**用户自己的专用 gallery 仓库**，不能把开发代码仓库当试验 gallery。先初始化 README，使用另一个 state-dir 选择 `OWNER/REPO`，凭据只放执行机环境变量。`auth status` 使用 GET `/user` 显示登录名；没有 `auth login` OAuth 流程。完整安全命令见 [使用教程](usage.md)。
+接入时使用**用户自己的专用 gallery 仓库**，不能把开发代码仓库当试验 gallery。先初始化 README，使用隔离 state-dir 选择 `OWNER/REPO`。`touko auth login` 委托真实 `gh auth login --hostname github.com --web --git-protocol https`；`auth status` 经 Resolve 和 GET `/user` 输出 login/source，不显示凭据。优先级为 GITHUB_TOKEN、GH_TOKEN、gh keyring；不落盘到 TOUKO 配置。旧 `examples/github-acceptance.sh` 仍显式要求 GITHUB_TOKEN，这是脚本前置条件，不是 CLI/Web 本体的认证限制。
 
 阅读 `github.APIError` 时观察 status/endpoint，而不打印请求 header 或 token。401/权限 403 与 rate-limit 403 不同；429、5xx、timeout 不会通过隐藏重试伪装成功，stage 应保留。GitHub 的 public read 可以无 token，写入需要 token 与目标仓库权限。
 
 `url SELECTOR --provider github|jsdelivr` 的结果由 branch 与 object path 推导，不是 immutable commit URL。对 staged add，`--json` 的 `committed:false` 和人类输出的 stderr 提示说明它还是 prospective link；metadata-only modified 的图片 placement 已提交，因此不应把 committed 字段理解为“所有当前 metadata 已提交”。local/private 不提供公网链接或 Markdown 假成功。
 
-当前范围之外：原生桌面壳/TUI、缩略图服务、R2、复制/插件后端、OAuth login、namespace move、原图替换、自动 merge、历史 purge、CDN 缓存清除。调试和学习时不要把这些未实现能力误认为现有命令或页面的隐含承诺。
+当前范围之外：TUI、缩略图服务、R2、复制/插件后端、TOUKO 自建 OAuth 凭据管理、namespace move、原图替换、自动 merge、历史 purge、CDN 缓存清除。现有桌面壳保留；本轮操作入口仍是浏览器验收，不能把未来桌面优化或 AUR 发布当成已完成能力。
 
 ### 8.8 Webview：先读状态，再追事件，最后追副作用
 
 这是一份由 Go binary 内嵌的本地网页，不是独立云服务，也不依赖 Node 打包。启动与真实仓库操作见 [Webview 教程](webview.md)。
 
-1. **进程边界**：`serveCommand` 只绑定 `127.0.0.1`，用实际监听端口构造精确 Origin；把 CLI 打开的 Service 借给 `webview.New`。Ctrl+C 取消请求，Shutdown 给正在处理的连接一个收尾窗口；强制关闭连接后仍等待 handler 退出，最后才关闭 SQLite，避免发布收尾与 Store.Close 竞争。
-2. **HTTP 边界**：先读 `Server.ServeHTTP` 的 Host、Origin、Fetch Metadata 和 CSRF 检查，再读 `api` 路由。CSRF 来自每次启动随机 nonce；没有跨域开放，也没有 token 输入/输出接口。静态文件通过白名单和 `embed.FS` 提供，不能下载 state-dir 任意文件。
-3. **一致视图**：`GET /api/state` 调 `Service.ReadView`，一次 Store.Load 同时得到 HEAD、base、changes、journal 与 overlay；不是先 List、再 Load 拼出不同时刻的两个结果。`Server.workMu` 串行本服务的状态操作，文件锁继续阻止其他 CLI 同时修改同一工作区。
-4. **前端状态**：`workspace` 是服务器快照，`filters` 是搜索/namespace/分类/标签/排序，`selected` 是待批量操作的 UUID，`uploadFiles` 只保存尚未发到本机服务的 File/ObjectURL。刷新网页仍能恢复 stage，因为它在 SQLite，不在 localStorage。`refreshSequence` 不让较旧的刷新响应覆盖较新的请求结果。
-5. **上传路径**：`bindEvents → upload → POST /api/upload → Server.upload → Service.Add`。浏览器用 XHR 展示真实传输进度；服务端以私有临时目录流式 spool，检查整批输入后只调用一次 Add。失败显示服务端错误并保留表单；不会显示假成功或自动重试。File ObjectURL 在移除/关闭时 revoke。
-6. **编辑与分类**：`openPreview` 填入真实 metadata，保存时 `list` 拆分中英文逗号/换行，`POST /api/assets/<uuid>/edit` 交给 Service.Edit。分类就是现有平面 Collections；列表替换、留空清空，不改 format v1。DOM 用 textContent 与属性赋值，绝不把标题/标签拼成 HTML。
-7. **原图读取**：`imageSnapshot` 在锁内获取一致视图、打开 staged payload，之后才释放锁。已提交图片由缓存 tree 的 placement 找到 immutable blob，网络读取与原图流不占工作区锁，不追随当前 branch URL。即使别的设备推进分支，未同步页面仍看到自己缓存 HEAD 的图片；private GitHub 的 bytes 由服务端代理，不泄露 token。只缓存一个 tree 的引用映射，不把原图长期留在内存。
-8. **发布与恢复**：`mutate` 禁重复写入并在成功后重新读 state；commit、sync、reset、verify 都回到原 Service coordinator。409/conflict 保留修改并给出处理提示，不自动 reset；reset/移除有明确确认。journal 被单独显示，不根据 toast 猜远端是否成功。
+1. **进程边界**：`serveCommand → webview.Listen` 只绑定 `127.0.0.1`，以实际端口构造 Origin，默认打开浏览器（`--no-open` 禁用）；打开失败报 stderr 而服务继续。`Host.Close` 停止服务、等待 handler，再关闭额外 workspace 的 Service；根 Service 由调用方最后关闭，避免发布收尾与 SQLite Close 竞争。
+2. **HTTP 边界**：先读 `Server.ServeHTTP` 的 Host、Origin、Fetch Metadata 和 CSRF 检查，再读 `api`。每仓库 Server 有独立 Service 与 CSRF；`workspaceSet.serve` 将 `/w/<id>/` 请求绑定其自身实例，不修改共享 service 指针。静态白名单不能下载 state-dir；没有 token 输入/输出接口。
+3. **一致视图与认证**：`GET /api/state → ReadView → Store.Load` 组合 cache 与 durable stage；返回 `local_read` 诚实说明 clone 可用性。`workMu` 串行本服务状态操作，文件锁阻止 CLI 并发修改。`GET /api/auth` 刷新 Resolve 与 login，`/api/repos` 分页列可访问仓库，`/api/branches?repository=OWNER/REPO` 再列该仓库全部分支；普通 gallery/本地图像不调用列表 API。连接窗口只用这两个下拉的返回值构造 Location，不接受自由输入的分支名。
+4. **前端状态**：`workspace` 是服务器快照，filters 增加真实目录，selected 是 UUID，uploadFiles 是待传 File/ObjectURL。刷新仍恢复 stage，因为它在 `workspace.json`，不在 SQLite/localStorage。`workspacePrefix/apiURL` 使 API、上传、原图请求跟随 `/w/<id>/`；连接返回 url 后直接导航，不刷新旧 workspace。旧工作区修改保留。仓库/分支下拉各有递增 sequence：切换仓库先清空旧分支，晚到的旧响应被丢弃，避免把仓库 A 的分支提交给仓库 B。
+5. **上传与导入**：上传 XHR 传 directory/metadata/files，服务端私有临时目录流式 spool 后只调用一次 Add。`openImport → POST /api/import → ImportLegacy` 在固定已初始化快照扫描原图片，返回 imported/skipped，不搬图；必须显式 commit 才写 Git metadata。输入/校验失败不部分 stage，不自动重试或发布。
+6. **编辑、目录与链接**：原 metadata 编辑仍支持多个 tags/collections，留空清空。`assetPath` 用真实 path 或 canonical 派生筛选/显示；Copy Markdown 转义 alt 并派生 Raw/jsDelivr URL。剪贴板 API 受浏览器权限约束，失败提供可手动复制框，不能把“生成正确文本”当作“自动复制成功”。DOM 不拼接不可信 HTML。
+7. **原图读取**：`imageSnapshot` 锁内取一致视图，新增 payload 打开后解锁；导入但未发布的 Asset 在缓存固定 tree 读原 path。已提交 explicit path 从本地 Git 对象库按缓存 tree 取不可变 blob，不能信任可变 checkout 同名文件；缺少本地不可变数据可回退 API。网络流不占工作区锁，不追当前 branch URL；clone 状态与离线能力不伪装。
+8. **发布、同步与重建**：commit/reset 继续原 coordinator；sync 在同锁中先更新 clone 再读，journal 走 API；verify 不 fetch。reindex 使用现有 Service 连接重建，未决 journal 仍需 sync。409/conflict 保留修改、不自动 reset；移除/reset 明确确认，journal 单独显示，toast 不是发布事实。
 
 修改页面前，先决定变化属于“过滤/展示”还是“实际 metadata/发布协议”。前者留在 app.js；后者沿 API → Service → domain/planner 检查，不能在前端写 Git tree 或另存一套分类 JSON。完整接口与各具名函数见 [函数导航的 Webview 章节](function-reference.md#14-internalwebview本地图库边界与浏览器控制器)。
 

@@ -4,7 +4,7 @@
 
 ## 当前交付状态
 
-**最新交接（2026-10-17）。** 上一轮增量实现原样保留在工作区，现已按模块分阶段提交；本文件记录每个阶段的实际提交与实测结果。`logo/` 始终是用户文件，禁止擅自提交或清理。
+**最新交接（2026-10-17）。** 上一轮留在工作区的增量实现已按模块分阶段提交（见下表，HEAD 即阶段 6 的 `docs(memory)` 提交）；本文件记录每个阶段的实际提交与实测结果。`logo/` 始终是用户文件，禁止擅自提交或清理。
 
 本轮在隔离 state（`/tmp/touko-e2e.GzXGj8Ox`）与端口 `17888` 上用真实 `gh` 登录实测（binary `/tmp/touko-review`）：
 
@@ -18,14 +18,16 @@
 
 ### 提交进度（按模块）
 
-| 阶段 | 内容 | 状态 |
+| 阶段 | 内容 | commit |
 | --- | --- | --- |
-| 1 | format v2 / 显式路径 / 原路径 import | 已完成 `3a99579` |
-| 2 | index 恢复（schema2 + workspace.json + reindex） | 已完成 `860f7ca` |
-| 3 | credential 与 GitHub 仓库/分支列表 | 已完成 `3e15310` |
-| 4 | CLI 接线（auth/repo list/reindex/import/serve） | 已完成 `3544720` |
-| 5 | Webview 工作区与仓库/分支联动下拉 | 本轮提交 |
-| 6 | 文档与记忆 | 待提交 |
+| 1 | format v2 / 显式路径 / 原路径 import | `3a99579` |
+| 2 | index 恢复（schema2 + workspace.json + reindex） | `860f7ca` |
+| 3 | credential 与 GitHub 仓库/分支列表 | `3e15310` |
+| 4 | CLI 接线（auth/repo list/reindex/import/serve） | `3544720` |
+| 5 | Webview 工作区与仓库/分支联动下拉 | `1713f27` |
+| 6 | 文档与记忆 | 本节提交 |
+
+每个阶段提交前都在 detached HEAD worktree 里按累计文件集跑过 `go build ./...` 与 `go test ./...`，确认中间提交可编译、可测试；全部提交后再在最终树跑一次 `gofmt -l`、`go vet ./...`、`go test -race -count=1 ./...`（全部通过）。hash 均取自实际 `git log` 输出。
 
 ### 本轮已实现（分阶段提交）
 
