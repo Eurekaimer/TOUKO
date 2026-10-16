@@ -64,6 +64,14 @@ bash examples/github-acceptance.sh "$TOUKO_ACCEPT_REPO"
 unset GITHUB_TOKEN TOUKO_ACCEPT_REPO
 ```
 
+默认只上传 `examples/images/` 里三张自生成样例。若你**希望**把你本机的 `logo/TOUKO.png` 也一起发布到该仓库（公开仓库即对所有人可见），在运行前加上：
+
+```bash
+export TOUKO_ACCEPT_INCLUDE_LOGO=1
+```
+
+不设置该变量时脚本会打印一行说明并跳过你的原图。
+
 失败时脚本非零退出并保留 `/tmp/touko-github.XXXXXXXX` 现场；若报 `expected exit 0, got 1` 且带 `unauthorized`/`404`，通常是 token 权限、仓库名或 README 未勾；若报 `AssertionError`，那是 TOUKO 自身行为不符预期，请把整段输出交给维护者。
 
 ### 脚本断言的内容

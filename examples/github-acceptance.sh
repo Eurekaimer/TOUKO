@@ -60,6 +60,7 @@ printf 'Gallery: %s (branch %s)\n' "$repository" "${branch:-<repository default>
 python3 - "$repository" "$branch" "$binary" "$root" <<'PY'
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -159,9 +160,15 @@ require(len(sources) == 3, f'expected the three shipped fixtures, found {sources
 staged = []
 for source in sources:
     staged.append(cli(a, 'add', source, '--namespace', 'blog', '--tag', 'demo', '--output', 'id').stdout.decode().strip())
-if logo.exists():
+# The user's own artwork is only published when explicitly requested: this script
+# writes to a real repository, and on a public one those bytes become world
+# readable. Default behaviour stages the three generated fixtures only.
+if logo.exists() and os.environ.get('TOUKO_ACCEPT_INCLUDE_LOGO') == '1':
     staged.append(cli(a, 'add', str(logo), '--namespace', 'blog', '--title', 'My TOUKO logo',
                       '--tag', 'demo', '--collection', '项目素材', '--output', 'id').stdout.decode().strip())
+    print(f'note: publishing the local artwork {logo} because TOUKO_ACCEPT_INCLUDE_LOGO=1', flush=True)
+elif logo.exists():
+    print('note: leaving logo/TOUKO.png out of the upload; set TOUKO_ACCEPT_INCLUDE_LOGO=1 to include it', flush=True)
 pending = document(a, 'status', '--json')
 require(pending['changes'] and all(change['kind'] == 'add' for change in pending['changes']),
         f'expected only staged additions, got {pending["changes"]}')
