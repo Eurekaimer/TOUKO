@@ -14,18 +14,16 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 )
 
-// cloneDir is where the working copy of a GitHub repository lives inside the
-// state directory. Pictures there are ordinary files, so a preview reads one
-// with os.Open and no network request is involved.
-func cloneDir(stateDir string) string {
-	return filepath.Join(stateDir, "clone")
-}
-
 // localImage returns a handle to the picture in the working copy when one exists
 // there and matches the recorded size. ok is false when the clone simply does not
 // hold this picture, which is not an error: the caller falls back to the Git API.
 func localImage(stateDir string, asset *domain.Asset) (io.ReadCloser, bool, error) {
-	path := filepath.Join(cloneDir(stateDir), filepath.FromSlash(repository.BuildObjectPath(asset.Namespace, asset.Object)))
+	// PicGo paths are mutable names, not content addresses. Their immutable
+	// snapshot is read from the local Git object database instead of checkout.
+	if asset.Path != "" {
+		return nil, false, nil
+	}
+	path := filepath.Join(repository.CloneDir(stateDir), filepath.FromSlash(repository.ObjectPath(*asset)))
 	file, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil
@@ -78,15 +76,18 @@ func (s *Server) ensureClone(ctx context.Context) error {
 	if s.clone.done[key] {
 		return nil
 	}
-	dir := cloneDir(s.service.Dir)
+	dir := repository.CloneDir(s.service.Dir)
 	// An existing working copy is enough to serve previews, whatever the network
 	// is doing; only a missing one needs the remote.
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 		s.clone.done[key] = true
 		return nil
 	}
-	remote := "https://github.com/" + location.Owner + "/" + location.Name + ".git"
-	if err := localgit.Clone(ctx, remote, dir, location.Branch, s.token); err != nil {
+	token, _, err := s.credentials(ctx, false)
+	if err != nil {
+		return err
+	}
+	if err := localgit.Clone(ctx, location.RemoteURL(), dir, location.Branch, token); err != nil {
 		return err
 	}
 	s.clone.done[key] = true
@@ -100,31 +101,35 @@ func (s *Server) updateClone(ctx context.Context) error {
 	if err != nil || location.Backend != "github" {
 		return err
 	}
-	dir := cloneDir(s.service.Dir)
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-		return s.ensureClone(ctx)
+	s.clone.mu.Lock()
+	defer s.clone.mu.Unlock()
+	dir := repository.CloneDir(s.service.Dir)
+	token, _, err := s.credentials(ctx, false)
+	if err != nil {
+		return err
 	}
-	return localgit.Update(ctx, dir, location.Branch, s.token)
+	if _, err := os.Stat(filepath.Join(dir, ".git")); errors.Is(err, fs.ErrNotExist) {
+		return localgit.Clone(ctx, location.RemoteURL(), dir, location.Branch, token)
+	} else if err != nil {
+		return err
+	}
+	return localgit.Update(ctx, dir, location.Branch, token)
 }
 
 // CloneStatus reports where the working copy lives, for the interface to explain
 // that pictures are read from disk.
 func (s *Server) CloneStatus(ctx context.Context) (bool, string) {
 	location, err := s.service.Location(ctx)
-	if err != nil || location.Backend != "github" {
+	if err != nil {
 		return false, ""
 	}
-	dir := cloneDir(s.service.Dir)
+	if location.Backend == "localgit" {
+		info, err := os.Stat(location.Path)
+		return err == nil && info.IsDir(), location.Path
+	}
+	dir := repository.CloneDir(s.service.Dir)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		return false, dir
 	}
 	return true, dir
-}
-
-// forgetClone drops the remembered state when the selected repository changes,
-// so the next use clones the newly selected one.
-func (s *Server) forgetClone() {
-	s.clone.mu.Lock()
-	defer s.clone.mu.Unlock()
-	s.clone.done = map[string]bool{}
 }

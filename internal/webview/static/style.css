@@ -808,6 +808,7 @@ summary {
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-4);
+  flex-wrap: wrap;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--line);
 }
@@ -828,6 +829,9 @@ summary {
   display: flex;
   align-items: center;
   gap: var(--space-4);
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 .section-actions .subtle {
   font-size: var(--fs-sm);
@@ -836,13 +840,14 @@ summary {
   display: flex;
   align-items: center;
   gap: var(--space-4);
+  flex-wrap: wrap;
   margin: 18px 0 var(--space-5);
 }
 .search-field {
   display: flex;
   align-items: center;
   gap: 9px;
-  flex: 1 1 auto;
+  flex: 1 1 240px;
   max-width: 420px;
   min-width: 0;
   height: 38px;
@@ -890,11 +895,21 @@ summary {
   align-items: center;
   gap: 8px;
   margin-left: auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 .select-field {
   position: relative;
   display: block;
   min-width: 0;
+}
+.toolbar-selects .select-field {
+  flex: 1 1 120px;
+  max-width: 220px;
+}
+.local-read-status {
+  margin: var(--space-4) 0 0;
 }
 /* A chevron drawn into the field keeps the platform arrow (and the dropdown
  * itself) intact while removing the one element that made a select read as a
@@ -1680,13 +1695,25 @@ progress {
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
+.asset-path {
+  min-width: 0;
+  color: var(--ink-secondary);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 .inline-controls {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .inline-controls .select-field {
   flex: 1;
   min-width: 0;
+}
+.delivery-controls .inline-controls .select-field {
+  flex-basis: 100%;
 }
 .delivery-controls > label {
   margin-bottom: 8px;
@@ -1801,6 +1828,7 @@ progress {
 }
 .auth-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
@@ -1813,6 +1841,48 @@ progress {
 }
 .repo-dialog #repo-error,
 .preview-details #edit-error {
+  margin-top: var(--space-4);
+}
+.workspace-picker {
+  margin-bottom: var(--space-5);
+}
+.workspace-picker h3 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+.workspace-links {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 180px;
+  overflow: auto;
+}
+.workspace-link {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+.workspace-link[aria-current="page"] {
+  background: var(--mount);
+  border-color: var(--line-strong);
+}
+#github-fields > label {
+  margin-bottom: 6px;
+}
+#github-fields > .field-help {
+  margin-top: var(--space-2);
+}
+#github-fields select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+#import-result {
   margin-top: var(--space-4);
 }
 
@@ -1937,7 +2007,8 @@ progress {
     margin-left: 0;
   }
   .toolbar-selects .select-field {
-    flex: 1;
+    flex: 1 1 120px;
+    max-width: none;
   }
   .preview-layout {
     grid-template-columns: minmax(0, 1fr);
@@ -2019,7 +2090,7 @@ progress {
   }
   .section-actions {
     gap: 10px;
-    flex-shrink: 0;
+    flex-shrink: 1;
   }
   .section-actions .button {
     min-height: 38px;

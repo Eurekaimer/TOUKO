@@ -41,9 +41,28 @@ type Server struct {
 	// clone holds the working copy's one-time-per-process state; its own mutex
 	// keeps concurrent previews from starting competing clones.
 	clone cloneOnce
+	// Each URL owns one immutable Service. Switching repositories navigates to a
+	// different Server instead of changing the state under in-flight requests.
+	spaces       *workspaceSet
+	workspaceID  string
+	authMu       sync.Mutex
+	authToken    string
+	authSource   string
+	authLogin    string
+	authResolved bool
 }
 
 func New(service *app.Service, token, origin string) (*Server, error) {
+	server, err := newServer(service, token, origin)
+	if err != nil {
+		return nil, err
+	}
+	server.workspaceID = "default"
+	server.spaces = &workspaceSet{root: server, servers: map[string]*Server{"default": server}}
+	return server, nil
+}
+
+func newServer(service *app.Service, token, origin string) (*Server, error) {
 	if service == nil || service.Store == nil {
 		return nil, fmt.Errorf("application service is required")
 	}
@@ -84,15 +103,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusForbidden, "unauthorized", "only same-origin loopback requests are allowed")
 		return
 	}
+	if err := r.Context().Err(); err != nil {
+		s.respondError(w, err)
+		return
+	}
+	if s.spaces != nil && r.Context().Value(workspaceRequest{}) == nil {
+		if strings.HasPrefix(r.URL.Path, "/w/") {
+			s.spaces.serve(w, r)
+			return
+		}
+		if r.URL.Path == "/" && (r.Method == "GET" || r.Method == "HEAD") {
+			target, err := s.spaces.activeURL()
+			if err != nil {
+				s.respondError(w, err)
+				return
+			}
+			if target != "" {
+				http.Redirect(w, r, target, http.StatusSeeOther)
+				return
+			}
+		}
+	}
 	if r.Method != "GET" && r.Method != "HEAD" {
 		if origin != s.origin || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Touko-CSRF")), []byte(s.csrf)) != 1 {
 			s.fail(w, http.StatusForbidden, "unauthorized", "exact Origin and X-Touko-CSRF are required")
 			return
 		}
-	}
-	if err := r.Context().Err(); err != nil {
-		s.respondError(w, err)
-		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api" {
 		s.api(w, r)
@@ -114,6 +150,11 @@ func (s *Server) fail(w http.ResponseWriter, status int, code, message string) {
 	if s.token != "" {
 		message = strings.ReplaceAll(message, s.token, "[redacted]")
 	}
+	s.authMu.Lock()
+	if s.authToken != "" {
+		message = strings.ReplaceAll(message, s.authToken, "[redacted]")
+	}
+	s.authMu.Unlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})

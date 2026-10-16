@@ -24,6 +24,7 @@ type Host struct {
 	connections sync.WaitGroup
 	closeOnce   sync.Once
 	closeErr    error
+	workspaces  *workspaceSet
 }
 
 // Listen starts the same secure loopback surface for browser and MyGo windows.
@@ -42,7 +43,7 @@ func Listen(ctx context.Context, service *app.Service, token string, port int) (
 		return nil, err
 	}
 	requests, cancel := context.WithCancel(ctx)
-	host := &Host{URL: origin, cancel: cancel, done: make(chan struct{})}
+	host := &Host{URL: origin, cancel: cancel, done: make(chan struct{}), workspaces: handler.spaces}
 	host.server = &http.Server{
 		Handler: handler, ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
@@ -92,6 +93,7 @@ func (h *Host) Close() error {
 		<-h.done
 		h.connections.Wait()
 		h.closeErr = errors.Join(h.closeErr, h.serveErr)
+		h.closeErr = errors.Join(h.closeErr, h.workspaces.close())
 	})
 	return h.closeErr
 }

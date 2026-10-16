@@ -23,8 +23,8 @@
 | 1 | format v2 / 显式路径 / 原路径 import | 已完成 `3a99579` |
 | 2 | index 恢复（schema2 + workspace.json + reindex） | 已完成 `860f7ca` |
 | 3 | credential 与 GitHub 仓库/分支列表 | 已完成 `3e15310` |
-| 4 | CLI 接线（auth/repo list/reindex/import/serve） | 本轮提交 |
-| 5 | Webview 工作区与仓库/分支联动下拉 | 待提交 |
+| 4 | CLI 接线（auth/repo list/reindex/import/serve） | 已完成 `3544720` |
+| 5 | Webview 工作区与仓库/分支联动下拉 | 本轮提交 |
 | 6 | 文档与记忆 | 待提交 |
 
 ### 本轮已实现（分阶段提交）

@@ -2,6 +2,7 @@ package webview
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/index"
+	"github.com/Eurekaimer/TOUKO/internal/localgit"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/Eurekaimer/TOUKO/internal/staging"
 )
@@ -41,25 +43,41 @@ func (s *Server) openImage(ctx context.Context, selector string) (io.ReadCloser,
 	if staged != nil {
 		return staged, asset.Object, nil
 	}
-	// A committed picture is served from the local working copy whenever it is
-	// there: reading a file needs no network, no object database and no token.
-	// The clone is materialised on first use, so this normally hits immediately.
-	if err := s.ensureClone(ctx); err != nil {
-		return nil, domain.ContentObject{}, err
-	}
-	if file, ok, err := localImage(s.service.Dir, asset); err != nil {
-		return nil, domain.ContentObject{}, err
-	} else if ok {
-		return file, asset.Object, nil
-	}
-	// Not in the working copy (a repository used before the clone existed, or a
-	// picture the checkout has not reached): fall back to the Git API.
-	git, err := s.backend(ctx)
+	location, err := s.service.Location(ctx)
 	if err != nil {
 		return nil, domain.ContentObject{}, err
 	}
-	path := repository.BuildObjectPath(asset.Namespace, asset.Object)
-	blob, err := s.imageBlob(ctx, git, st, path)
+	var git repository.Git
+	if location.Backend == "github" {
+		if err := s.ensureClone(ctx); err != nil {
+			return nil, domain.ContentObject{}, err
+		}
+		if file, ok, err := localImage(s.service.Dir, asset); err != nil {
+			return nil, domain.ContentObject{}, err
+		} else if ok {
+			return file, asset.Object, nil
+		}
+		local, err := localgit.Open(ctx, repository.CloneDir(s.service.Dir), location.Branch)
+		if err != nil {
+			return nil, domain.ContentObject{}, err
+		}
+		// Explicit PicGo paths can be replaced in a later checkout. Use immutable
+		// Git bytes from the gallery snapshot, not a same-sized live path.
+		if _, err := local.Commit(ctx, st.Head); err == nil {
+			git = local
+		} else if ctx.Err() != nil {
+			return nil, domain.ContentObject{}, ctx.Err()
+		}
+	}
+	if git == nil {
+		// Only a newly API-published snapshot missing from the checkout needs
+		// remote bytes. Ordinary synced galleries, including PicGo, stay local.
+		git, err = s.backend(ctx)
+		if err != nil {
+			return nil, domain.ContentObject{}, err
+		}
+	}
+	blob, err := s.imageBlob(ctx, git, st, repository.ObjectPath(*asset))
 	if err != nil {
 		return nil, domain.ContentObject{}, err
 	}
@@ -98,6 +116,11 @@ func (s *Server) imageSnapshot(ctx context.Context, selector string) (index.Stat
 		}
 		file, err := os.Open(staging.PayloadPath(s.service.Dir, view.Asset.Namespace, view.Asset.Object))
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) && view.Asset.Path != "" {
+				// Imported metadata references an already committed image and has
+				// no newly uploaded staging payload.
+				return st, &view.Asset, nil, nil
+			}
 			return empty, nil, nil, fmt.Errorf("%w: staged image unavailable: %v", domain.ErrRepositoryCorrupt, err)
 		}
 		info, err := file.Stat()
@@ -124,14 +147,20 @@ func (s *Server) imageBlob(ctx context.Context, git repository.Reader, st index.
 	if tree == "" {
 		return repository.GitEntry{}, domain.ErrRepositoryUninitialized
 	}
-	if s.cachedTree != tree {
+	_, known := s.cachedBlobs[path]
+	if s.cachedTree != tree || !known {
 		entries, err := git.Tree(ctx, tree)
 		if err != nil {
 			return repository.GitEntry{}, err
 		}
-		wanted := make(map[string]repository.GitEntry, len(st.Assets))
+		wanted := make(map[string]repository.GitEntry, len(st.Assets)+len(st.Changes))
 		for _, asset := range st.Assets {
-			wanted[repository.BuildObjectPath(asset.Namespace, asset.Object)] = repository.GitEntry{}
+			wanted[repository.ObjectPath(asset)] = repository.GitEntry{}
+		}
+		for _, change := range st.Changes {
+			if change.Asset != nil {
+				wanted[repository.ObjectPath(*change.Asset)] = repository.GitEntry{}
+			}
 		}
 		for _, entry := range entries {
 			if _, ok := wanted[entry.Path]; ok {
@@ -143,7 +172,7 @@ func (s *Server) imageBlob(ctx context.Context, git repository.Reader, st index.
 		s.cachedTree, s.cachedBlobs = tree, wanted
 	}
 	entry, ok := s.cachedBlobs[path]
-	if !ok || entry.Type != "blob" || entry.Mode != "100644" || entry.SHA == "" {
+	if !ok || entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") || entry.SHA == "" {
 		return repository.GitEntry{}, fmt.Errorf("%w: immutable image placement missing", domain.ErrRepositoryCorrupt)
 	}
 	return entry, nil

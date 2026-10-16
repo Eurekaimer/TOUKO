@@ -25,7 +25,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	method := "POST"
 	switch path {
-	case "/api/state", "/api/auth":
+	case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces":
 		method = "GET"
 	}
 	var selector, action string
@@ -50,7 +50,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		switch path {
-		case "/api/state", "/api/auth", "/api/repo", "/api/init", "/api/sync", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify":
+		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify":
 		default:
 			s.fail(w, 404, "usage", "unknown API endpoint")
 			return
@@ -86,11 +86,52 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case path == "/api/state":
 		result, err = s.state(r.Context())
 	case path == "/api/auth":
-		result, err = s.auth(r.Context())
+		result, err = s.authentication(r.Context())
+	case path == "/api/repos":
+		result, err = s.repositories(r.Context())
+	case path == "/api/branches":
+		names := r.URL.Query()["repository"]
+		if len(names) != 1 {
+			err = usage("exactly one repository=OWNER/REPO is required")
+		} else {
+			result, err = s.branches(r.Context(), names[0])
+		}
+	case path == "/api/workspaces":
+		result, err = s.spaces.list(r.Context(), s.workspaceID)
 	case path == "/api/repo":
-		err = s.selectRepository(w, r)
+		result, err = s.selectRepository(w, r)
 	case path == "/api/upload":
 		result, err = s.upload(w, r)
+	case path == "/api/import":
+		var input struct {
+			Directory   string   `json:"directory"`
+			Namespace   string   `json:"namespace"`
+			Tags        []string `json:"tags"`
+			Collections []string `json:"collections"`
+		}
+		if err = decodeJSON(w, r, &input); err == nil {
+			var namespace domain.Namespace
+			namespace, err = domain.ParseNamespace(input.Namespace)
+			if err == nil {
+				var git repository.Git
+				git, err = s.reader(r.Context())
+				if err == nil {
+					result, err = s.service.ImportLegacy(r.Context(), git, app.ImportOptions{Directory: input.Directory, Namespace: namespace, Tags: input.Tags, Collections: input.Collections})
+				}
+			}
+		}
+	case path == "/api/sync":
+		if err = decodeJSON(w, r, &struct{}{}); err == nil {
+			result, err = s.syncRepository(r.Context())
+		}
+	case path == "/api/reindex":
+		if err = decodeJSON(w, r, &struct{}{}); err == nil {
+			var git repository.Git
+			git, err = s.reader(r.Context())
+			if err == nil {
+				result, err = s.service.Reindex(r.Context(), git)
+			}
+		}
 	case path == "/api/remove":
 		var input struct {
 			Selectors []string `json:"selectors"`
@@ -141,13 +182,15 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	default:
 		if err = decodeJSON(w, r, &struct{}{}); err == nil {
 			var git repository.Git
-			git, err = s.backend(r.Context())
+			if path == "/api/verify" {
+				git, err = s.reader(r.Context())
+			} else {
+				git, err = s.backend(r.Context())
+			}
 			if err == nil {
 				switch path {
 				case "/api/init":
 					result, err = s.service.Initialize(r.Context(), git)
-				case "/api/sync":
-					result, err = s.service.Sync(r.Context(), git)
 				case "/api/verify":
 					result, err = s.service.Verify(r.Context(), git)
 				}
@@ -190,7 +233,11 @@ func (s *Server) backend(ctx context.Context) (repository.Git, error) {
 	case "localgit":
 		return localgit.Open(ctx, location.Path, location.Branch)
 	case "github":
-		return github.New(*location, s.token)
+		token, _, err := s.credentials(ctx, false)
+		if err != nil {
+			return nil, err
+		}
+		return github.New(*location, token)
 	default:
 		return nil, fmt.Errorf("unsupported configured backend")
 	}
@@ -218,23 +265,10 @@ func (s *Server) state(ctx context.Context) (any, error) {
 	if st.Publication != nil {
 		publication = map[string]any{"base_head": st.Publication.BaseHead, "candidate_head": st.Publication.CandidateHead, "candidate_tree": st.Publication.CandidateTree}
 	}
-	return map[string]any{"csrf": s.csrf, "location": location, "initialized": st.Manifest != nil, "head": st.Head, "base_head": st.BaseHead, "assets": assets, "changes": changes, "publication": publication, "auth": map[string]bool{"configured": s.token != ""}}, nil
+	available, clonePath := s.CloneStatus(ctx)
+	return map[string]any{"csrf": s.csrf, "location": location, "initialized": st.Manifest != nil, "head": st.Head, "base_head": st.BaseHead, "assets": assets, "changes": changes, "publication": publication, "auth": s.authenticationState(), "local_read": map[string]any{"available": available, "path": clonePath}, "workspace": s.workspaceID}, nil
 }
-func (s *Server) auth(ctx context.Context) (any, error) {
-	if s.token == "" {
-		return map[string]bool{"configured": false}, nil
-	}
-	client, err := github.New(repository.Location{Backend: "github", Owner: "touko", Name: "auth", Branch: "main"}, s.token)
-	if err != nil {
-		return nil, err
-	}
-	login, err := client.User(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"configured": true, "login": login}, nil
-}
-func (s *Server) selectRepository(w http.ResponseWriter, r *http.Request) error {
+func (s *Server) selectRepository(w http.ResponseWriter, r *http.Request) (any, error) {
 	var input struct {
 		Backend    string `json:"backend"`
 		Path       string `json:"path"`
@@ -243,7 +277,7 @@ func (s *Server) selectRepository(w http.ResponseWriter, r *http.Request) error 
 		Repository string `json:"repository"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
-		return err
+		return nil, err
 	}
 	ctx := r.Context()
 	var location repository.Location
@@ -252,22 +286,14 @@ func (s *Server) selectRepository(w http.ResponseWriter, r *http.Request) error 
 	switch input.Backend {
 	case "localgit":
 		if input.Repository != "" || !filepath.IsAbs(input.Path) {
-			return usage("local repository requires an absolute path and no GitHub repository")
+			return nil, usage("local repository requires an absolute path and no GitHub repository")
 		}
 		if input.Branch == "" {
 			input.Branch = "main"
 		}
 		location = repository.Location{Backend: "localgit", Path: filepath.Clean(input.Path), Branch: input.Branch}
 		if err = location.Validate(); err != nil {
-			return usage("%v", err)
-		}
-		// Refuse a switch before creating anything on disk.
-		previous, e := s.location(ctx)
-		if e != nil {
-			return e
-		}
-		if previous != nil && *previous != location {
-			return fmt.Errorf("%w: different repository requires another state-dir", domain.ErrConflict)
+			return nil, usage("%v", err)
 		}
 		if input.Create {
 			git, err = localgit.Init(ctx, location.Path, location.Branch)
@@ -276,31 +302,40 @@ func (s *Server) selectRepository(w http.ResponseWriter, r *http.Request) error 
 		}
 	case "github":
 		if input.Path != "" || input.Create {
-			return usage("GitHub selection does not create a repository or accept a local path")
+			return nil, usage("GitHub selection does not create a repository or accept a local path")
 		}
 		parts := strings.Split(input.Repository, "/")
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return usage("repository must be OWNER/REPO")
+			return nil, usage("repository must be OWNER/REPO")
 		}
-		var client *github.Repository
-		client, err = github.New(repository.Location{Backend: "github", Owner: parts[0], Name: parts[1], Branch: "main"}, s.token)
-		if err != nil {
-			return usage("%v", err)
+		token, _, credentialErr := s.credentials(ctx, false)
+		if credentialErr != nil {
+			return nil, credentialErr
+		}
+		client, clientErr := github.New(repository.Location{Backend: "github", Owner: parts[0], Name: parts[1], Branch: "main"}, token)
+		if clientErr != nil {
+			return nil, usage("%v", clientErr)
 		}
 		location, err = client.Discover(ctx, parts[0], parts[1], input.Branch)
 	default:
-		return usage("backend must be localgit or github")
+		return nil, usage("backend must be localgit or github")
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err = s.service.Select(ctx, location); err != nil {
-		return err
+	target, err := s.spaces.selectLocation(ctx, location)
+	if err != nil {
+		return nil, err
 	}
 	if input.Create {
-		_, err = s.service.Initialize(ctx, git)
+		if _, err = target.service.Initialize(ctx, git); err != nil {
+			return nil, err
+		}
 	}
-	return err
+	if err := s.spaces.remember(target.workspaceID); err != nil {
+		return nil, err
+	}
+	return map[string]any{"url": workspaceURL(target.workspaceID), "location": location}, nil
 }
 func (s *Server) assetURL(r *http.Request, selector string) (any, error) {
 	provider := r.URL.Query().Get("provider")
@@ -323,7 +358,7 @@ func (s *Server) assetURL(r *http.Request, selector string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	url, err := delivery.BuildURL(*location, repository.BuildObjectPath(view.Asset.Namespace, view.Asset.Object), delivery.Provider(provider))
+	url, err := delivery.BuildURL(*location, repository.ObjectPath(view.Asset), delivery.Provider(provider))
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +454,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) (any, error) {
 			inputs = append(inputs, app.Input{Reader: contextReader{r.Context(), file}, Name: part.FileName()})
 		} else {
 			switch name {
-			case "namespace", "title", "tags", "collections":
+			case "namespace", "directory", "title", "tags", "collections":
 			default:
 				return nil, usage("unknown multipart field %q", name)
 			}
@@ -446,7 +481,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) (any, error) {
 	if err != nil {
 		return nil, usage("%v", err)
 	}
-	options := app.AddOptions{Namespace: namespace}
+	options := app.AddOptions{Namespace: namespace, Directory: fields["directory"]}
 	if title, ok := fields["title"]; ok {
 		options.Title = &title
 	}

@@ -139,7 +139,7 @@
             <strong id="repo-name">尚未连接</strong>
             <p id="repo-detail">连接仓库后，图片就归档在这里。</p>
             <button type="button" class="text-button" id="open-repo">
-              连接仓库
+              连接 / 切换仓库
             </button>
           </div>
         </div>
@@ -207,6 +207,7 @@
             </p>
           </section>
           <div id="page-error" class="notice error" role="alert" hidden></div>
+          <p id="local-read-status" class="field-help local-read-status" role="status"></p>
           <section class="setup-banner" id="setup-banner" hidden>
             <div>
               <strong id="setup-title"></strong>
@@ -241,6 +242,12 @@
                 >
                   <svg class="icon"><use href="#i-check" /></svg>校验仓库
                 </button>
+                <button type="button" class="button subtle" id="reindex" data-mutation>
+                  重建索引
+                </button>
+                <button type="button" class="button subtle" id="open-import">
+                  导入旧图库 / PicGo
+                </button>
               </div>
             </div>
             <div class="gallery-toolbar">
@@ -249,7 +256,7 @@
                 ><input
                   type="search"
                   id="search"
-                  placeholder="搜索标题、文件名、标签…"
+                  placeholder="搜索标题、文件名、路径、标签…"
                   aria-label="搜索图片"
                 /><kbd>/</kbd></label
               >
@@ -258,6 +265,11 @@
                   ><label class="sr-only" for="namespace-filter">命名空间</label
                   ><select id="namespace-filter">
                     <option value="">全部命名空间</option></select
+                  ></span
+                ><span class="select-field"
+                  ><label class="sr-only" for="directory-filter">仓库路径目录</label
+                  ><select id="directory-filter">
+                    <option value="">全部路径目录</option></select
                   ></span
                 ><span class="select-field"
                   ><label class="sr-only" for="sort">图片排序</label
@@ -371,6 +383,9 @@
               ></textarea>
             </label>
           </div>
+          <label>目标目录（可选）<input id="upload-directory" placeholder="例如 images/blog，留空使用默认内容路径" />
+            <small>相对仓库根目录，使用 / 分隔；图片以内容哈希命名，不覆盖原文件名。</small>
+          </label>
           <p class="field-help">
             标签和分类可以用中文逗号、英文逗号或换行分隔。分类之间是平级关系，不分层级。
           </p>
@@ -390,6 +405,38 @@
           >
             <svg class="icon"><use href="#i-upload" /></svg>加入待发布
           </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="import-dialog" class="dialog" aria-labelledby="import-heading">
+      <div class="dialog-header">
+        <h2 id="import-heading">导入旧图库 / PicGo</h2>
+        <button type="button" class="icon-button" data-close aria-label="关闭旧图库导入">
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <form id="import-form">
+        <div class="dialog-body">
+          <p class="muted intro">扫描仓库固定 HEAD 中已有的 PNG、JPEG 和 GIF，保留原路径与旧链接；不会重新上传或移动图片。导入只暂存管理元数据，不会自动发布。</p>
+          <p id="import-initialization" class="notice warning" hidden>此仓库尚未初始化。请关闭此窗口，先同步已有 TOUKO 图库，或明确点击「初始化 TOUKO」，再回来导入。初始化不会自动导入旧图片。</p>
+          <label>扫描目录（可选）<input id="import-directory" placeholder="例如 img，留空扫描全仓库" />
+            <small>相对仓库根目录，使用 / 分隔。</small>
+          </label>
+          <label>命名空间<input id="import-namespace" value="default" pattern="[a-z0-9][a-z0-9_-]{0,62}" maxlength="63" required />
+            <small>小写字母、数字、下划线或连字符</small>
+          </label>
+          <div class="form-grid">
+            <label>标签<textarea id="import-tags" rows="2" placeholder="旧图库，PicGo"></textarea></label>
+            <label>分类<textarea id="import-collections" rows="2" placeholder="旧照片，旅行记录"></textarea></label>
+          </div>
+          <p class="field-help">标签和分类可用中文逗号、英文逗号或换行分隔。已管理的图片会跳过，导入后请到「待发布」检查并显式提交。</p>
+          <div id="import-error" class="notice error" role="alert" hidden></div>
+          <div id="import-result" class="notice success" role="status" hidden></div>
+        </div>
+        <div class="dialog-footer">
+          <span class="muted">保留原路径，仅加入待发布</span>
+          <button type="submit" class="button primary" id="import-submit" data-mutation>扫描并暂存</button>
         </div>
       </form>
     </dialog>
@@ -420,6 +467,7 @@
         </div>
         <form id="edit-form" class="preview-details">
           <div id="preview-state" class="asset-state"></div>
+          <label>仓库真实路径<span id="asset-path" class="asset-path"></span></label>
           <label>标题<input id="edit-title" /></label
           ><label>标签<textarea id="edit-tags" rows="2"></textarea></label
           ><label
@@ -442,6 +490,9 @@
                 ></span
               ><button type="button" class="button secondary" id="copy-url">
                 <svg class="icon"><use href="#i-copy" /></svg>复制链接
+              </button>
+              <button type="button" class="button secondary" id="copy-markdown">
+                <svg class="icon"><use href="#i-copy" /></svg>复制 Markdown
               </button>
             </div>
             <input
@@ -555,6 +606,10 @@
             图片和元数据保存在你自己的 Git 仓库里。TOUKO
             只管理工作区，不接管你的凭据。
           </p>
+          <section class="workspace-picker" aria-labelledby="workspace-heading">
+            <h3 id="workspace-heading">已连接工作区</h3>
+            <div id="workspace-links" class="workspace-links"></div>
+          </section>
           <label
             >仓库类型<span class="select-field"
               ><select id="repo-type">
@@ -574,49 +629,56 @@
                 >填写一个尚不存在或为空的目录，将创建 bare Git 仓库。</small
               ></label
             >
-          </div>
-          <div id="github-fields" hidden>
             <label
-              >GitHub 仓库<input
-                id="repo-github"
-                placeholder="OWNER / REPO"
+              >分支<input
+                id="repo-branch"
+                placeholder="main"
                 autocomplete="off"
             /></label>
+          </div>
+          <div id="github-fields" hidden>
+            <label id="repo-choices-label" for="repo-choices">可访问的 GitHub 仓库</label>
+            <span class="select-field">
+              <select id="repo-choices" aria-describedby="repo-choice-help" required disabled>
+                <option value="">尚未读取仓库</option>
+              </select>
+            </span>
+            <p id="repo-choice-help" class="field-help" role="status">打开后自动读取全部仓库，显示公开 / 私有与写入权限。只读仓库可以浏览，但不能发布。</p>
+            <label for="repo-branches">GitHub 分支</label>
+            <span class="select-field">
+              <select id="repo-branches" aria-describedby="repo-branch-help" required disabled>
+                <option value="">请先选择仓库</option>
+              </select>
+            </span>
+            <p id="repo-branch-help" class="field-help" role="status">选择仓库后读取全部分支，优先选择默认分支；受保护分支仍可选择，但发布须遵守仓库规则。</p>
             <p class="field-help">
               请先在 GitHub 创建图片仓库，并勾选添加 README。不要使用 TOUKO
               的代码仓库存图片。
             </p>
           </div>
-          <label
-            >分支<input
-              id="repo-branch"
-              placeholder="main（GitHub 留空使用默认分支）"
-              autocomplete="off"
-          /></label>
           <div class="repo-security">
             <strong>凭据留在服务端</strong>
             <p>
-              写入 GitHub 需要先在启动 TOUKO 的终端里设置
-              <code>GITHUB_TOKEN</code>，并授予目标仓库 Contents
-              读写权限，然后重启服务。这个页面不接收、也不保存 token。
+              在终端运行 <code>touko auth login</code> 使用 GitHub CLI 登录，或配置
+              <code>GITHUB_TOKEN</code> / <code>GH_TOKEN</code>，并授予目标仓库 Contents
+              读写权限。已有 gh 登录可直接读取，无需重启；这个页面不接收、也不保存 token。
             </p>
             <div class="auth-line">
-              <span id="auth-status">尚未检查凭据</span
+              <span id="auth-status" role="status">尚未检查凭据</span
               ><button type="button" class="text-button" id="check-auth">
-                检查 GitHub 身份
+                重新读取 GitHub 登录与仓库
               </button>
             </div>
           </div>
           <p class="field-help">
-            一个工作区只连接一个仓库。要换仓库，请用新的
-            <code>--state-dir</code>
-            重新启动服务；已有缓存和待发布修改不会被覆盖。连上已有仓库后，请手动同步或初始化。
+            每个仓库与分支使用独立工作区，索引、待发布修改和发布日志互不混用。
+            连接后直接导航到该工作区，原有修改不会丢失。连上已有仓库后，请手动同步；旧图库需显式初始化和导入。
           </p>
           <div id="repo-error" class="notice error" role="alert" hidden></div>
         </div>
         <div class="dialog-footer">
           <span class="muted">连接操作都在本机服务内完成</span
-          ><button type="submit" class="button primary" data-mutation>
+          ><button id="repo-connect" type="submit" class="button primary" data-mutation>
             连接仓库
           </button>
         </div>
