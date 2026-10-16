@@ -27,7 +27,8 @@
 | --- | --- | --- |
 | 7 | 桌面壳：托盘、窗口图标、关闭即隐藏、菜单（含两处 MyGo 陷阱修复） | `2f86b44` |
 | 8 | 本地打包：PKGBUILD、桌面条目、图标阶梯、生成脚本 | `0d6cba3` |
-| 9 | 文档与记忆 | 本节提交 |
+| 9 | 文档与记忆 | `e8f5e70` |
+| 10 | 托盘点击接线（Linux 为 no-op）+ 记忆补充与挂起任务 | `384b691`、本节提交 |
 
 ### 本地包（用户可直接测）
 
@@ -48,6 +49,18 @@ rm -f ~/.local/share/icons/hicolor/*/apps/touko.png
 ```
 
 未完成：完整进程树内存量测（含 renderer）、桌面壳剪贴板权限实测（权限处理器仍一律拒绝 camera/microphone/geolocation/notifications，页面复制仍回退手动复制框）、512px 图标、AUR 发布准备。
+
+### 用户当前挂起的要求（下一轮按此顺序）
+
+1. **托盘单击直接打开 GUI（未达成，有技术约束）**：用户要求单击托盘图标就弹出窗口。现状是单击只会弹出菜单（第一个条目就是“显示主窗口”，所以要两下）。根因：GNU/Linux 的托盘走 AppIndicator/StatusNotifierItem，宿主在单击时显示菜单，而 mygo 0.5.5 的 Linux 托盘**没有**绑定 SNI 的 `Activate`/`SecondaryActivate`，也不存在 `app_indicator_set_secondary_activate_target`，因此应用收不到单击事件。代码里已调用 `tray.OnClick(...)`（在报告点击事件的平台——macOS 菜单栏、Windows 通知区域——表现为单击即显示窗口；**本机未验证**，Linux 上是 no-op）。要做到 Linux 单击打开，需要升级/补丁 mygo（暴露 Activate 或次要激活目标），或自己实现 SNI；不要靠给菜单加假条目糊弄。
+2. 完整进程树内存量测（含 WebKitWebProcess/WebKitNetworkProcess），区分空闲/图库加载/上传。
+3. 桌面壳剪贴板权限实测（当前一律拒绝，页面“复制”仍回退手动复制框）。
+4. 512px 图标（当前阶梯到 256）。
+5. MyGo 体验确认后做 AUR 发布（发布版要固定 tag 的源码包 + 校验和）。
+
+### “退出后托盘里还有 TOUKO”的结论（已查清，不是退出不完整）
+
+用户报告退出 TOUKO 后托盘仍留图标。实际原因是**主代理遗留的旧测试进程**：`/tmp/touko-desktop-tray3`（pid 545884，早于 quitting 标志修复的构建）被 `pkill` 打到后进入挂起的优雅退出（`Window.OnClose` 的 `PreventDefault` 取消了整次退出），进程与托盘项一起留在会话总线上 8 分钟。杀掉它后 `RegisteredStatusNotifierItems` 里的 `mygo_*` 立刻消失。当前构建反复实测：托盘“退出”与 SIGTERM 都是 **exit 0 + 端口释放 + 托盘项注销**（`touko-final-check` 走托盘菜单退出，退出码 0）。以后自查顺序：先 `ps` 确认没有旧实例，再看 `gdbus ... RegisteredStatusNotifierItems`。
 
 （第二轮 commit hash 记录见下表；第一轮实测与架构记录保留在下方。）
 

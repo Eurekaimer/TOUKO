@@ -154,6 +154,14 @@ func (s session) addTray() error {
 	if err != nil {
 		return err
 	}
+	// A single click opens the window where the platform reports tray clicks
+	// (macOS menu bar, Windows notification area). On Linux the indicator host
+	// shows the menu instead — AppIndicator reports no click event — so there the
+	// first item is the way back to the window.
+	tray.OnClick(func() {
+		s.window.Show()
+		s.window.Focus()
+	})
 	trayMu.Lock()
 	defer trayMu.Unlock()
 	trayHandle, trayMenuRef = tray, menu
