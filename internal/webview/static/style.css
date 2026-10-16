@@ -2,27 +2,21 @@
  *
  * Subject: a private, Git-backed image notebook. The page is one material —
  * album paper — and the pictures are mounted on it. Two typefaces only:
- * Newsreader (italic serif) for words that belong to the collector, IBM Plex
- * Sans SC for every word the product says, Latin, Chinese or digit.
+ * Monaspace Radon (oblique display) for words that belong to the collector,
+ * IBM Plex Sans SC for every word the product says, Latin, Chinese or digit.
  * Colour: cream paper, uniform navy ink, coral for what is staged or active,
  * sakura only for destructive actions, kraft for "not on the remote yet".
  */
 
 /* --- Fonts ------------------------------------------------------------- */
-/* Newsreader ships as an italic-only subset here, so it is a caption and
- * display face by construction and is never asked to set roman text. */
+/* Monaspace Radon covers no CJK by design, so it is a Latin-only display face;
+ * the IBM Plex Sans SC fallback after it holds Chinese titles. */
 @font-face {
-  font-family: Newsreader;
-  src: url("/fonts/newsreader-italic-latin.woff2") format("woff2");
-  font-style: italic;
-  font-weight: 300 600;
-  font-display: swap;
-}
-@font-face {
-  font-family: Newsreader;
-  src: url("/fonts/newsreader-italic-latin-ext.woff2") format("woff2");
-  font-style: italic;
-  font-weight: 300 600;
+  font-family: "Monaspace Radon";
+  src: url("/fonts/monaspace-radon-var.woff2") format("woff2-variations");
+  font-style: oblique 0deg 11deg;
+  font-weight: 200 800;
+  font-stretch: 100% 125%;
   font-display: swap;
 }
 /* One family covers Latin and CJK, so a line never changes typeface halfway. */
@@ -78,8 +72,8 @@
     "IBM Plex Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
     system-ui, -apple-system, sans-serif;
   --font-display:
-    "Newsreader", "Iowan Old Style", Georgia, "IBM Plex Sans SC", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", serif;
+    "Monaspace Radon", "IBM Plex Sans SC", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", ui-monospace, monospace;
   --fs-micro: 0.6875rem; /* 11px — file metadata */
   --fs-xs: 0.75rem; /* 12px — captions, help */
   --fs-sm: 0.8125rem; /* 13px — chrome */
@@ -622,7 +616,7 @@ summary {
   color: var(--ink);
   font-family: var(--font-display);
   font-size: var(--fs-display);
-  font-style: italic;
+  font-style: oblique 8deg;
   font-weight: 400;
   line-height: var(--lh-tight);
   letter-spacing: -0.01em;
@@ -908,7 +902,7 @@ progress {
   margin: 0;
   font-family: var(--font-display);
   font-size: var(--fs-lg);
-  font-style: italic;
+  font-style: oblique 6deg;
   font-weight: 400;
   line-height: 1.3;
 }
