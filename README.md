@@ -30,7 +30,7 @@ go build -o /tmp/touko ./cmd/touko
 
 浏览器打开终端打印的 `http://127.0.0.1:7788`。空工作区可在界面创建本地 Git 图库或连接专用 GitHub 仓库。支持拖入多图、原图预览、标题/标签/分类编辑、筛选搜索、多选移除、待发布批次、提交、同步及完整校验。上传只暂存到本机，**提交后才发布**。
 
-奶油米色与深藏蓝配色，七海灯子的 favicon，内嵌 Monaspace Radon 与 IBM Plex Sans SC 字体（均 SIL OFL，字体名保留）；无需 Node 构建或运行时 CDN。只监听本机，GitHub token 仅从服务进程的 `GITHUB_TOKEN` 读取，不进入网页。
+奶油米色与深藏蓝配色，七海灯子的 favicon，内嵌 Monaspace Radon（英数）与 LXGW 文楷（中文）字体（均 SIL OFL）；无需 Node 构建或运行时 CDN。只监听本机，GitHub token 仅从服务进程的 `GITHUB_TOKEN` 读取，不进入网页。
 
 完整启动、安全边界和真实 GitHub 验收步骤见 [Webview 教程](docs/webview.md)。原图预览不是缩略图服务；本地和 private GitHub 不生成公网分发链接。
 

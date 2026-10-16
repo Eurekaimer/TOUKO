@@ -13,7 +13,7 @@ go build -o /tmp/touko-web ./cmd/touko
 
 在浏览器打开终端打印的 `http://127.0.0.1:7788`。端口占用时换 `--port 7789`；`--port 0` 自动选择可用端口，以打印结果为准。使用打印的127.0.0.1地址，不改成localhost/局域网IP。Ctrl+C 停止服务；state-dir 保留，下次相同命令继续。
 
-不需要 npm、Node、外部字体服务或数据库进程。HTML/CSS/JS、字体和 favicon 都嵌入 Go binary。界面正文（拉丁字母、数字与中文）统一使用自托管的 IBM Plex Sans SC，展示性标题使用 Monaspace Radon。
+不需要 npm、Node、外部字体服务或数据库进程。HTML/CSS/JS、字体和 favicon 都嵌入 Go binary。拉丁字母与数字使用自托管的 Monaspace Radon，中文使用 LXGW 文楷，左上角字标使用子集化的圆几何字体。
 
 ### 先用离线 demo 体验
 
@@ -138,4 +138,4 @@ unset GITHUB_TOKEN
 
 色板来自用户指定方向：奶油米色与深藏蓝呼应校服，珊瑚橙作界面强调色，暗樱红只用于破坏性操作与「已修改」，卡纸色调用于侧栏与图片区。设计方向为克制的编辑式排版——两个明确区分的字体族、细线只用于分隔层级、中文正文使用自托管字体并保留充足行距。修正过程参照 Anthropic 公开的 `frontend-design` skill（含其列出的「AI 生成页面」常见特征清单），避免把默认模板特征误当设计。
 
-界面正文（拉丁字母、数字与中文）统一使用自托管的 IBM Plex Sans SC；拉丁展示性标题与品牌字使用 Monaspace Radon（斜体轴 slnt），中文标题自动回退到 Plex SC。两者均为 SIL OFL，许可证随字体内嵌。原图 `logo/TOUKO.png` 保持不变，页面内只使用从它派生的 favicon（`favicon.png`），不再放角色图条带；不主张角色或原图版权，分发衍生图片前应自行确认授权。界面无需外部 CDN 即可显示字体、图标与 favicon。
+英数与拉丁文本使用自托管的 Monaspace Radon（oblique 走 slnt 轴），中文使用 LXGW 文楷（霞鹜文楷，楷体正文面），左上角 TOUKO 字标另有子集化的圆几何字体。三者均为 SIL OFL，许可证随字体内嵌；LXGW 的附加许可明确允许为 web 交付子集化为 WOFF2。原图 `logo/TOUKO.png` 保持不变，页面内只使用从它派生的 favicon（`favicon.png`），不再放角色图条带；不主张角色或原图版权，分发衍生图片前应自行确认授权。界面无需外部 CDN 即可显示字体、图标与 favicon。

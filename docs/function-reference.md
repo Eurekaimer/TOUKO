@@ -553,7 +553,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `(*Server).openImage` | staged reader直接返回；已提交记录在释放状态锁后按captured tree找blob、校验size、OpenBlob。网络/图片流不占workMu，不使用branch外链redirect。 |
 | `(*Server).imageSnapshot` | workMu+Service.Lock下ReadView并按完整UUID查可见Asset；新增payload先Open和Stat再解锁，避免reset/commit unlink竞态。staged delete不可见。 |
 | `(*Server).imageBlob` | 由cached tree与canonical path查GitEntry；首次Tree读取后只保留该tree被引用的placement映射。检查mode/type/SHA；只缓存一棵树、不缓存binary，缺对象明确corrupt。 |
-| `staticHandler` | embed.FS内固定资源白名单的GET/HEAD服务：HTML/JS/CSS、favicon、内嵌字体（Monaspace Radon、IBM Plex Sans SC）与各自OFL许可证。 | 
+| `staticHandler` | embed.FS内固定资源白名单的GET/HEAD服务：HTML/JS/CSS、favicon、内嵌字体（Monaspace Radon、LXGW 文楷、字标子集）与各自OFL许可证。 | 
 
 ### [`static/app.js`](../internal/webview/static/app.js)：按用户操作查函数
 

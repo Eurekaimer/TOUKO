@@ -24,8 +24,11 @@ func staticHandler() http.Handler {
 		switch r.URL.Path {
 		case "/", "/app.js", "/style.css", "/favicon.png",
 			"/fonts/monaspace-radon-var.woff2",
-			"/fonts/plex-sc-regular.woff2", "/fonts/plex-sc-medium.woff2",
-			"/fonts/Monaspace-OFL.txt", "/fonts/Plex-OFL.txt":
+			"/fonts/lxgw-wenkai-regular.woff2",
+			"/fonts/lxgw-wenkai-medium.woff2",
+			"/fonts/wordmark-quicksand.woff2",
+			"/fonts/Monaspace-OFL.txt", "/fonts/LXGW-OFL.txt",
+			"/fonts/Quicksand-OFL.txt":
 			server.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
