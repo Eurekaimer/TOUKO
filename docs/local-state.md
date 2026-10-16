@@ -1,30 +1,33 @@
 # Local state
 
-State directory precedence: `--state-dir`, `TOUKO_HOME`, `$XDG_DATA_HOME/touko`, then `$HOME/.local/share/touko`. Directory permissions are 0700; database, config and staged files are 0600. A stable `.lock` uses nonblocking OS file locking; a busy operation fails instead of deleting a supposedly stale lock.
+State directory precedence: `--state-dir`, `TOUKO_HOME`, `$XDG_DATA_HOME/touko`, then `$HOME/.local/share/touko`. Directory permissions are 0700; database, config, durable workspace and staged files are 0600. A stable `.lock` uses nonblocking OS file locking; a busy operation fails instead of deleting a supposedly stale lock.
 
-`config.json` selects a repository (`backend,branch,path,owner,name,private`). It never stores credentials. The SQLite `index.db` uses schema/user_version 1, WAL, foreign keys and one connection. Its committed snapshot is a rebuildable cache; **changes and publication journal are unpublished state**. Removing the database loses unpublished work. With empty staging, keeping config and running sync can reconstruct the committed gallery.
+`config.json` selects a repository (`backend,branch,path,owner,name,private`). It never stores credentials. SQLite `index.db` uses schema/user_version **2**, WAL, foreign keys and one connection. It contains only rebuildable committed cache: `repository_state` (`head,tree,manifest`) and `assets`. It has no `changes` or `publication` table and no staging-base column.
 
-Ingest streams a source once into a synced temporary file while computing SHA-256 and size (maximum 100,000,000 bytes); dimensions and PNG/JPEG/GIF format come from that file's header. Staged placements are `stage/objects/<namespace>/<hash>.<ext>`. Existing placements are checked rather than overwritten. A failed batch leaves no partial staged records and releases only payloads without other staged references.
+`workspace.json` is the independent durable source for unpublished work: workspace `version:1`, optional `repository_id`, `base_head`, `changes`, and optional `publication` (`BaseHead,CandidateHead,CandidateTree`). Workspace version 1 is not SQLite schema 1 or repository format v1. Image payloads remain in `stage/objects/`. Preserve the full state directory when backing up unpublished work; deleting schema2 `index.db` does **not** delete stage/journal, but losing `workspace.json` or needed payloads cannot be repaired from committed Git history.
 
-First change binds staging to the committed HEAD. Add/edit stays add; add/remove cancels; committed edits merge; remove after edit becomes delete. Repeated deletion is harmless; edit after staged deletion conflicts. Selectors resolve against committed IDs plus staged adds before deletion state is checked. Multi-selector removal is atomic. Tags and collections are trimmed, sorted, deduplicated and case-preserving. Read views overlay staging; they hide deletions and label records committed/added/modified.
+`Store.Load` joins the durable workspace with a consistent SQLite cache transaction under the Store mutex. `Save` validates both halves, commits the cache transaction **first**, then replaces the durable workspace through a 0600 temporary file, file sync/close, rename and directory sync. These are not one cross-resource transaction. If workspace replacement fails after cache commit, an advanced cache may coexist with the old stage/journal; that recovery evidence must remain until `sync` reconciles it. A post-rename directory-sync error is reported too; inspect/reconcile state rather than assuming rollback. `SavePublication` changes only the durable workspace and must succeed before publishing a remote ref.
 
-`reset --staged` discards all unpublished local changes; it does not change remote history. An unresolved publication must be reconciled with the remote before discarding its journal.
+## Schema1 migration and cache recovery
 
-## The local checkout
+Opening a healthy legacy schema1 database automatically validates and durably copies its stage/base/journal to `workspace.json` **before** a SQLite transaction drops legacy tables/column and sets schema 2. An interrupted migration can resume if the two copies agree; disagreement or invalid staged data fails without deleting the legacy source. A schema1 database destroyed before this durable copy existed may contain the only unpublished records: reindex cannot invent them, and refuses unreadable legacy state. Preserve the original and recover a readable backup.
 
-For a GitHub repository, TOUKO keeps a working copy at `<state-dir>/clone`. It is
-a shallow clone of the selected branch (`--depth 1`), so the files on disk are
-the pictures as they exist now, not every version ever pushed; a re-encoded
-image would otherwise store a whole extra blob in history and inflate the
-checkout with material TOUKO never reads.
+Use `touko reindex`, not manual file deletion, to recover deleted, physically corrupt, or logically invalid committed cache. This CLI path does not require `app.Open` to succeed. It acquires the workspace lock, loads durable work independently, fixes one source HEAD and verifies the complete snapshot including image bytes before rebuilding. Healthy databases are updated in place; a physically corrupt closed database and its WAL/SHM files are preserved in `index-corrupt-*` before replacement. The running Web server uses `Service.Reindex` on its existing connection rather than replacing an open database.
 
-Previews read that directory directly. `sync`, `verify` and `reset` read through
-it too, which is why listing a gallery, hashing every picture and inspecting
-remote relationships cost no GitHub API calls and work with no connection. Only
-writes (`commit`, `repo init`) use the API.
+Reindex retains changes and publication. Stage without a journal conflicts if the source HEAD differs from its base; it is never silently rebased. A pending journal is **not resolved by reindex**: after rebuilding, run `sync` against the GitHub API recovery backend. A shallow clone cannot prove candidate ancestry or necessarily read unpublished candidate/base commits. Missing/damaged durable workspace is not treated as empty stage.
 
-The checkout is created the first time a GitHub repository is used. It is safe
-to delete: the next `sync` recreates it. Refreshing it belongs to `sync` and
-never to a preview, so a machine that is offline still shows the pictures it
-already has, and a clone that is genuinely missing fails with the clone error
-rather than pretending the picture is unavailable.
+## Staging
+
+Ingest streams a source once into a synced temporary file while computing SHA-256 and size (maximum 100,000,000 bytes); dimensions and PNG/JPEG/GIF format come from that file's header. Staged payloads are `stage/objects/<namespace>/<hash>.<ext>`, independently of their eventual canonical/custom repository placement. Existing payloads are checked rather than overwritten. A failed batch leaves no partial staged records and releases only payloads without other staged references. Importing existing Git images stages original-path metadata, not duplicate local payloads.
+
+First change binds staging to committed HEAD. Add/edit stays add; add/remove cancels; committed edits merge; remove after edit becomes delete. Repeated deletion is harmless; edit after staged deletion conflicts. Selectors resolve against committed IDs plus staged adds before deletion state is checked. Multi-selector removal is atomic. Tags and collections are trimmed, sorted, deduplicated and case-preserving. Read views overlay staging; they hide deletions and label records committed/added/modified.
+
+`reset --staged` discards unpublished local changes, not remote history. With a journal it must reconcile authoritative remote relationships first (GitHub API, not shallow clone). Without a journal, GitHub CLI reset sends no HTTP requests after constructing its backend; CLI localgit still opens the selected repository, so a missing local repository can prevent reset. Web uses a lazy backend for ordinary reset.
+
+## The local checkout and Web workspaces
+
+For GitHub repositories, `<state-dir>/clone` is a shallow selected-branch clone (`--depth 1`), not a complete history backup. Ordinary `sync` holds the same workspace lock while it creates/updates this clone **before** reading its fixed HEAD and saving the snapshot; it requires network access. Journal recovery instead reads GitHub API relationships/candidates, then refreshes the clone after successful recovery. API writes remain the publication mechanism, not `git push`.
+
+`verify` checks the **current local clone** without fetch; its success does not prove the latest remote branch was checked. Previews prefer local images and do not refresh the clone. Original explicit paths are read from immutable cached-tree Git blobs, not blindly from mutable checkout filenames. Missing local immutable data may require the existing API fallback; do not promise every preview works offline. A missing clone can be recreated by explicit sync; removing it never discards durable stage, but eliminates local read availability until restored.
+
+Web routes `/w/<workspace-key>/` bind separate Server/Service instances. The existing root state remains `default`; additional repositories live under `<state-root>/workspaces/<stable-key>/`, each with its own config/cache/clone/workspace/payloads. Connecting or navigating another workspace does not replace a shared Service pointer or discard the former workspace's unpublished work. CLI selects a single state directory per invocation.

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
@@ -31,7 +32,9 @@ type State struct {
 }
 
 type Store struct {
-	DB *sql.DB
+	DB  *sql.DB
+	dir string
+	mu  sync.Mutex
 }
 
 const schema = `
@@ -39,19 +42,11 @@ CREATE TABLE repository_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     head TEXT NOT NULL,
     tree TEXT NOT NULL,
-    manifest BLOB,
-    staging_base_head TEXT NOT NULL
+    manifest BLOB
 );
-INSERT INTO repository_state (singleton, head, tree, manifest, staging_base_head) VALUES (1, '', '', NULL, '');
+INSERT INTO repository_state (singleton, head, tree, manifest) VALUES (1, '', '', NULL);
 CREATE TABLE assets (id TEXT PRIMARY KEY, metadata BLOB NOT NULL);
-CREATE TABLE changes (asset_id TEXT PRIMARY KEY, kind TEXT NOT NULL, metadata BLOB);
-CREATE TABLE publication (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    base_head TEXT NOT NULL,
-    candidate_head TEXT NOT NULL,
-    candidate_tree TEXT NOT NULL
-);
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 `
 
 func Open(ctx context.Context, stateDir string) (*Store, error) {
@@ -85,7 +80,7 @@ func Open(ctx context.Context, stateDir string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	s := &Store{DB: db}
+	s := &Store{DB: db, dir: filepath.Dir(path)}
 	if err := s.initialize(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("open index: %w", err)
@@ -98,7 +93,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := s.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 && version != 1 {
+	if version < 0 || version > 2 {
 		return corrupt("unsupported SQLite user_version %d", version)
 	}
 	for _, pragma := range []string{"PRAGMA journal_mode = WAL", "PRAGMA foreign_keys = ON"} {
@@ -107,7 +102,20 @@ func (s *Store) initialize(ctx context.Context) error {
 		}
 	}
 	if version == 1 {
-		return nil
+		return s.migrate(ctx)
+	}
+	if version == 2 {
+		_, err := LoadWorkspace(ctx, s.dir)
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(s.dir, workspaceName)); errors.Is(err, os.ErrNotExist) {
+		if err := saveWorkspace(ctx, s.dir, State{}); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	} else if _, err := LoadWorkspace(ctx, s.dir); err != nil {
+		return err
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -120,47 +128,45 @@ func (s *Store) initialize(ctx context.Context) error {
 	return tx.Commit()
 }
 
-func (s *Store) Close() error {
-	return s.DB.Close()
-}
+func (s *Store) Close() error { return s.DB.Close() }
 
 func corrupt(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", domain.ErrRepositoryCorrupt, fmt.Sprintf(format, args...))
 }
 
 func (s *Store) Load(ctx context.Context) (State, error) {
-	state := State{Assets: make(map[domain.AssetID]domain.Asset), Changes: make(map[domain.AssetID]domain.Change)}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := LoadWorkspace(ctx, s.dir)
+	if err != nil {
+		return State{}, err
+	}
 	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return State{}, err
 	}
 	defer tx.Rollback()
 	var manifest []byte
-	err = tx.QueryRowContext(ctx, "SELECT head, tree, manifest, staging_base_head FROM repository_state WHERE singleton = 1").Scan(&state.Head, &state.Tree, &manifest, &state.BaseHead)
+	err = tx.QueryRowContext(ctx, "SELECT head, tree, manifest FROM repository_state WHERE singleton = 1").Scan(&state.Head, &state.Tree, &manifest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return State{}, corrupt("missing repository state")
 	}
 	if err != nil {
 		return State{}, err
 	}
+	identity := state.Manifest
+	state.Manifest = nil
 	if manifest != nil {
 		m, err := repository.DecodeManifest(manifest)
 		if err != nil {
 			return State{}, err
 		}
 		state.Manifest = &m
+		if identity != nil && identity.ID != m.ID {
+			return State{}, corrupt("cache repository identity differs from durable workspace")
+		}
 	}
 	if err := loadAssets(ctx, tx, state.Assets); err != nil {
-		return State{}, err
-	}
-	if err := loadChanges(ctx, tx, state.Changes); err != nil {
-		return State{}, err
-	}
-	var publication Publication
-	err = tx.QueryRowContext(ctx, "SELECT base_head, candidate_head, candidate_tree FROM publication WHERE singleton = 1").Scan(&publication.BaseHead, &publication.CandidateHead, &publication.CandidateTree)
-	if err == nil {
-		state.Publication = &publication
-	} else if !errors.Is(err, sql.ErrNoRows) {
 		return State{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -190,49 +196,16 @@ func loadAssets(ctx context.Context, tx *sql.Tx, assets map[domain.AssetID]domai
 	return rows.Err()
 }
 
-func loadChanges(ctx context.Context, tx *sql.Tx, changes map[domain.AssetID]domain.Change) error {
-	rows, err := tx.QueryContext(ctx, "SELECT asset_id, kind, metadata FROM changes")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var textID string
-		var kind domain.ChangeKind
-		var metadata []byte
-		if err := rows.Scan(&textID, &kind, &metadata); err != nil {
-			return err
-		}
-		id, err := domain.ParseAssetID(textID)
-		if err != nil {
-			return corrupt("invalid staged asset ID: %v", err)
-		}
-		change := domain.Change{Kind: kind, AssetID: id}
-		switch kind {
-		case domain.Add, domain.Update:
-			a, err := repository.DecodeAsset(metadata, textID+".json")
-			if err != nil {
-				return err
-			}
-			change.Asset = &a
-		case domain.Delete:
-			if metadata != nil {
-				return corrupt("delete change %s contains metadata", textID)
-			}
-		default:
-			return corrupt("invalid change kind %q", kind)
-		}
-		changes[id] = change
-	}
-	return rows.Err()
-}
-
 func (s *Store) Save(ctx context.Context, state State) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Validate both halves before changing either. The committed cache is written
+	// first: a failed final workspace rename must leave the publication journal
+	// and its staged batch intact, even if the new committed HEAD is already cached.
+	workspaceData, err := encodeWorkspace(state)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
 	var manifest []byte
 	if state.Manifest != nil {
 		manifest, err = repository.EncodeManifest(*state.Manifest)
@@ -240,6 +213,11 @@ func (s *Store) Save(ctx context.Context, state State) error {
 			return err
 		}
 	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, "DELETE FROM assets"); err != nil {
 		return err
 	}
@@ -255,70 +233,23 @@ func (s *Store) Save(ctx context.Context, state State) error {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM changes"); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO repository_state (singleton, head, tree, manifest) VALUES (1, ?, ?, ?)
+ON CONFLICT(singleton) DO UPDATE SET head = excluded.head, tree = excluded.tree, manifest = excluded.manifest`, string(state.Head), state.Tree, manifest); err != nil {
 		return err
 	}
-	for id, change := range state.Changes {
-		if id == (domain.AssetID{}) || id != change.AssetID {
-			return corrupt("change map key differs from asset ID or is empty")
-		}
-		var metadata []byte
-		switch change.Kind {
-		case domain.Add, domain.Update:
-			if change.Asset == nil || change.Asset.ID != id {
-				return corrupt("change %s has missing or mismatched metadata", id)
-			}
-			metadata, err = repository.EncodeAsset(*change.Asset)
-			if err != nil {
-				return err
-			}
-		case domain.Delete:
-			if change.Asset != nil {
-				return corrupt("delete change %s contains metadata", id)
-			}
-		default:
-			return corrupt("invalid change kind %q", change.Kind)
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO changes (asset_id, kind, metadata) VALUES (?, ?, ?)", id.String(), string(change.Kind), metadata); err != nil {
-			return err
-		}
-	}
-	if err := savePublication(ctx, tx, state.Publication); err != nil {
+	if err := tx.Commit(); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE repository_state SET head = ?, tree = ?, manifest = ?, staging_base_head = ? WHERE singleton = 1", string(state.Head), state.Tree, manifest, string(state.BaseHead))
-	if err != nil {
-		return err
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count != 1 {
-		return corrupt("missing repository state")
-	}
-	return tx.Commit()
+	return writeWorkspace(ctx, s.dir, workspaceData)
 }
 
 func (s *Store) SavePublication(ctx context.Context, publication *Publication) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := LoadWorkspace(ctx, s.dir)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if err := savePublication(ctx, tx, publication); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func savePublication(ctx context.Context, tx *sql.Tx, publication *Publication) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM publication"); err != nil {
-		return err
-	}
-	if publication != nil {
-		_, err := tx.ExecContext(ctx, "INSERT INTO publication (singleton, base_head, candidate_head, candidate_tree) VALUES (1, ?, ?, ?)", string(publication.BaseHead), string(publication.CandidateHead), publication.CandidateTree)
-		return err
-	}
-	return nil
+	state.Publication = publication
+	return saveWorkspace(ctx, s.dir, state)
 }

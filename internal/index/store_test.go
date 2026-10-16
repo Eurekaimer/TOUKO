@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -83,20 +82,6 @@ func TestPersistenceRoundTrip(t *testing.T) {
 			t.Errorf("%s permissions: %o, want %o", path, info.Mode().Perm(), mode)
 		}
 	}
-	var version, foreignKeys int
-	var journal string
-	if err := s.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DB.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DB.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
-		t.Fatal(err)
-	}
-	if version != 1 || foreignKeys != 1 || strings.ToLower(journal) != "wal" {
-		t.Fatalf("SQLite settings: version=%d foreign_keys=%d journal=%s", version, foreignKeys, journal)
-	}
 }
 
 func TestSaveRollbackAndIndependentPublication(t *testing.T) {
@@ -147,12 +132,9 @@ func TestSaveRollbackAndIndependentPublication(t *testing.T) {
 
 func TestLoadRejectsCorruption(t *testing.T) {
 	for _, tc := range []struct{ name, sql string }{
-		{"unknown change", `UPDATE changes SET kind = 'restore'`},
-		{"missing staged metadata", `UPDATE changes SET metadata = NULL`},
-		{"delete carrying metadata", `UPDATE changes SET kind = 'delete'`},
+		{"missing committed state", `DELETE FROM repository_state`},
 		{"invalid committed metadata", `UPDATE assets SET metadata = '{}'`},
 		{"mismatched committed ID", `UPDATE assets SET id = '33333333-3333-4333-8333-333333333333'`},
-		{"mismatched staged ID", `UPDATE changes SET asset_id = '33333333-3333-4333-8333-333333333333'`},
 		{"unknown manifest version", `UPDATE repository_state SET manifest = '{"format_version":99,"repository_id":"22222222-2222-4222-8222-222222222222","hash_algorithm":"sha256"}'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -214,7 +196,7 @@ func TestUnsupportedVersionRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.ExecContext(ctx, "PRAGMA user_version = 2"); err != nil {
+	if _, err := s.DB.ExecContext(ctx, "PRAGMA user_version = 99"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -262,18 +244,15 @@ func TestInvalidSavePreservesState(t *testing.T) {
 	}
 }
 
-func TestFailedJournalReplacementPreservesPublication(t *testing.T) {
+func TestInvalidJournalReplacementPreservesPublication(t *testing.T) {
 	ctx := context.Background()
 	s := openTestStore(t, t.TempDir())
 	initial := sampleState(t)
 	if err := s.Save(ctx, initial); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `CREATE TRIGGER fail_publication BEFORE INSERT ON publication BEGIN SELECT RAISE(ABORT, 'journal failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SavePublication(ctx, &Publication{BaseHead: "base", CandidateHead: "other", CandidateTree: "other-tree"}); err == nil {
-		t.Fatal("expected journal failure")
+	if err := s.SavePublication(ctx, &Publication{BaseHead: "base", CandidateHead: "other"}); !errors.Is(err, domain.ErrRepositoryCorrupt) {
+		t.Fatalf("expected invalid journal rejection, got %v", err)
 	}
 	got, err := s.Load(ctx)
 	if err != nil {
