@@ -29,17 +29,46 @@ ID=$(/tmp/touko add logo/TOUKO.png --namespace blog --tag demo --output id)
 
 ## 一键真实验收脚本
 
-准备好专用仓库和 token 后，可以让脚本按顺序跑完整条真实远端链路：
+### 第 1 步：建专用仓库
+
+打开 https://github.com/new，仓库名例如 `touko-gallery-test`，**必须勾选 Add a README file**（Git Data API 无法在完全空仓库创建第一个 ref），不要勾 .gitignore 或 license。公开还是私有：
+
+| | 公开 | 私有 |
+| --- | --- | --- |
+| 存储、同步、编辑、界面预览、校验 | ✅ | ✅ |
+| `url` 生成公网链接（raw / jsDelivr） | ✅ | ❌ 明确报 `delivery_unavailable` |
+
+脚本对公开仓库会额外下载 raw 字节并比对 SHA-256；私有仓库会跳过该步并改为断言 URL 被拒绝。
+
+### 第 2 步：生成最小权限 token
+
+打开 https://github.com/settings/personal-access-tokens/new：
+
+1. Token name：`touko-acceptance`；Expiration：7 天
+2. Repository access → **Only select repositories** → 只勾上面那个专用仓库
+3. Permissions → Repository permissions → **Contents** 设为 **Read and write**（其余保持 No access）
+4. Generate token，复制 `github_pat_...`
+
+token 只在一个终端里 `export`：**不要**贴进聊天、不要作为命令参数、不要写进任何文件或 Git。
+
+### 第 3 步：把下面整段粘进终端（改掉仓库名）
 
 ```bash
-go build -o /tmp/touko ./cmd/touko
-read -rsp 'GitHub token: ' GITHUB_TOKEN; printf '\n'
-export GITHUB_TOKEN
-bash examples/github-acceptance.sh OWNER/touko-demo
-unset GITHUB_TOKEN
+cd /home/eurekaimer/Documents/GitHub/TOUKO
+
+export GITHUB_TOKEN='这里粘贴你的 github_pat_... 字符串'
+export TOUKO_ACCEPT_REPO='你的用户名/touko-gallery-test'
+
+bash examples/github-acceptance.sh "$TOUKO_ACCEPT_REPO"
+
+unset GITHUB_TOKEN TOUKO_ACCEPT_REPO
 ```
 
-脚本只从 `GITHUB_TOKEN` 读取凭据，不接受 token 参数、不打印 token、不写入凭据到磁盘；拒绝 `eurekaimer/touko`（源码仓库）作为 gallery。它依次断言：`auth status` 已认证、`repo use` 选中期望仓库与分支、`repo init` 幂等、批量 `add` 不移动远端 HEAD、暂存态 `url` 报 `committed:false`、`commit` 发布全部变更并清空暂存、两个 provider 的 URL 与 canonical object path 一致（private 仓库改为断言 `delivery_unavailable`）、`verify` 的 assets/objects 与 HEAD 一致、公开仓库 raw bytes 的 SHA-256 等于记录的 object hash、第二设备 `sync` 后完整 metadata 逐字段相等、最后一条引用的删除在第三台全新设备上不可见。真实远端不可达或断言失败时脚本非零退出并保留工作目录现场。
+失败时脚本非零退出并保留 `/tmp/touko-github.XXXXXXXX` 现场；若报 `expected exit 0, got 1` 且带 `unauthorized`/`404`，通常是 token 权限、仓库名或 README 未勾；若报 `AssertionError`，那是 TOUKO 自身行为不符预期，请把整段输出交给维护者。
+
+### 脚本断言的内容
+
+脚本只从 `GITHUB_TOKEN` 读取凭据，不接受 token 参数、不打印 token、不写入凭据到磁盘（已用假 token 实测：失败时报 GitHub 的真实 401，输出中不含 token 字符串）；拒绝 `eurekaimer/touko`（源码仓库）作为 gallery。它依次断言：`auth status` 已认证、`repo use` 选中期望仓库与分支、`repo init` 幂等、批量 `add` 不移动远端 HEAD、暂存态 `url` 报 `committed:false`、`commit` 发布全部变更并清空暂存、两个 provider 的 URL 与 canonical object path 一致（private 仓库改为断言 `delivery_unavailable`）、`verify` 的 assets/objects 与 HEAD 一致、公开仓库 raw bytes 的 SHA-256 等于记录的 object hash、第二设备 `sync` 后完整 metadata 逐字段相等、最后一条引用的删除在第三台全新设备上不可见。真实远端不可达或断言失败时脚本非零退出并保留工作目录现场。
 
 脚本的断言逻辑已在离线真实 Git 仓库上完整跑通（init 幂等、批量提交、verify、第二/第三设备恢复与删除）；GitHub 专属步骤（token 认证、raw bytes 校验）只有在你提供专用仓库与 token 后才会真正执行，此前不得宣称线上验收已完成。
 
