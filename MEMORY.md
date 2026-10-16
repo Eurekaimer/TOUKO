@@ -12,8 +12,9 @@ CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 
 
 - 用户要求简洁、美观、设计感强、字体好看，参考 PicList 的图库布局；可在界面内整理 tags 和分类。分类直接对应现有平面 `Collections`，不引入未经要求的层级或 format 迁移。
 - 最新视觉参考：《终将成为妳》的校服与两位主人公配色。使用奶油米色、深藏蓝作底，绿色主色，侑的珊瑚橙与灯子的暗樱红少量点缀。
-- 用户点名要求：**所有**英文部分与中文部分都要换字体——英文用 Monaspace Radon，中文用 LXGW 文楷（霞鹜文楷）。当前字体：Monaspace Radon（拉丁/数字/UI，变量轴 wght 200-800、wdth 100-125、slnt 0…-11，无 CJK）、LXGW WenKai（中文，Regular 400 + Medium 500，SIL OFL 且其附加许可明确允许为 web 交付子集化为 WOFF2）、另外 `TOUKO Wordmark`（Quicksand 圆几何字体，子集出 T/O/U/K 四字形，仅用于字标，1.3KB）。三者均 SIL OFL，许可证内嵌。此前临时使用的 Manrope / Source Sans 3 / Italianno / Inter / Newsreader / IBM Plex Sans SC 与 `static/brand/` 目录均已删除。
-- 用户要求左上角 TOUKO 字标要更「规整圆润、有设计感」，按 logotype 处理而不是默认排字；此项与整页重设计一并交给子代理执行。
+- 用户点名要求：**所有**英文部分与中文部分都要换字体——英文用 Monaspace Radon，中文用 LXGW 文楷（霞鹜文楷）。当前字体：Monaspace Radon（拉丁/数字/UI，变量轴 wght 200-800、wdth 100-125、slnt 0…-11，无 CJK）、LXGW WenKai（中文，Regular 400 + Medium 500，SIL OFL 且其附加许可明确允许为 web 交付子集化为 WOFF2）、`TOUKO Wordmark`（Quicksand 圆几何字体，子集出 T/O/U/K 四字形，仅用于字标，1.3KB）与 `Playfair Display` 斜体（hero 标题专用；刻意不用带 opsz 光学尺寸轴的字面，Bodoni 因 opsz 在大字号变细被用户否决）。五者均 SIL OFL，许可证内嵌。此前临时使用的 Manrope / Source Sans 3 / Italianno / Inter / Newsreader / IBM Plex Sans SC 与 `static/brand/` 目录均已删除。
+- 用户要求左上角 TOUKO 字标要更「规整圆润、有设计感」，按 logotype 处理而不是默认排字；用户已确认字标**保持 700** 字重。
+- 用户选定：favicon 改为**方案感知 SVG**（深色标签栏用纸底版，浅色用原稿）；静态资源改为 **ETag + no-cache** 重新校验（内嵌文件无 mtime，max-age 会导致陈旧预览，故不采用）。
 - 用户要求参照设计规范而不是即兴发挥：已取用 Anthropic 公开的 `frontend-design` skill 作为审查标准（含其「AI 生成页面」常见特征清单），用于修正流于模板的配色/排版特征。
 - 用户提到“可以考虑使用mygo制作”，含义尚不确定且为可选建议；不据此擅自引入新框架。当前确定采用 Go `net/http` + `embed` + 原生 HTML/CSS/JS，无 Node 构建依赖、无运行时字体/脚本 CDN。
 - `touko serve --port 7788` 仅绑定127.0.0.1；GitHub token只保留服务端环境变量，不进入浏览器、localStorage、config或SQLite。API校验Host/Origin/CSRF，图片仅按Asset ID读取。
@@ -67,6 +68,7 @@ CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 
 | 16 | `7ee4f06` | `feat(webview): add the LXGW WenKai and wordmark fonts` |
 | 17 | `3e958d9` | `feat(webview): add Bodoni Moda italic for the hero headline` |
 | 18 | `407a5c1` | `feat(webview): rebuild the interface around a mounted-photograph system` |
+| 19 | `0d506a5` | `feat(webview): cache assets safely and make the hero italic legible` |
 
 每个 coherent implementation commit 前均运行并通过 `gofmt -l`、`go vet ./...` 与 `go test ./...`；Webview/Radon 相关提交另跑 `go test -race ./...`。Webview 提交前还在真实浏览器核验了契约钩子（117 id + 25 JS class 全部存在）、字体真实加载与交互路径。hash 均来自实际 `git commit` 输出，不猜测未生成的 hash。
 
