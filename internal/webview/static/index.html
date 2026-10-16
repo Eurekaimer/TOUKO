@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#f7f3ea" />
+    <meta
+      name="description"
+      content="TOUKO 是一个基于 Git 的私人图片工作空间：图片与元数据都保存在你自己的仓库里，上传、整理、提交都由你决定。"
+    />
+    <title>图片库 · TOUKO</title>
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <svg
+      class="icon-library"
+      aria-hidden="true"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <defs>
+        <symbol id="i-grid" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24">
+          <path
+            d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"
+          />
+        </symbol>
+        <symbol id="i-sync" viewBox="0 0 24 24">
+          <path
+            d="M20 10a8 8 0 0 0-14-5L3 8m0-5v5h5M4 14a8 8 0 0 0 14 5l3-3m0 5v-5h-5"
+          />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path
+            d="M3 7V5a2 2 0 0 1 2-2h5l3 4h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
+          />
+        </symbol>
+        <symbol id="i-branch" viewBox="0 0 24 24">
+          <circle cx="6" cy="5" r="2.5" />
+          <circle cx="6" cy="19" r="2.5" />
+          <circle cx="18" cy="5" r="2.5" />
+          <path d="M6 7.5v9m12-9c0 6-12 3-12 9" />
+        </symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="10.5" cy="10.5" r="7" />
+          <path d="m16 16 5 5" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M6 18 18 6" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="m5 12 4 4L19 6" />
+        </symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24">
+          <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />
+        </symbol>
+        <symbol id="i-image" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="18" height="18" rx="3" />
+          <circle cx="8" cy="8" r="1.5" />
+          <path d="m3 17 6-6 4 4 3-3 5 5" />
+        </symbol>
+        <symbol id="i-menu" viewBox="0 0 24 24">
+          <path d="M4 6h16M4 12h16M4 18h16" />
+        </symbol>
+        <!-- Kept as part of the frozen icon set; no button appends a "→" to its label. -->
+        <symbol id="i-arrow" viewBox="0 0 24 24">
+          <path d="M4 12h16m-6-6 6 6-6 6" />
+        </symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24">
+          <rect x="8" y="8" width="12" height="13" rx="2" />
+          <path d="M15 8V3H3v13h5" />
+        </symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </symbol>
+      </defs>
+    </svg>
+    <a class="skip-link" href="#gallery">跳到图片库</a>
+    <div class="workspace">
+      <aside class="sidebar" id="sidebar" aria-label="工作空间导航">
+        <a class="brand" href="/" aria-label="TOUKO 图片库首页">
+          <span class="brand-mark">TOUKO</span>
+        </a>
+        <div class="sidebar-section-label">图库</div>
+        <nav class="primary-nav" aria-label="主导航">
+          <button type="button" class="nav-item active" id="all-assets">
+            <svg class="icon"><use href="#i-grid" /></svg><span>所有图片</span
+            ><span class="count" id="nav-total">0</span>
+          </button>
+          <button type="button" class="nav-item" id="open-pending">
+            <svg class="icon"><use href="#i-clock" /></svg><span>待发布</span
+            ><span class="count" id="nav-pending">0</span>
+          </button>
+        </nav>
+        <div class="sidebar-section-label">分类</div>
+        <nav
+          id="collection-filters"
+          class="collection-nav"
+          aria-label="按分类筛选"
+        >
+          <p class="sidebar-hint">图片的分类会出现在这里</p>
+        </nav>
+        <div class="sidebar-section-label">标签</div>
+        <div id="tag-filters" class="tag-filters" aria-label="按标签筛选">
+          <p class="sidebar-hint">图片的标签会出现在这里</p>
+        </div>
+        <div id="filter-trail" class="breadcrumb" hidden></div>
+        <div class="sidebar-bottom">
+          <div class="repo-card">
+            <div class="repo-card-label">
+              <svg class="icon"><use href="#i-branch" /></svg><span>当前仓库</span
+              ><span class="connection-dot" id="repo-dot"></span>
+            </div>
+            <strong id="repo-name">尚未连接</strong>
+            <p id="repo-detail">连接你自己的 Git 仓库后开始收藏</p>
+            <button type="button" class="text-button" id="open-repo">
+              连接仓库
+            </button>
+          </div>
+        </div>
+      </aside>
+      <main class="main">
+        <header class="topbar">
+          <button
+            type="button"
+            class="icon-button mobile-menu"
+            id="toggle-nav"
+            aria-label="展开导航"
+            aria-expanded="false"
+            aria-controls="sidebar"
+          >
+            <svg class="icon"><use href="#i-menu" /></svg>
+          </button>
+          <span class="topbar-brand">TOUKO</span>
+          <div class="topbar-actions">
+            <span class="head-indicator" id="head-indicator"></span
+            ><button
+              type="button"
+              class="button subtle"
+              id="refresh-state"
+              aria-label="刷新本地工作空间"
+            >
+              <svg class="icon"><use href="#i-sync" /></svg
+              ><span>刷新</span></button
+            ><button
+              type="button"
+              class="button secondary"
+              id="sync"
+              aria-label="同步仓库"
+              data-mutation
+            >
+              <svg class="icon"><use href="#i-branch" /></svg
+              ><span>同步</span></button
+            ><button type="button" class="button primary" id="open-upload">
+              <svg class="icon"><use href="#i-upload" /></svg
+              ><span>上传图片</span>
+            </button>
+          </div>
+        </header>
+        <div class="main-content">
+          <section class="gallery-intro" aria-labelledby="gallery-title">
+            <h1 id="gallery-title" lang="en">Your little gallery</h1>
+            <p class="gallery-subtitle" lang="en">
+              <span class="brand-initial">T</span>ransactional
+              <span class="brand-initial">O</span>bject
+              <span class="brand-initial">U</span>ploader,
+              <span class="brand-initial">K</span>eeper,
+              <span class="brand-initial">O</span>rganizer
+            </p>
+          </section>
+          <div id="page-error" class="notice error" role="alert" hidden></div>
+          <section class="setup-banner" id="setup-banner" hidden>
+            <div>
+              <strong id="setup-title"></strong>
+              <p id="setup-description"></p>
+            </div>
+            <button
+              type="button"
+              class="button primary"
+              id="setup-action"
+              data-mutation
+            ></button>
+          </section>
+          <section class="gallery-section" aria-labelledby="gallery-heading">
+            <div class="section-heading">
+              <h2 id="gallery-heading">
+                我的图片 <span id="result-count">正在读取</span>
+              </h2>
+              <div class="section-actions">
+                <button
+                  type="button"
+                  class="text-button"
+                  id="clear-filters"
+                  hidden
+                >
+                  清除筛选</button
+                ><button
+                  type="button"
+                  class="button subtle"
+                  id="verify"
+                  data-mutation
+                >
+                  <svg class="icon"><use href="#i-check" /></svg>校验仓库
+                </button>
+              </div>
+            </div>
+            <div class="gallery-toolbar">
+              <label class="search-field"
+                ><svg class="icon"><use href="#i-search" /></svg
+                ><input
+                  type="search"
+                  id="search"
+                  placeholder="搜索标题、文件名、标签…"
+                  aria-label="搜索图片"
+                /><kbd>/</kbd></label
+              >
+              <div class="toolbar-selects">
+                <label class="sr-only" for="namespace-filter">命名空间</label
+                ><select id="namespace-filter">
+                  <option value="">全部命名空间</option></select
+                ><label class="sr-only" for="sort">图片排序</label
+                ><select id="sort">
+                  <option value="newest">最新添加</option>
+                  <option value="oldest">最早添加</option>
+                  <option value="updated">最近修改</option>
+                  <option value="title">按标题排序</option>
+                </select>
+              </div>
+            </div>
+            <div class="selection-bar" id="selection-bar" hidden>
+              <label
+                ><input
+                  type="checkbox"
+                  id="select-visible"
+                />选择当前结果</label
+              ><span id="selected-count"></span
+              ><button type="button" class="text-button" id="clear-selection">
+                取消选择</button
+              ><button
+                type="button"
+                class="button danger small-button"
+                id="remove-selected"
+                data-mutation
+              >
+                <svg class="icon"><use href="#i-trash" /></svg>移除所选
+              </button>
+            </div>
+            <div
+              id="gallery"
+              class="gallery-grid"
+              tabindex="-1"
+              aria-busy="true"
+            >
+              <div class="empty-state">
+                <span class="loading-ring"></span>
+                <h3>正在打开图片库</h3>
+                <p>读取本地工作空间与待发布变更…</p>
+              </div>
+            </div>
+            <footer class="gallery-footer">
+              <span>原图从本地仓库按需读取，暂存与提交都在本机完成。</span>
+              <span id="gallery-footer-note">所有修改，由你决定何时发布。</span>
+            </footer>
+          </section>
+        </div>
+      </main>
+    </div>
+    <div id="toast" class="toast" role="status" hidden></div>
+
+    <dialog
+      id="upload-dialog"
+      class="dialog"
+      aria-labelledby="upload-heading"
+    >
+      <div class="dialog-header">
+        <h2 id="upload-heading">上传图片</h2>
+        <button
+          type="button"
+          class="icon-button"
+          data-close
+          aria-label="关闭上传"
+        >
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <form id="upload-form">
+        <div class="dialog-body">
+          <p class="muted intro">
+            图片先存入待发布区，确认后再一起提交到仓库。
+          </p>
+          <label class="drop-zone" id="drop-zone"
+            ><svg class="icon large-icon"><use href="#i-upload" /></svg
+            ><strong>拖入图片，或点击选择</strong
+            ><span
+              >PNG、JPEG 或 GIF。每张不超过 100 MB，每批不超过 500 MB
+              或 100 张。</span
+            ><input
+              type="file"
+              id="upload-files"
+              accept="image/png,image/jpeg,image/gif"
+              multiple
+              aria-label="选择要上传的图片"
+          /></label>
+          <div class="upload-list" id="upload-list"></div>
+          <div class="form-grid">
+            <label
+              >命名空间<input
+                name="namespace"
+                id="upload-namespace"
+                value="default"
+                pattern="[a-z0-9][a-z0-9_-]{0,62}"
+                required
+                maxlength="63"
+              /><small>小写字母、数字、下划线或连字符</small></label
+            ><label
+              >标题（可选）<input
+                name="title"
+                id="upload-title"
+                placeholder="留空使用文件名"
+              /><small>填写后应用于本批所有图片</small></label
+            ><label
+              >标签<textarea
+                id="upload-tags"
+                rows="2"
+                placeholder="日常，心动，灵感"
+              ></textarea></label
+            ><label
+              >分类<textarea
+                id="upload-collections"
+                rows="2"
+                placeholder="生活手帖，旅行记录"
+              ></textarea>
+            </label>
+          </div>
+          <p class="field-help">
+            标签与分类可以用中文逗号、英文逗号或换行分隔。分类之间是平级关系，不分层级。
+          </p>
+          <div id="upload-progress-area" class="progress-area" hidden>
+            <progress id="upload-progress" max="100" value="0"></progress
+            ><span id="upload-progress-text">等待上传</span>
+          </div>
+          <div class="notice error" id="upload-error" role="alert" hidden></div>
+        </div>
+        <div class="dialog-footer">
+          <span id="upload-summary" class="muted">尚未选择图片</span
+          ><button
+            type="submit"
+            class="button primary"
+            id="upload-submit"
+            data-mutation
+          >
+            <svg class="icon"><use href="#i-upload" /></svg>加入待发布
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog
+      id="preview-dialog"
+      class="dialog preview-dialog"
+      aria-labelledby="preview-heading"
+    >
+      <div class="dialog-header">
+        <h2 id="preview-heading">图片详情</h2>
+        <button
+          type="button"
+          class="icon-button"
+          data-close
+          aria-label="关闭图片详情"
+        >
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <div class="preview-layout">
+        <div class="preview-image-wrap">
+          <img id="preview-image" alt="" />
+          <p id="preview-image-error" class="notice error" hidden>
+            原图暂时不可用。请检查仓库连接后重新打开详情。
+          </p>
+          <span class="preview-original-label">原图</span>
+        </div>
+        <form id="edit-form" class="preview-details">
+          <div id="preview-state" class="asset-state"></div>
+          <label>标题<input id="edit-title" /></label
+          ><label>标签<textarea id="edit-tags" rows="2"></textarea></label
+          ><label
+            >分类<textarea id="edit-collections" rows="2"></textarea>
+          </label>
+          <p class="field-help">
+            可以用中文逗号、英文逗号或换行分隔。保存会替换完整列表，留空就清空。
+          </p>
+          <details class="metadata-details">
+            <summary>图片与内容信息</summary>
+            <dl id="asset-metadata"></dl>
+          </details>
+          <div id="delivery-controls" class="delivery-controls" hidden>
+            <label for="url-provider">公开链接</label>
+            <div class="inline-controls">
+              <select id="url-provider">
+                <option value="github">GitHub Raw</option>
+                <option value="jsdelivr">jsDelivr</option></select
+              ><button type="button" class="button secondary" id="copy-url">
+                <svg class="icon"><use href="#i-copy" /></svg>复制链接
+              </button>
+            </div>
+            <input
+              id="delivery-url"
+              readonly
+              aria-label="图片公开链接"
+              hidden
+            />
+            <p id="delivery-note" class="field-help"></p>
+          </div>
+          <p class="field-help" id="delivery-unavailable">
+            本地或私有仓库不提供公开链接。
+          </p>
+          <div id="edit-error" class="notice error" role="alert" hidden></div>
+          <div class="preview-actions">
+            <button
+              type="button"
+              class="button danger"
+              id="remove-current"
+              data-mutation
+            >
+              <svg class="icon"><use href="#i-trash" /></svg>移除这张图片</button
+            ><button type="submit" class="button primary" data-mutation>
+              保存修改
+            </button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
+    <dialog
+      id="pending-dialog"
+      class="dialog pending-dialog"
+      aria-labelledby="pending-heading"
+    >
+      <div class="dialog-header">
+        <h2 id="pending-heading">
+          待发布的修改 <span id="pending-count"></span>
+        </h2>
+        <button
+          type="button"
+          class="icon-button"
+          data-close
+          aria-label="关闭待发布"
+        >
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <form id="commit-form">
+        <div class="dialog-body">
+          <p class="muted intro">
+            这些修改只保存在本机。一次提交会把整批改变一起发布到仓库。
+          </p>
+          <div id="publication-warning" class="notice warning" hidden></div>
+          <div class="pending-base" id="pending-base"></div>
+          <div id="pending-list" class="pending-list"></div>
+          <label
+            >提交说明<textarea
+              id="commit-message"
+              rows="3"
+              required
+              placeholder="例如：把周末的照片归档"
+            ></textarea>
+          </label>
+          <div
+            id="pending-error"
+            class="notice error"
+            role="alert"
+            hidden
+          ></div>
+        </div>
+        <div class="dialog-footer">
+          <button
+            type="button"
+            class="button danger"
+            id="reset-staged"
+            data-mutation
+          >
+            丢弃全部修改</button
+          ><button
+            type="submit"
+            class="button primary"
+            id="commit-submit"
+            data-mutation
+          >
+            <svg class="icon"><use href="#i-branch" /></svg>提交并发布
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog
+      id="repo-dialog"
+      class="dialog repo-dialog"
+      aria-labelledby="repo-heading"
+    >
+      <div class="dialog-header">
+        <h2 id="repo-heading">连接你的仓库</h2>
+        <button
+          type="button"
+          class="icon-button"
+          data-close
+          aria-label="关闭仓库连接"
+        >
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <form id="repo-form">
+        <div class="dialog-body">
+          <p class="muted intro">
+            图片与元数据保存在你自己的 Git 仓库里。TOUKO
+            只管理工作区，不接管你的凭据。
+          </p>
+          <label
+            >仓库类型<select id="repo-type">
+              <option value="local-create">创建本地仓库</option>
+              <option value="local-use">使用已有本地仓库</option>
+              <option value="github">连接 GitHub 仓库</option>
+            </select></label
+          >
+          <div id="local-fields">
+            <label
+              >本地仓库绝对路径<input
+                id="repo-path"
+                placeholder="/home/you/Pictures/gallery.git"
+                autocomplete="off"
+              /><small id="local-path-help"
+                >填写一个尚不存在或为空的目录，将创建 bare Git 仓库。</small
+              ></label
+            >
+          </div>
+          <div id="github-fields" hidden>
+            <label
+              >GitHub 仓库<input
+                id="repo-github"
+                placeholder="OWNER / REPO"
+                autocomplete="off"
+            /></label>
+            <p class="field-help">
+              请先在 GitHub 创建图片仓库，并勾选添加 README。不要使用 TOUKO
+              的代码仓库存图片。
+            </p>
+          </div>
+          <label
+            >分支<input
+              id="repo-branch"
+              placeholder="main（GitHub 留空使用默认分支）"
+              autocomplete="off"
+          /></label>
+          <div class="repo-security">
+            <strong>凭据留在服务端</strong>
+            <p>
+              写入 GitHub 需要先在启动 TOUKO 的终端里设置
+              <code>GITHUB_TOKEN</code>，并授予目标仓库 Contents
+              读写权限，然后重启服务。这个页面不接收、也不保存 token。
+            </p>
+            <div class="auth-line">
+              <span id="auth-status">尚未检查凭据</span
+              ><button type="button" class="text-button" id="check-auth">
+                检查 GitHub 身份
+              </button>
+            </div>
+          </div>
+          <p class="field-help">
+            一个工作区只连接一个仓库。要换仓库，请用新的
+            <code>--state-dir</code>
+            重新启动服务；已有缓存和待发布修改不会被覆盖。连上已有仓库后，请手动同步或初始化。
+          </p>
+          <div id="repo-error" class="notice error" role="alert" hidden></div>
+        </div>
+        <div class="dialog-footer">
+          <span class="muted">连接操作都在本机服务内完成</span
+          ><button type="submit" class="button primary" data-mutation>
+            连接仓库
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog
+      id="confirm-dialog"
+      class="dialog confirm-dialog"
+      aria-labelledby="confirm-heading"
+    >
+      <div class="dialog-header">
+        <h2 id="confirm-heading">请确认</h2>
+        <button
+          type="button"
+          class="icon-button"
+          data-close
+          aria-label="取消操作"
+        >
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <div class="dialog-body">
+        <p id="confirm-description"></p>
+        <div id="confirm-error" class="notice error" role="alert" hidden></div>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" class="button secondary" data-close>取消</button
+        ><button
+          type="button"
+          class="button danger solid-danger"
+          id="confirm-action"
+          data-mutation
+        >
+          确认
+        </button>
+      </div>
+    </dialog>
+    <dialog
+      id="result-dialog"
+      class="dialog result-dialog"
+      aria-labelledby="result-heading"
+    >
+      <div class="dialog-header">
+        <h2 id="result-heading">操作结果</h2>
+        <button
+          type="button"
+          class="icon-button"
+          data-close
+          aria-label="关闭结果"
+        >
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <div class="dialog-body" id="result-body"></div>
+      <div class="dialog-footer">
+        <button type="button" class="button primary" data-close>知道了</button>
+      </div>
+    </dialog>
+  </body>
+</html>
