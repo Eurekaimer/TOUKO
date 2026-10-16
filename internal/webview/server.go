@@ -32,7 +32,6 @@ const maxUploadFiles = 100
 type Server struct {
 	service                   *app.Service
 	token, origin, host, csrf string
-	static                    http.Handler
 	// Queue this server's state operations; the filesystem lock still rejects
 	// competing CLI processes. Original-image streaming runs outside this gate.
 	workMu      sync.Mutex
@@ -61,7 +60,7 @@ func New(service *app.Service, token, origin string) (*Server, error) {
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, err
 	}
-	return &Server{service: service, token: token, origin: origin, host: u.Host, csrf: hex.EncodeToString(nonce[:]), static: staticHandler()}, nil
+	return &Server{service: service, token: token, origin: origin, host: u.Host, csrf: hex.EncodeToString(nonce[:])}, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +71,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	// State and images must never be reused; static assets override this with
+	// "no-cache" plus a content tag so unchanged fonts revalidate instead of
+	// being downloaded again.
 	h.Set("Cache-Control", "no-store")
 	origin := r.Header.Get("Origin")
 	site := r.Header.Get("Sec-Fetch-Site")
@@ -98,7 +100,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, 405, "usage", "method not allowed")
 		return
 	}
-	s.static.ServeHTTP(w, r)
+	serveStatic(w, r)
 }
 
 func (s *Server) json(w http.ResponseWriter, value any) {

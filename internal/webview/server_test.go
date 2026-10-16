@@ -365,3 +365,86 @@ func TestConcurrentGalleryPreviews(t *testing.T) {
 		}
 	}
 }
+
+// Static assets are revalidated rather than re-sent. Embedded files have no
+// modification time, so the content tag is the only validator available; a
+// rebuilt binary must therefore produce a different tag, or a browser could
+// keep serving a stale interface after an upgrade.
+func TestStaticAssetsRevalidateAndStayPrivate(t *testing.T) {
+	f := newFixture(t)
+
+	first := f.request("GET", "/style.css", nil, http.StatusOK)
+	tag := first.Header().Get("ETag")
+	if tag == "" {
+		t.Fatal("stylesheet served without an ETag, so it can never revalidate")
+	}
+	if got := first.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("stylesheet Cache-Control = %q, want no-cache", got)
+	}
+	if len(first.Body.Bytes()) == 0 {
+		t.Fatal("stylesheet body was empty")
+	}
+
+	// A second load with the tag must cost headers only.
+	revalidated := httptest.NewRequest(http.MethodGet, testOrigin+"/style.css", nil)
+	revalidated.Header.Set("If-None-Match", tag)
+	out := httptest.NewRecorder()
+	f.server.ServeHTTP(out, revalidated)
+	if out.Code != http.StatusNotModified || out.Body.Len() != 0 {
+		t.Fatalf("revalidation = %d with %d bytes, want 304 with none", out.Code, out.Body.Len())
+	}
+
+	// The weak form and a list are both valid request syntax.
+	for _, header := range []string{"W/" + tag, `"stale", ` + tag} {
+		attempt := httptest.NewRequest(http.MethodGet, testOrigin+"/style.css", nil)
+		attempt.Header.Set("If-None-Match", header)
+		weak := httptest.NewRecorder()
+		f.server.ServeHTTP(weak, attempt)
+		if weak.Code != http.StatusNotModified {
+			t.Errorf("If-None-Match %q = %d, want 304", header, weak.Code)
+		}
+	}
+
+	// A different tag must be answered with the full body.
+	stale := httptest.NewRequest(http.MethodGet, testOrigin+"/style.css", nil)
+	stale.Header.Set("If-None-Match", `"not-the-current-tag"`)
+	fresh := httptest.NewRecorder()
+	f.server.ServeHTTP(fresh, stale)
+	if fresh.Code != http.StatusOK || fresh.Body.Len() == 0 {
+		t.Fatalf("stale tag = %d with %d bytes, want the full asset", fresh.Code, fresh.Body.Len())
+	}
+
+	// Every served asset needs its own tag: identical tags would mean the
+	// browser reuses one file for another.
+	if len(assetTags()) < 10 {
+		t.Fatalf("only %d tagged assets; the whitelist is larger", len(assetTags()))
+	}
+	for path, got := range assetTags() {
+		if got == tag && path != "/style.css" {
+			t.Errorf("%s shares the stylesheet's tag", path)
+		}
+	}
+
+	// State responses must never be cacheable, whatever the static rule is.
+	state := f.request("GET", "/api/state", nil, http.StatusOK)
+	if got := state.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("state Cache-Control = %q, want no-store", got)
+	}
+	if got := state.Header().Get("ETag"); got != "" {
+		t.Fatalf("state response carried an ETag %q", got)
+	}
+
+	// Assets outside the whitelist stay unreachable even though they are embedded.
+	if code := f.raw("GET", "/style.css.bak"); code != http.StatusNotFound {
+		t.Fatalf("unlisted asset = %d, want 404", code)
+	}
+}
+
+// raw performs a request and returns only the status for negative cases.
+func (f *fixture) raw(method, path string) int {
+	f.t.Helper()
+	request := httptest.NewRequest(method, testOrigin+path, nil)
+	out := httptest.NewRecorder()
+	f.server.ServeHTTP(out, request)
+	return out.Code
+}

@@ -15,7 +15,7 @@
  * in the repository" is answered by material before it is answered by reading.
  *
  * Four faces, one job each:
- *   "Bodoni Moda" italic  the headline only. Never body copy.
+ *   "Playfair Display" italic  the headline only. Never body copy.
  *   "Monaspace Radon"     Latin letters, figures, controls; photographs' titles
  *                         use its oblique axis, like a caption in a hand.
  *   "LXGW WenKai"         every Chinese character.
@@ -54,11 +54,13 @@
   font-weight: 500 700;
   font-display: swap;
 }
-/* Hero only: the high-contrast didone italic. Italic-only, so it can never be
- * reached by roman copy anywhere else on the page. */
+/* Hero only: a high-contrast italic with sturdy strokes, deliberately a face
+ * with NO optical-size axis. Bodoni Moda's opsz thinned the headline as it grew
+ * larger, which read as washed out at display size. Italic-only, so roman copy
+ * can never reach it. */
 @font-face {
-  font-family: "Bodoni Moda";
-  src: url("/fonts/bodoni-italic-latin.woff2") format("woff2");
+  font-family: "Playfair Display";
+  src: url("/fonts/playfair-italic-latin.woff2") format("woff2");
   font-style: italic;
   font-weight: 400 900;
   font-display: swap;
@@ -123,7 +125,7 @@
     "Monaspace Radon", "LXGW WenKai", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", ui-monospace, monospace;
   --font-mark: "TOUKO Wordmark", "Monaspace Radon", sans-serif;
-  --font-hero: "Bodoni Moda", "Monaspace Radon", "LXGW WenKai", serif;
+  --font-hero: "Playfair Display", "Monaspace Radon", "LXGW WenKai", serif;
 
   /* Scale: 12 / 13 / 14 / 16 / 19 / 24, then the headline. */
   --fs-micro: 0.75rem; /* 12px — file facts, metadata values */
@@ -763,10 +765,9 @@ summary {
   font-family: var(--font-hero);
   font-size: var(--fs-hero);
   font-style: italic;
-  font-weight: 400;
-  font-optical-sizing: auto;
+  font-weight: 600;
   line-height: var(--lh-hero);
-  letter-spacing: -0.022em;
+  letter-spacing: -0.018em;
   text-wrap: balance;
   color: var(--ink);
 }
