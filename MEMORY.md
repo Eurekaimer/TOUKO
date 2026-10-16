@@ -26,8 +26,8 @@
 | 阶段 | 内容 | commit |
 | --- | --- | --- |
 | 7 | 桌面壳：托盘、窗口图标、关闭即隐藏、菜单（含两处 MyGo 陷阱修复） | `2f86b44` |
-| 8 | 本地打包：PKGBUILD、桌面条目、图标阶梯、生成脚本 | 本提交 |
-| 9 | 文档与记忆 | 待提交 |
+| 8 | 本地打包：PKGBUILD、桌面条目、图标阶梯、生成脚本 | `0d6cba3` |
+| 9 | 文档与记忆 | 本节提交 |
 
 ### 本地包（用户可直接测）
 
@@ -39,6 +39,13 @@ touko-desktop                   # 菜单里也会出现 TOUKO
 ```
 
 实测：`makepkg -f` 成功产出 `touko-git-r40.f8c5798-1-x86_64.pkg.tar.zst`；解包到临时根目录后 CLI 真实完成 repo init/add/commit/verify，桌面二进制启动窗口正常。发布版应改为固定 tag 的源码包 + 校验和，并加 `depends`/`optdepends`（gtk3、webkit2gtk-4.1、libayatana-appindicator、github-cli）。
+
+**用户在机器上看到图标的现状**：为验证任务栏图标机制，主代理曾把 `touko-desktop.desktop` 与 hicolor 图标复制到 `~/.local/share/{applications,icons}`（用户级副本，不需要 sudo）。它与包内版本内容相同，但用户级目录优先于 `/usr/share`，所以正式 `pacman -U` 安装后建议删除用户级副本以免遮蔽后续更新：
+
+```bash
+rm -f ~/.local/share/applications/touko-desktop.desktop
+rm -f ~/.local/share/icons/hicolor/*/apps/touko.png
+```
 
 未完成：完整进程树内存量测（含 renderer）、桌面壳剪贴板权限实测（权限处理器仍一律拒绝 camera/microphone/geolocation/notifications，页面复制仍回退手动复制框）、512px 图标、AUR 发布准备。
 
