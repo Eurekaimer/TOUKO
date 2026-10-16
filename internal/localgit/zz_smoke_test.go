@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
@@ -102,5 +103,57 @@ func TestCloneRejectsUnsafeInputs(t *testing.T) {
 		if err := localgit.Clone(ctx, "https://github.com/o/r.git", filepath.Join(dir, "d"), branch, ""); err == nil {
 			t.Errorf("branch %q was accepted", branch)
 		}
+	}
+}
+
+// A shallow clone is the point: past revisions of pictures must not be pulled.
+func TestCloneIsShallowAndStillReadsTheCurrentTree(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	remote := filepath.Join(base, "gallery.git")
+	if _, err := localgit.Init(ctx, remote, "main"); err != nil {
+		t.Fatal(err)
+	}
+	seed := filepath.Join(base, "seed")
+	if err := os.MkdirAll(seed, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	smokeGit(t, seed, "init", "-q", "-b", "main")
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(seed, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Three revisions of a picture: a full clone would carry all three blobs.
+	for _, body := range []string{"v1-bytes", "v2-bytes", "v3-bytes"} {
+		write("pic.png", body)
+		smokeGit(t, seed, "add", "-A")
+		smokeGit(t, seed, "-c", "commit.gpgsign=false", "commit", "-q", "-m", body)
+	}
+	smokeGit(t, seed, "push", "-q", remote, "main")
+
+	clone := filepath.Join(base, "clone")
+	// file:// makes git treat this as a network clone, which is the only mode
+	// where --depth applies; a bare local path is hardlinked and ignores it.
+	if err := localgit.Clone(ctx, "file://"+remote, clone, "main", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(clone, "pic.png"))
+	if err != nil || string(got) != "v3-bytes" {
+		t.Fatalf("current bytes must be present, got %q err=%v", got, err)
+	}
+	// Depth 1 means exactly one commit is reachable, so the old picture versions
+	// cannot have been downloaded.
+	out := exec.Command("git", "-C", clone, "rev-list", "--count", "HEAD")
+	out.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
+	count, err := out.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(count)) != "1" {
+		t.Fatalf("clone kept %s commits, want a depth-1 history", strings.TrimSpace(string(count)))
+	}
+	if err := localgit.Update(ctx, clone, "main", ""); err != nil {
+		t.Fatalf("update on a shallow clone: %v", err)
 	}
 }

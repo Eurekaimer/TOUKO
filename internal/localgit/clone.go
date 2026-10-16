@@ -19,8 +19,13 @@ const credentialHelper = `!f() { read -r _ignored; IFS= read -r p <&3; printf 'u
 
 // Clone materialises a working copy of one branch at dir. A valid existing clone
 // is reused; an empty directory is cloned; anything else belongs to the user and
-// is refused rather than overwritten. The files on disk are the point: a preview
-// reads the picture file directly, with no object database to unpack.
+// is refused rather than overwritten.
+//
+// The clone is shallow on purpose. Pictures live in the current tree, but every
+// past revision of every picture is also in history, and a rewritten image
+// stores a full new blob. Depth 1 keeps the checkout proportional to the gallery
+// that exists now rather than to every version ever pushed. TOUKO never reads
+// history, so nothing is lost by not downloading it.
 func Clone(ctx context.Context, remote, dir, branch, token string) error {
 	absolute, err := filepath.Abs(dir)
 	if err != nil {
@@ -45,7 +50,7 @@ func Clone(ctx context.Context, remote, dir, branch, token string) error {
 	if err := os.MkdirAll(absolute, 0o700); err != nil {
 		return err
 	}
-	args := []string{"clone", "--branch", branch, "--single-branch"}
+	args := []string{"clone", "--depth", "1", "--no-tags", "--branch", branch, "--single-branch"}
 	if token != "" {
 		args = append(args, "--config", "credential.helper="+credentialHelper)
 	}
