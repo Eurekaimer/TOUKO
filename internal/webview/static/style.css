@@ -1,16 +1,34 @@
-/* TOUKO · album paper
+/* TOUKO · 相册纸与裱板
  *
- * Subject: a private, Git-backed image notebook. The page is one material —
- * album paper — and the pictures are mounted on it. Three faces, each with one
- * job: Monaspace Radon for Latin letters and figures, LXGW WenKai for Chinese,
- * and a round geometric alphabet reserved for the TOUKO wordmark.
- * Colour: cream paper, uniform navy ink, coral for what is staged or active,
- * sakura only for destructive actions, kraft for "not on the remote yet".
+ * Subject: a private, Git-backed picture notebook. Pictures are filed into a
+ * repository you own, and they sit in a staging area before anything is
+ * published. The page is therefore ONE sheet of paper, and it carries two
+ * materials, not one:
+ *
+ *   卡纸 (--mount)        a picture that is mounted: filed, committed.
+ *   牛皮纸 (--kraft-board) a picture still on the desk: staged, not published.
+ *
+ * Everything structural follows from that: the rail is a ledger (name, leader
+ * dots, count) because a ledger is how you keep track of filed things; the grid
+ * is a sheet of mounts rather than a set of cards; a staged picture swaps its
+ * mat for kraft paper and pins a kraft slip on the mount, so "what is already
+ * in the repository" is answered by material before it is answered by reading.
+ *
+ * Four faces, one job each:
+ *   "Bodoni Moda" italic  the headline only. Never body copy.
+ *   "Monaspace Radon"     Latin letters, figures, controls; photographs' titles
+ *                         use its oblique axis, like a caption in a hand.
+ *   "LXGW WenKai"         every Chinese character.
+ *   "TOUKO Wordmark"      the logotype's T O U K O, nothing else.
+ *
+ * Geometry is graded rather than uniform — a single border-radius on every
+ * object is the SaaS-card tell. Radius follows object size: the sheet 10, a
+ * mount 8, a control 6, the photograph inside its mat 4, a slip or chip 999.
  */
 
-/* --- Fonts ------------------------------------------------------------- */
+/* --- Fonts -------------------------------------------------------------- */
 /* Monaspace Radon: Latin display and interface letters, oblique through its
- * slnt axis. No CJK by design, so Chinese falls through to LXGW WenKai. */
+ * slnt axis. Latin only by design, so Chinese falls through to LXGW WenKai. */
 @font-face {
   font-family: "Monaspace Radon";
   src: url("/fonts/monaspace-radon-var.woff2") format("woff2-variations");
@@ -19,8 +37,9 @@
   font-stretch: 100% 125%;
   font-display: swap;
 }
-/* LXGW WenKai: the Chinese face. A kai (楷) text face by construction, so it
- * steps in wherever Radon has no glyph. */
+/* LXGW WenKai: the Chinese face. A kai (楷) text face, so its strokes are
+ * lighter than a sans at the same size; sizes and ink are set for that in the
+ * type scale below rather than inherited from the Latin side. */
 @font-face {
   font-family: "LXGW WenKai";
   src: url("/fonts/lxgw-wenkai-regular.woff2") format("woff2");
@@ -35,8 +54,8 @@
   font-weight: 500 700;
   font-display: swap;
 }
-/* Hero display only: a high-contrast didone italic, the "意大利斜体" the user
- * asked for on the headline. Italic-only, so it can never set roman copy. */
+/* Hero only: the high-contrast didone italic. Italic-only, so it can never be
+ * reached by roman copy anywhere else on the page. */
 @font-face {
   font-family: "Bodoni Moda";
   src: url("/fonts/bodoni-italic-latin.woff2") format("woff2");
@@ -44,8 +63,8 @@
   font-weight: 400 900;
   font-display: swap;
 }
-/* Wordmark only: a round geometric alphabet subsetted to the letters T, O, U
- * and K. Never used for copy, so it cannot fall back into body text. */
+/* Logotype only: a round geometric alphabet subsetted to T, O, U and K. Using
+ * it for any other word renders blanks, which is the point: it cannot leak. */
 @font-face {
   font-family: "TOUKO Wordmark";
   src: url("/fonts/wordmark-quicksand.woff2") format("woff2");
@@ -54,39 +73,49 @@
   font-display: swap;
 }
 
-/* --- Tokens ------------------------------------------------------------ */
+/* --- Tokens ------------------------------------------------------------- */
 :root {
-  /* Surfaces: the album paper, and one cardstock tone for sunk panels. */
+  /* Paper, and the two materials that sit on it. */
   --page: #f7f3ea;
-  --filecard: #efe8db;
-  --surface-sunk: var(--filecard);
-  --surface: var(--page);
+  --mount: #e5dcc9;
+  --kraft-board: #e8d7b4;
 
-  /* Ink: uniform navy, one muted tone for secondary text. */
-  --ink: #1d2b3f;
-  --ink-secondary: #3d4b60;
-  --muted: #5d6675;
+  /* Ink. One deep navy for text and every rule; a second tone for secondary
+   * copy, held at 5.6:1 on paper because the kai face's thinner strokes need
+   * more ink than a sans did at the same contrast. */
+  --ink: #1b2a3d;
+  --ink-secondary: #3b4a5e;
+  --muted: #586171;
 
-  /* Accents. Coral marks what is staged or active; sakura is destructive only;
-   * kraft marks "not on the remote yet". Each clears 4.5:1 on paper. */
+  /* Coral: mounted, moving, focused. Sakura: destructive, and only that.
+   * Kraft: written down but not yet on the remote. */
   --coral: #9c5238;
-  --coral-strong: #83432c;
+  --coral-strong: #7f3f29;
   --coral-tint: #f2e3da;
   --sakura: #9c4f6e;
-  --sakura-strong: #83415c;
-  --sakura-tint: #f2e2ea;
+  --sakura-strong: #7f3f59;
+  --sakura-tint: #f3e2ea;
   --kraft: #7a5a28;
   --kraft-tint: #f4ecda;
 
-  --line: #ddd6c8;
-  --line-strong: #cdc4b1;
+  /* Rules: three weights, all of them information (sheet edge, mount edge,
+   * the line inside a mount). */
+  --line: #ded5c4;
+  --line-strong: #c6bba5;
+  --mount-line: #d2c5ab;
 
-  --radius: 2px;
+  /* Geometry ladder. */
+  --radius-sheet: 10px;
+  --radius-mount: 8px;
+  --radius-control: 6px;
+  --radius-photo: 4px;
+  --radius-slip: 999px;
 
-  --shadow-pop: 0 1px 2px #1d2b3f14, 0 22px 48px -20px #1d2b3f5c;
+  --shadow-lift: 0 2px 4px #1b2a3d12, 0 26px 60px -26px #1b2a3d73;
   --ring: 2px solid var(--coral);
 
-  /* Type scale: 11 / 12 / 13 / 15 / 20 / 26 / 40. */
+  /* Type. Four faces, two of which are Latin-only and therefore always
+   * followed by the Chinese face so a mixed line never renders tofu. */
   --font-ui:
     "Monaspace Radon", "LXGW WenKai", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", system-ui, -apple-system, sans-serif;
@@ -95,21 +124,22 @@
     "Microsoft YaHei", ui-monospace, monospace;
   --font-mark: "TOUKO Wordmark", "Monaspace Radon", sans-serif;
   --font-hero: "Bodoni Moda", "Monaspace Radon", "LXGW WenKai", serif;
-  --fs-micro: 0.6875rem; /* 11px — file metadata */
-  --fs-xs: 0.75rem; /* 12px — captions, help */
-  --fs-sm: 0.8125rem; /* 13px — chrome */
-  --fs-read: 0.9375rem; /* 15px — Chinese reading copy */
-  --fs-ui: 0.875rem; /* 14px — controls */
-  --fs-body: 1rem; /* 16px — prose */
-  --fs-lg: 1.125rem; /* 18px — picture titles, captions */
-  --fs-h2: 1.25rem; /* 20px — section and dialog titles */
-  --fs-display: clamp(2.25rem, 3.6vw, 2.75rem); /* 36–44px — the hero */
-  --lh-tight: 1.16;
-  --lh-snug: 1.45;
-  --lh-body: 1.75;
-  --lh-read: 1.8;
-  --measure: 46ch;
-  --tracking-mark: 0.1em;
+
+  /* Scale: 12 / 13 / 14 / 16 / 19 / 24, then the headline. */
+  --fs-micro: 0.75rem; /* 12px — file facts, metadata values */
+  --fs-xs: 0.8125rem; /* 13px — Chinese captions, help, rail labels */
+  --fs-sm: 0.875rem; /* 14px — controls */
+  --fs-body: 1rem; /* 16px — Chinese reading copy */
+  --fs-lg: 1.1875rem; /* 19px — picture titles */
+  --fs-h2: 1.5rem; /* 24px — section and dialog titles */
+  --fs-hero: clamp(2.75rem, 6.4vw, 5rem); /* 44–80px — the headline */
+
+  --lh-hero: 0.94;
+  --lh-tight: 1.24;
+  --lh-read: 1.85; /* kai Chinese: more air than a sans needs */
+  --lh-body: 1.7;
+  --measure: 62ch; /* longest line on the page; the skill's ceiling is 80 */
+  --measure-prose: 46ch;
 
   --space-1: 4px;
   --space-2: 8px;
@@ -118,11 +148,11 @@
   --space-5: 24px;
   --space-6: 32px;
   --space-7: 48px;
-  --space-8: 64px;
+  --space-8: 72px;
 
-  --sidebar-width: 236px;
-  --gap-x: 26px;
-  --gap-y: 34px;
+  --rail-width: 248px;
+  --gap-x: 28px;
+  --gap-y: 36px;
 
   color-scheme: light;
   color: var(--ink);
@@ -134,7 +164,7 @@
   text-rendering: optimizeLegibility;
 }
 
-/* --- Base -------------------------------------------------------------- */
+/* --- Base --------------------------------------------------------------- */
 * {
   box-sizing: border-box;
 }
@@ -146,7 +176,7 @@ h1,
 h2,
 h3 {
   font-weight: 500;
-  line-height: var(--lh-snug);
+  line-height: var(--lh-tight);
 }
 button,
 input,
@@ -171,7 +201,7 @@ button {
   cursor: pointer;
 }
 button:disabled {
-  opacity: 0.42;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 a {
@@ -189,7 +219,7 @@ summary {
 :focus-visible {
   outline: var(--ring);
   outline-offset: 2px;
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
 }
 [hidden] {
   display: none !important;
@@ -232,8 +262,8 @@ summary {
   padding: 10px 16px;
   color: var(--page);
   background: var(--ink);
-  border-radius: var(--radius);
-  font-size: var(--fs-ui);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-sm);
 }
 .skip-link:focus {
   top: 12px;
@@ -242,41 +272,112 @@ summary {
   min-height: 100vh;
 }
 
-/* --- Masthead rail ----------------------------------------------------- */
+/* --- The logotype ------------------------------------------------------ *
+ * Set as a logotype rather than as a word:
+ *  · the family is the round geometric alphabet reserved for these four
+ *    letters, at the heaviest weight it carries — Quicksand's round bowls are
+ *    what make the mark read as regular and round rather than as tracked-out
+ *    capitals;
+ *  · the letters are spaced per pair, because the measured advance widths of
+ *    the face differ by ~20% between the narrowest and widest letter at the
+ *    same size (T 13.16 vs O 15.95 at 21px, measured in the browser), so a
+ *    single uniform track would space a round O and a flat T alike. The two
+ *    round-to-round and flat-to-round pairs therefore close up or open
+ *    (T→O 2.59, O→U 1.19, U→K 2.39, K→O 2.19 px at 21px) — optical spacing,
+ *    not a uniform letter-spacing; there is no tracked-out ALL-CAPS label
+ *    anywhere else on the page and this is not one of them;
+ *  · a device stands to the left: a mount emblem — a rounded card with a
+ *    picture inside it, the page's own object at its smallest size, where the
+ *    coral says "this one is still staged". It is drawn in CSS so it stays a
+ *    true vector at any zoom and needs no image request.
+ */
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  margin: 2px 0 0;
+}
+.brand-device {
+  position: relative;
+  display: block;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1.75px var(--ink);
+}
+.brand-device::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 3px;
+  background: var(--coral);
+}
+.brand-mark,
+.topbar-brand {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mark);
+  font-weight: 700;
+  font-synthesis: none;
+  line-height: 1;
+  color: var(--ink);
+}
+.brand-mark {
+  font-size: 21px;
+}
+.brand-note {
+  margin: 9px 0 0 2px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.02em;
+}
+/* Optical pairs. The gaps below are the sizes that survived inspection in the
+ * browser, not token values: measured at 21px the five advances are
+ * T 13.16, O 15.95, U 14.81, K 13.77, O 15.95, and the pairs read as
+ * T→O 2.59, O→U 1.19, U→K 2.39, K→O 2.19. Two round letters close up; a flat
+ * stem meeting a round bowl opens. The last letter gets no trailing gap. */
+.mark-letter + .mark-letter {
+  margin-left: 1.5px;
+}
+.mark-letter:nth-child(2) {
+  margin-left: 2.6px; /* T→O : flat stem meets round bowl */
+}
+.mark-letter:nth-child(3) {
+  margin-left: 1.2px; /* O→U : two round sides, closed up */
+}
+.mark-letter:nth-child(4) {
+  margin-left: 2.4px; /* U→K : round bowl meets flat stem */
+}
+.mark-letter:nth-child(5) {
+  margin-left: 2.4px; /* K→O : flat stem meets round bowl */
+}
+
+/* --- The rail: a ledger ------------------------------------------------ */
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
   z-index: 20;
   display: flex;
   flex-direction: column;
-  width: var(--sidebar-width);
-  padding: var(--space-6) 20px var(--space-5);
+  width: var(--rail-width);
+  padding: var(--space-6) var(--space-5) var(--space-5);
   overflow: auto;
-  background: var(--filecard);
-  border-right: 1px solid var(--line);
-}
-.brand {
-  display: block;
-  width: fit-content;
-  margin: 0 0 var(--space-5);
-}
-.brand-mark {
-  display: block;
-  color: var(--ink);
-  font-size: var(--fs-read);
-  font-weight: 600;
-  letter-spacing: var(--tracking-mark);
-  line-height: 1.3;
+  background: var(--mount);
+  border-right: 1px solid var(--mount-line);
 }
 .sidebar-section-label {
-  margin: var(--space-5) 0 var(--space-2);
+  margin: var(--space-6) 0 var(--space-2);
   color: var(--muted);
   font-size: var(--fs-xs);
+}
+.sidebar-section-label:first-of-type {
+  margin-top: var(--space-5);
 }
 .primary-nav,
 .collection-nav {
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 .nav-item,
 .collection-button {
@@ -285,11 +386,11 @@ summary {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 40px;
-  padding: 8px 10px 8px 12px;
+  min-height: 38px;
+  padding: 7px 8px 7px 10px;
   color: var(--ink-secondary);
-  border-radius: var(--radius);
-  font-size: var(--fs-ui);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-sm);
   text-align: left;
   transition:
     background-color 120ms ease,
@@ -297,29 +398,48 @@ summary {
 }
 .nav-item:hover,
 .collection-button:hover {
-  background: #e7dfd0;
   color: var(--ink);
+  background: #dcd1ba;
 }
 .nav-item.active,
 .collection-button.active {
   color: var(--ink);
   font-weight: 500;
 }
-/* The mark in the margin says "you are here", like a tab in a notebook. */
+/* The mounted mark in the margin: a coral tab, like a tab on a filed page. */
 .nav-item.active::before,
 .collection-button.active::before {
   content: "";
   position: absolute;
-  left: 0;
+  left: -8px;
   top: 50%;
-  width: 2px;
-  height: 18px;
+  width: 3px;
+  height: 16px;
   transform: translateY(-50%);
+  border-radius: 0 3px 3px 0;
   background: var(--coral);
+}
+.nav-name,
+.collection-button > span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Leader dots join a name to its tally across empty space, the way a ledger
+ * does. They carry one fact: which count belongs to which name. */
+.ledger-leader {
+  flex: 1 1 12px;
+  min-width: 10px;
+  height: 1px;
+  align-self: center;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--line-strong) 0 1.5px,
+    transparent 1.5px 6px
+  );
 }
 .nav-item .count,
 .collection-button .count {
-  margin-left: auto;
   color: var(--muted);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
@@ -329,35 +449,31 @@ summary {
   color: var(--ink);
 }
 .collection-button {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
 }
 .collection-button .icon {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   color: var(--muted);
 }
 .collection-button.active .icon {
   color: var(--coral);
 }
-.collection-button > span:nth-child(2) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .tag-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 0 2px;
 }
 .tag-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   max-width: 100%;
-  min-height: 28px;
-  padding: 3px 8px;
+  min-height: 26px;
+  padding: 3px 9px;
   color: var(--ink-secondary);
-  background: none;
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  border-radius: var(--radius-slip);
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;
   transition:
@@ -366,13 +482,12 @@ summary {
     background-color 120ms ease;
 }
 .tag-filter > span {
-  margin-left: 6px;
   color: var(--muted);
   font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
 }
 .tag-filter:hover {
-  color: var(--coral);
+  color: var(--coral-strong);
   border-color: var(--coral);
 }
 .tag-filter.active {
@@ -380,13 +495,15 @@ summary {
   background: var(--coral-tint);
   border-color: var(--coral);
 }
+.tag-filter.active > span {
+  color: var(--coral-strong);
+}
 .sidebar-hint {
-  margin: 0 2px;
+  margin: 0;
   color: var(--muted);
   font-size: var(--fs-xs);
-  line-height: 1.7;
+  line-height: var(--lh-body);
 }
-/* --- Breadcrumb: the trail of what is currently filtered --- */
 .breadcrumb {
   display: flex;
   flex-wrap: wrap;
@@ -406,23 +523,23 @@ summary {
   align-items: center;
   gap: 5px;
   min-height: 26px;
-  padding: 2px 8px;
+  padding: 3px 8px 3px 10px;
   color: var(--coral-strong);
   background: var(--coral-tint);
-  border-radius: var(--radius);
+  border-radius: var(--radius-slip);
   font-size: var(--fs-xs);
   text-align: left;
   transition: background-color 120ms ease;
 }
 .trail-chip:hover {
-  background: #ebd7c9;
+  background: #ebd5c6;
 }
 .trail-chip .icon {
   width: 12px;
   height: 12px;
 }
 .trail-sep {
-  color: var(--muted);
+  color: var(--line-strong);
   font-size: var(--fs-xs);
 }
 .sidebar-bottom {
@@ -446,18 +563,19 @@ summary {
 }
 .connection-dot {
   margin-left: auto;
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--line-strong);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 .connection-dot.connected {
   background: var(--coral);
+  box-shadow: none;
 }
 .repo-card strong {
   display: block;
-  margin: 10px 0 2px;
-  font-size: var(--fs-ui);
+  margin: 10px 0 3px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   overflow-wrap: anywhere;
 }
@@ -465,62 +583,61 @@ summary {
   margin: 0 0 var(--space-3);
   color: var(--muted);
   font-size: var(--fs-xs);
-  line-height: 1.6;
+  line-height: var(--lh-body);
   overflow-wrap: anywhere;
 }
 .repo-card .text-button {
   font-size: var(--fs-xs);
 }
-.repo-card .text-button .icon {
-  width: 14px;
-  height: 14px;
-}
 
-/* --- Main column + top bar -------------------------------------------- */
+/* --- Topbar: status and the two writes -------------------------------- */
 .main {
   min-width: 0;
-  margin-left: var(--sidebar-width);
+  margin-left: var(--rail-width);
 }
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 18;
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  height: 58px;
+  height: 54px;
   padding: 0 var(--space-6);
   background: var(--page);
   border-bottom: 1px solid var(--line);
 }
 .topbar-brand {
   display: none;
-}
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
+  font-size: 17px;
 }
 .head-indicator {
-  max-width: 300px;
-  padding-right: var(--space-2);
+  max-width: 44ch;
   overflow: hidden;
   color: var(--muted);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
 
-/* --- Buttons ----------------------------------------------------------- */
+/* --- Controls ---------------------------------------------------------- */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-height: 40px;
-  padding: 9px 15px;
+  min-height: 38px;
+  padding: 8px 14px;
   border: 1px solid transparent;
-  border-radius: var(--radius);
-  font-size: var(--fs-ui);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-sm);
   font-weight: 500;
   white-space: nowrap;
   transition:
@@ -538,11 +655,8 @@ summary {
   border-color: var(--ink);
 }
 .primary:hover:not(:disabled) {
-  background: #2c3d54;
-  border-color: #2c3d54;
-}
-.primary:focus-visible {
-  outline-color: var(--coral);
+  background: #2b3b50;
+  border-color: #2b3b50;
 }
 .secondary {
   color: var(--ink-secondary);
@@ -563,9 +677,9 @@ summary {
   background: #eee7d9;
 }
 .danger {
-  color: var(--sakura);
+  color: var(--sakura-strong);
   background: none;
-  border-color: #dfc6d2;
+  border-color: #ddc3d1;
 }
 .danger:hover:not(:disabled) {
   background: var(--sakura-tint);
@@ -576,12 +690,12 @@ summary {
 }
 .solid-danger {
   color: #fff;
-  background: var(--sakura);
-  border-color: var(--sakura);
-}
-.solid-danger:hover:not(:disabled) {
   background: var(--sakura-strong);
   border-color: var(--sakura-strong);
+}
+.solid-danger:hover:not(:disabled) {
+  background: #6d3450;
+  border-color: #6d3450;
 }
 .solid-danger:focus-visible {
   outline-color: var(--ink);
@@ -591,12 +705,12 @@ summary {
   align-items: center;
   gap: 6px;
   min-height: 28px;
-  color: var(--coral);
-  font-size: var(--fs-ui);
+  color: var(--coral-strong);
+  font-size: var(--fs-sm);
   transition: color 120ms ease;
 }
 .text-button:hover {
-  color: var(--coral-strong);
+  color: var(--ink);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -604,10 +718,10 @@ summary {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   color: var(--ink-secondary);
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
   flex-shrink: 0;
   transition:
     background-color 120ms ease,
@@ -619,47 +733,73 @@ summary {
 }
 .mobile-menu {
   display: none;
-  margin-left: -8px;
+  margin-left: -6px;
+}
+.small-button {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: var(--fs-xs);
+}
+.small-button .icon {
+  width: 14px;
+  height: 14px;
 }
 
-/* --- Hero -------------------------------------------------------------- */
+/* --- Hero -------------------------------------------------------------- *
+ * The one loud moment. No eyebrow label, no rule, no supporting stat: a
+ * didone italic at display size, its tracking pulled in as the size grows,
+ * and one gloss line underneath. Everything else on the page is quiet so
+ * this can be the thing that is remembered.
+ */
 .main-content {
-  max-width: 1520px;
+  max-width: 1560px;
   margin: 0 auto;
-  padding: var(--space-6) var(--space-6) 0;
+  padding: var(--space-7) var(--space-6) 0;
 }
-/* No card, panel, or rule: the wordmark sits directly on the paper. */
 .gallery-intro {
-  padding: var(--space-2) 0 var(--space-6);
+  padding: 0 0 var(--space-7);
 }
 .gallery-intro h1 {
   margin: 0;
-  color: var(--ink);
-  font-family: var(--font-display);
-  font-size: var(--fs-display);
-  font-style: oblique 8deg;
+  font-family: var(--font-hero);
+  font-size: var(--fs-hero);
+  font-style: italic;
   font-weight: 400;
-  line-height: var(--lh-tight);
-  letter-spacing: -0.01em;
+  font-optical-sizing: auto;
+  line-height: var(--lh-hero);
+  letter-spacing: -0.022em;
+  text-wrap: balance;
+  color: var(--ink);
 }
+/* The gloss is one line of five words, and it must neither wrap mid-word nor
+ * be forced past the container edge: each word is atomic and the line closes
+ * up its own spacing as the viewport narrows, so it stays a single line down
+ * to the point where wrapping *between words* is the honest answer. */
 .gallery-subtitle {
-  max-width: 46ch;
-  margin: 10px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.34em;
+  max-width: var(--measure);
+  margin: 14px 0 0;
   color: var(--muted);
-  font-size: var(--fs-read);
-  line-height: 1.7;
+  font-size: var(--fs-sm);
+  letter-spacing: 0.005em;
+  line-height: var(--lh-body);
 }
-/* The five initials that spell TOUKO are marked by weight, not by colour and not
- * by a rule: in this UI an underline already means "link", and colouring them
- * would be the "accent a word" tell. A heavier stem is the ordinary way a
- * running line shows that five letters also read as one word, and all five are
- * treated identically, so it reads as a system rather than a highlight. */
+.gallery-subtitle .word {
+  white-space: nowrap;
+}
+/* The five initials that spell TOUKO are marked by stem weight and nothing
+ * else. No colour, no underline (in this interface a rule already means
+ * "link"), and all five are treated identically, so the line reads as one
+ * system rather than as a highlighted word. */
 .brand-initial {
   color: var(--ink);
   font-weight: 600;
 }
 
-/* --- Section heading + toolbar ---------------------------------------- */
+/* --- Section head + toolbar ------------------------------------------- */
 .gallery-section {
   padding-top: var(--space-5);
 }
@@ -668,7 +808,7 @@ summary {
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-4);
-  padding-bottom: 12px;
+  padding-bottom: 14px;
   border-bottom: 1px solid var(--line);
 }
 .section-heading h2 {
@@ -677,7 +817,7 @@ summary {
   font-weight: 500;
 }
 .section-heading h2 > span {
-  margin-left: 10px;
+  margin-left: 12px;
   color: var(--muted);
   font-size: var(--fs-xs);
   font-weight: 400;
@@ -696,32 +836,31 @@ summary {
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  margin: 18px 0 26px;
+  margin: 18px 0 var(--space-5);
 }
 .search-field {
   display: flex;
   align-items: center;
   gap: 9px;
-  flex: 1;
-  max-width: 400px;
+  flex: 1 1 auto;
+  max-width: 420px;
   min-width: 0;
-  height: 40px;
+  height: 38px;
   padding: 0 12px;
   color: var(--muted);
-  background: none;
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
   transition: border-color 140ms ease;
 }
 .search-field input {
   width: 100%;
   min-width: 0;
-  padding: 8px 0;
+  padding: 7px 0;
   color: var(--ink);
   background: none;
   border: 0;
   outline: 0;
-  font-size: var(--fs-ui);
+  font-size: var(--fs-sm);
 }
 .search-field input::placeholder {
   color: var(--muted);
@@ -742,31 +881,62 @@ summary {
   padding: 0 5px;
   color: var(--muted);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  border-radius: var(--radius-photo);
   font-family: var(--font-ui);
   font-size: var(--fs-micro);
 }
 .toolbar-selects {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-left: auto;
 }
+.select-field {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+/* A chevron drawn into the field keeps the platform arrow (and the dropdown
+ * itself) intact while removing the one element that made a select read as a
+ * web form widget rather than a filed label. */
+.select-field::after {
+  content: "";
+  position: absolute;
+  right: 11px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -4px;
+  border-right: 1.5px solid var(--ink-secondary);
+  border-bottom: 1.5px solid var(--ink-secondary);
+  border-radius: 1px;
+  transform: rotate(45deg);
+  pointer-events: none;
+}
 select {
-  height: 40px;
+  width: 100%;
+  height: 38px;
   max-width: 100%;
-  padding: 8px 28px 8px 11px;
+  padding: 7px 30px 7px 11px;
   color: var(--ink-secondary);
   background-color: transparent;
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  border-radius: var(--radius-control);
   font-size: var(--fs-sm);
+  appearance: none;
   transition: border-color 140ms ease;
 }
 select:hover {
   border-color: var(--ink-secondary);
 }
+select:focus-visible {
+  border-color: var(--coral);
+  outline: 1px solid var(--coral);
+  outline-offset: 0;
+}
 input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
   accent-color: var(--coral);
 }
 progress {
@@ -782,8 +952,8 @@ progress {
   padding: 10px 14px;
   color: var(--ink-secondary);
   background: var(--coral-tint);
-  border-radius: var(--radius);
-  font-size: var(--fs-sm);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-xs);
 }
 .selection-bar label {
   display: flex;
@@ -792,26 +962,18 @@ progress {
   min-height: 28px;
   white-space: nowrap;
 }
-.selection-bar input {
-  width: 16px;
-  height: 16px;
-}
 .selection-bar #selected-count {
   margin-right: auto;
-  color: var(--ink-secondary);
   font-variant-numeric: tabular-nums;
 }
-.small-button {
-  min-height: 32px;
-  padding: 5px 10px;
-  font-size: var(--fs-xs);
-}
-.small-button .icon {
-  width: 14px;
-  height: 14px;
-}
 
-/* --- The mount: picture, then its caption ------------------------------ */
+/* --- The sheet of mounts ---------------------------------------------- *
+ * A picture is not a card: it is mounted. A cardstock mat is inset by 10px,
+ * the photograph sits inside it with the smallest radius on the page, and the
+ * mount's lower edge is a 1px rule that turns coral once the picture is staged
+ * or chosen. No page-level shadow anywhere: the only thing that is ever
+ * "lifted" is a dialog.
+ */
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -819,34 +981,40 @@ progress {
   outline: none;
 }
 .asset-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 .card-image-wrap {
   position: relative;
-  overflow: hidden;
-  aspect-ratio: 4 / 3;
-  background: var(--filecard);
-  border-radius: var(--radius);
-  box-shadow: inset 0 0 0 1px #1d2b3f1f;
+  padding: 10px;
+  background: var(--mount);
+  border-radius: var(--radius-mount);
+  box-shadow: inset 0 0 0 1px var(--mount-line);
+  transition: background-color 180ms ease;
+}
+/* Staged: the mat becomes kraft paper. Material, not colour-coding alone —
+ * the caption states the state in words as well. */
+.asset-card.is-staged .card-image-wrap {
+  background: var(--kraft-board);
+  box-shadow: inset 0 0 0 1px #dcc596;
 }
 .card-open {
   display: block;
   width: 100%;
-  height: 100%;
-  padding: 0;
-  text-align: left;
 }
 .card-image {
   display: block;
   width: 100%;
-  height: 100%;
+  aspect-ratio: 4 / 3;
   object-fit: cover;
+  border-radius: var(--radius-photo);
+  background: #ddd3bd;
   transition: opacity 140ms ease;
 }
 .asset-card:focus-within .card-image {
-  opacity: 0.93;
+  opacity: 0.92;
 }
 .card-image-error {
   display: flex;
@@ -855,10 +1023,13 @@ progress {
   justify-content: center;
   gap: 8px;
   width: 100%;
-  height: 100%;
+  aspect-ratio: 4 / 3;
   padding: var(--space-4);
-  color: var(--muted);
+  color: var(--ink-secondary);
+  border-radius: var(--radius-photo);
+  background: #ddd3bd;
   font-size: var(--fs-xs);
+  line-height: var(--lh-body);
   text-align: center;
 }
 .card-image-error > .icon {
@@ -868,23 +1039,23 @@ progress {
 }
 .card-select {
   position: absolute;
-  top: 4px;
-  left: 4px;
+  top: 5px;
+  left: 5px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   opacity: 0;
   cursor: pointer;
   transition: opacity 120ms ease;
 }
 .card-select input {
-  width: 20px;
-  height: 20px;
+  width: 17px;
+  height: 17px;
   margin: 0;
   cursor: pointer;
-  filter: drop-shadow(0 0 2px #f7f3eae6) drop-shadow(0 0 1px #1d2b3f66);
+  filter: drop-shadow(0 0 2px #f7f3eaf2) drop-shadow(0 0 1px #1b2a3d59);
 }
 .asset-card:hover .card-select,
 .asset-card:focus-within .card-select,
@@ -894,22 +1065,26 @@ progress {
 }
 .asset-card.is-selected .card-image-wrap {
   box-shadow:
-    inset 0 0 0 1px #1d2b3f1f,
+    inset 0 0 0 1px var(--mount-line),
     0 0 0 2px var(--coral);
+}
+@media (pointer: coarse) {
+  .card-select {
+    opacity: 1;
+  }
 }
 .card-content {
   padding: 12px 0 0;
 }
-/* The rule under the picture is the mount mark: a hairline for a filed picture,
- * coral and heavier once it is staged or chosen. It sits above the caption, so
- * the picture is separated from its title without a box around either. */
+/* The mount's lower edge. A filed picture gets a hairline; a staged or chosen
+ * one gets a coral rule, so state is legible from across the sheet. */
 .card-content::before {
   content: "";
   display: block;
   width: 100%;
   height: 1px;
   margin-bottom: 10px;
-  background: var(--line);
+  background: var(--mount-line);
   transition:
     height 160ms ease,
     background-color 160ms ease;
@@ -923,9 +1098,9 @@ progress {
   margin: 0;
   font-family: var(--font-display);
   font-size: var(--fs-lg);
-  font-style: oblique 6deg;
+  font-style: oblique 7deg;
   font-weight: 400;
-  line-height: 1.3;
+  line-height: var(--lh-tight);
 }
 .card-title {
   display: block;
@@ -944,21 +1119,22 @@ progress {
 }
 .card-tags {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0 8px;
-  min-height: 18px;
-  margin: 6px 0 7px;
+  min-height: 20px;
+  margin: 7px 0 8px;
   overflow: hidden;
   font-size: var(--fs-xs);
   white-space: nowrap;
 }
-/* A hairline separates the drawer name from the filing words; it is a rule, not
- * an interstitial character, so nothing reads as a "A · B" meta string. */
+/* A hairline stands between the namespace and the filing words; it is a rule
+ * rather than an interstitial character, so nothing reads as an "A · B C"
+ * meta string. */
 .namespace-chip:not(:last-child)::after {
   content: "";
   display: inline-block;
   width: 1px;
-  height: 9px;
+  height: 10px;
   margin-left: 8px;
   vertical-align: -1px;
   background: var(--line-strong);
@@ -973,25 +1149,35 @@ progress {
   text-overflow: ellipsis;
 }
 .card-tag.collection {
-  color: var(--coral);
+  color: var(--coral-strong);
 }
 .card-tag.none,
 .card-tag.more {
   color: var(--muted);
 }
+/* A kraft slip pinned to the mount: "written down, not on the remote yet".
+ * It is opaque, so its contrast is stated against the slip, not the photo. */
 .state-chip {
-  margin-left: auto;
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  padding: 2px 9px;
   color: var(--kraft);
+  background: var(--kraft-tint);
+  border-radius: var(--radius-slip);
+  font-size: var(--fs-micro);
   font-weight: 500;
+  line-height: 1.6;
 }
 .state-chip.modified {
-  color: var(--sakura);
+  color: var(--sakura-strong);
+  background: var(--sakura-tint);
 }
 .card-footer {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0 8px;
+  gap: 0 10px;
   color: var(--muted);
   font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
@@ -1013,43 +1199,42 @@ progress {
   display: flex;
   justify-content: space-between;
   gap: var(--space-4);
-  margin-top: var(--space-7);
-  padding: 18px 0 30px;
+  max-width: var(--measure);
+  margin-top: var(--space-8);
+  padding: 18px 0 var(--space-6);
   color: var(--muted);
   border-top: 1px solid var(--line);
   font-size: var(--fs-xs);
-}
-.gallery-footer > span {
-  max-width: 62ch;
+  line-height: var(--lh-body);
 }
 
-/* --- Empty + loading states ------------------------------------------- */
+/* --- Empty and loading states ----------------------------------------- */
 .empty-state {
   grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
   min-height: 300px;
-  padding: var(--space-7) var(--space-5);
-  text-align: center;
+  padding: var(--space-8) 0;
+  max-width: var(--measure);
 }
 .empty-state > .icon {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   margin-bottom: var(--space-4);
   color: var(--muted);
 }
 .empty-state h3 {
   margin: 0 0 6px;
+  font-family: var(--font-display);
   font-size: var(--fs-lg);
-  font-weight: 500;
+  font-style: oblique 7deg;
+  font-weight: 400;
 }
 .empty-state p {
-  max-width: var(--measure);
   margin: 0 0 var(--space-5);
-  color: var(--muted);
-  font-size: var(--fs-read);
+  color: var(--ink-secondary);
+  font-size: var(--fs-body);
   line-height: var(--lh-read);
 }
 .loading-ring {
@@ -1070,70 +1255,72 @@ progress {
 /* --- Notices, banner, toast ------------------------------------------- */
 .notice {
   padding: 12px 14px;
-  border-radius: var(--radius);
-  font-size: var(--fs-read);
-  line-height: 1.7;
+  border-radius: var(--radius-control);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-read);
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
 .notice.error {
-  color: var(--sakura);
+  color: var(--sakura-strong);
   background: var(--sakura-tint);
-  border: 1px solid #dfc6d2;
+  box-shadow: inset 3px 0 0 var(--sakura);
 }
 .notice.warning {
   color: var(--kraft);
   background: var(--kraft-tint);
-  border: 1px solid #e2d3b1;
+  box-shadow: inset 3px 0 0 var(--kraft);
 }
 .notice.success {
   color: var(--coral-strong);
   background: var(--coral-tint);
-  border: 1px solid #e0c8ba;
+  box-shadow: inset 3px 0 0 var(--coral);
 }
 #page-error {
-  margin: var(--space-5) 0 0;
+  margin-top: var(--space-5);
 }
 .setup-banner {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-5);
-  margin: var(--space-5) 0 0;
-  padding: var(--space-4) 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  margin-top: var(--space-6);
+  padding: var(--space-5);
+  background: var(--mount);
+  border-radius: var(--radius-mount);
+  box-shadow: inset 0 0 0 1px var(--mount-line);
 }
 .setup-banner strong {
-  font-size: var(--fs-read);
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 .setup-banner p {
-  max-width: var(--measure);
-  margin: 4px 0 0;
+  max-width: var(--measure-prose);
+  margin: 5px 0 0;
   color: var(--muted);
-  font-size: var(--fs-sm);
-  line-height: 1.7;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-read);
 }
 .toast {
   position: fixed;
   bottom: var(--space-5);
-  left: calc(50% + var(--sidebar-width) / 2);
+  left: calc(50% + var(--rail-width) / 2);
   z-index: 100;
   transform: translateX(-50%);
   max-width: min(560px, 84vw);
   padding: 12px 18px;
   color: var(--page);
   background: var(--ink);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-pop);
-  font-size: var(--fs-sm);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-lift);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-body);
   text-align: center;
   white-space: pre-line;
   pointer-events: none;
 }
 
-/* --- Dialogs (the same paper, lifted) ---------------------------------- */
+/* --- Dialogs: the same sheet, lifted ---------------------------------- */
 .dialog {
   width: min(640px, calc(100vw - 40px));
   max-height: calc(100dvh - 48px);
@@ -1142,11 +1329,11 @@ progress {
   color: var(--ink);
   background: var(--page);
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-pop);
+  border-radius: var(--radius-sheet);
+  box-shadow: var(--shadow-lift);
 }
 .dialog::backdrop {
-  background: #1d2b3f66;
+  background: #1b2a3d66;
 }
 /* The one moment of motion: a dialog answers the action that opened it. */
 .dialog[open] {
@@ -1155,7 +1342,7 @@ progress {
 @keyframes lift {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px);
   }
 }
 .dialog-header {
@@ -1166,17 +1353,19 @@ progress {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-5);
-  padding: 16px var(--space-5);
+  padding: 18px var(--space-5);
   background: var(--page);
   border-bottom: 1px solid var(--line);
 }
 .dialog-header h2 {
   margin: 0;
+  font-family: var(--font-display);
   font-size: var(--fs-h2);
-  font-weight: 500;
+  font-style: oblique 7deg;
+  font-weight: 400;
 }
 .dialog-header .icon-button {
-  margin-right: -10px;
+  margin-right: -8px;
 }
 .dialog-body {
   padding: var(--space-5);
@@ -1187,8 +1376,8 @@ progress {
   justify-content: space-between;
   gap: var(--space-4);
   padding: 14px var(--space-5);
-  background: var(--filecard);
-  border-top: 1px solid var(--line);
+  background: var(--mount);
+  border-top: 1px solid var(--mount-line);
 }
 .dialog-footer > .muted {
   font-size: var(--fs-xs);
@@ -1197,9 +1386,9 @@ progress {
   color: var(--muted);
 }
 .intro {
-  max-width: var(--measure);
+  max-width: var(--measure-prose);
   margin: 0 0 var(--space-5);
-  font-size: var(--fs-read);
+  font-size: var(--fs-body);
   line-height: var(--lh-read);
 }
 .dialog label {
@@ -1207,26 +1396,24 @@ progress {
   flex-direction: column;
   gap: 6px;
   margin-bottom: var(--space-4);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   font-weight: 500;
 }
 .dialog input:not([type="file"]):not([type="checkbox"]),
-.dialog textarea,
-.dialog select {
+.dialog textarea {
   display: block;
   width: 100%;
   padding: 9px 11px;
   color: var(--ink);
   background: none;
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  font-size: var(--fs-ui);
+  border-radius: var(--radius-control);
+  font-size: var(--fs-sm);
   font-weight: 400;
   transition: border-color 140ms ease;
 }
 .dialog input:not([type="file"]):not([type="checkbox"]):hover,
-.dialog textarea:hover,
-.dialog select:hover {
+.dialog textarea:hover {
   border-color: var(--ink-secondary);
 }
 .dialog input:focus-visible,
@@ -1243,12 +1430,16 @@ progress {
 .dialog textarea {
   min-height: 68px;
   resize: vertical;
-  line-height: 1.7;
+  line-height: var(--lh-read);
 }
 .dialog label small {
   color: var(--muted);
   font-size: var(--fs-xs);
   font-weight: 400;
+  line-height: var(--lh-body);
+}
+.dialog .select-field {
+  width: 100%;
 }
 .dialog .form-grid {
   display: grid;
@@ -1256,20 +1447,20 @@ progress {
   gap: 0 var(--space-5);
 }
 .field-help {
-  max-width: var(--measure);
+  max-width: var(--measure-prose);
   margin: 0 0 var(--space-4);
   color: var(--muted);
   font-size: var(--fs-xs);
-  line-height: 1.75;
+  line-height: var(--lh-read);
   overflow-wrap: anywhere;
 }
 .field-help code,
 .repo-security code {
   padding: 1px 5px;
   color: var(--ink-secondary);
-  background: var(--filecard);
-  border-radius: var(--radius);
-  font-size: 0.92em;
+  background: var(--mount);
+  border-radius: var(--radius-photo);
+  font-size: 0.94em;
 }
 
 /* Upload */
@@ -1285,7 +1476,7 @@ progress {
   color: var(--ink-secondary);
   background: none;
   border: 1px dashed var(--line-strong);
-  border-radius: var(--radius);
+  border-radius: var(--radius-mount);
   text-align: center;
   cursor: pointer;
   transition:
@@ -1301,19 +1492,19 @@ progress {
   width: 26px;
   height: 26px;
   margin-bottom: 8px;
-  color: var(--coral);
+  color: var(--coral-strong);
 }
 .drop-zone strong {
-  font-size: var(--fs-ui);
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .drop-zone > span {
   max-width: 42ch;
-  margin-top: 4px;
+  margin-top: 5px;
   color: var(--muted);
   font-size: var(--fs-xs);
   font-weight: 400;
-  line-height: 1.6;
+  line-height: var(--lh-read);
 }
 .drop-zone input {
   position: absolute;
@@ -1328,8 +1519,8 @@ progress {
   outline-offset: 3px;
 }
 .upload-list {
-  margin-bottom: var(--space-5);
   max-height: 232px;
+  margin-bottom: var(--space-5);
   overflow: auto;
 }
 .upload-row {
@@ -1343,8 +1534,8 @@ progress {
   width: 44px;
   height: 44px;
   object-fit: cover;
-  border-radius: var(--radius);
-  background: var(--filecard);
+  border-radius: var(--radius-photo);
+  background: var(--mount);
 }
 .upload-row > div {
   flex: 1;
@@ -1384,20 +1575,20 @@ progress {
   width: 100%;
   height: 4px;
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--radius-slip);
   background: var(--line);
 }
 .progress-area progress::-webkit-progress-bar {
   background: var(--line);
-  border-radius: 2px;
+  border-radius: var(--radius-slip);
 }
 .progress-area progress::-webkit-progress-value {
   background: var(--coral);
-  border-radius: 2px;
+  border-radius: var(--radius-slip);
 }
 .progress-area progress::-moz-progress-bar {
   background: var(--coral);
-  border-radius: 2px;
+  border-radius: var(--radius-slip);
 }
 .progress-area span {
   white-space: nowrap;
@@ -1418,13 +1609,14 @@ progress {
   justify-content: center;
   min-height: 460px;
   padding: var(--space-6);
-  background: var(--filecard);
-  border-right: 1px solid var(--line);
+  background: var(--mount);
+  border-right: 1px solid var(--mount-line);
 }
 .preview-image-wrap img {
   max-width: 100%;
   max-height: 64vh;
   object-fit: contain;
+  border-radius: var(--radius-photo);
 }
 .preview-image-wrap .notice {
   max-width: 34ch;
@@ -1434,7 +1626,7 @@ progress {
   bottom: 14px;
   left: var(--space-5);
   color: var(--muted);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-micro);
 }
 .preview-details {
   max-height: calc(100dvh - 140px);
@@ -1444,14 +1636,19 @@ progress {
 .asset-state {
   display: inline-block;
   margin-bottom: var(--space-4);
-  color: var(--ink-secondary);
-  font-size: var(--fs-xs);
+  padding: 2px 9px;
+  color: var(--coral-strong);
+  background: var(--coral-tint);
+  border-radius: var(--radius-slip);
+  font-size: var(--fs-micro);
 }
 .asset-state.added {
   color: var(--kraft);
+  background: var(--kraft-tint);
 }
 .asset-state.modified {
-  color: var(--sakura);
+  color: var(--sakura-strong);
+  background: var(--sakura-tint);
 }
 .metadata-details {
   margin: var(--space-4) 0;
@@ -1461,7 +1658,7 @@ progress {
 }
 .metadata-details summary {
   color: var(--ink-secondary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 .metadata-details summary:hover {
@@ -1487,7 +1684,7 @@ progress {
   display: flex;
   gap: 8px;
 }
-.inline-controls select {
+.inline-controls .select-field {
   flex: 1;
   min-width: 0;
 }
@@ -1496,7 +1693,7 @@ progress {
 }
 .delivery-controls #delivery-url {
   margin-top: var(--space-3);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-micro);
 }
 .delivery-controls .field-help {
   margin: var(--space-2) 0 0;
@@ -1515,9 +1712,11 @@ progress {
   width: min(580px, calc(100vw - 40px));
 }
 .pending-dialog h2 > span {
-  margin-left: 6px;
-  color: var(--coral);
+  margin-left: 8px;
+  color: var(--coral-strong);
+  font-family: var(--font-ui);
   font-size: var(--fs-sm);
+  font-style: normal;
   font-variant-numeric: tabular-nums;
 }
 .pending-base {
@@ -1528,8 +1727,8 @@ progress {
   overflow-wrap: anywhere;
 }
 .pending-list {
-  margin-bottom: var(--space-5);
   max-height: 320px;
+  margin-bottom: var(--space-5);
   overflow: auto;
 }
 .pending-row {
@@ -1541,14 +1740,21 @@ progress {
 }
 .change-label {
   flex-shrink: 0;
+  min-width: 44px;
+  padding: 2px 8px;
   color: var(--kraft);
-  font-size: var(--fs-xs);
+  background: var(--kraft-tint);
+  border-radius: var(--radius-slip);
+  font-size: var(--fs-micro);
+  text-align: center;
 }
 .change-label.update {
-  color: var(--coral);
+  color: var(--coral-strong);
+  background: var(--coral-tint);
 }
 .change-label.delete {
-  color: var(--sakura);
+  color: var(--sakura-strong);
+  background: var(--sakura-tint);
 }
 .pending-row > div {
   min-width: 0;
@@ -1577,19 +1783,21 @@ progress {
 /* Repository */
 .repo-security {
   margin: var(--space-5) 0;
-  padding-left: var(--space-4);
-  border-left: 2px solid var(--line-strong);
+  padding: 12px 14px;
+  background: var(--mount);
+  border-radius: var(--radius-control);
+  box-shadow: inset 3px 0 0 var(--line-strong);
 }
 .repo-security strong {
   font-size: var(--fs-sm);
   font-weight: 600;
 }
 .repo-security p {
-  max-width: var(--measure);
+  max-width: var(--measure-prose);
   margin: 6px 0 var(--space-3);
   color: var(--muted);
   font-size: var(--fs-xs);
-  line-height: 1.75;
+  line-height: var(--lh-read);
 }
 .auth-line {
   display: flex;
@@ -1608,15 +1816,15 @@ progress {
   margin-top: var(--space-4);
 }
 
-/* Confirm + result */
+/* Confirm and result */
 .confirm-dialog {
   width: min(460px, calc(100vw - 40px));
 }
 .confirm-dialog .dialog-body > p {
   margin: 0;
   color: var(--ink-secondary);
-  font-size: var(--fs-ui);
-  line-height: 1.8;
+  font-size: var(--fs-body);
+  line-height: var(--lh-read);
   white-space: pre-line;
 }
 .confirm-dialog .notice {
@@ -1626,8 +1834,10 @@ progress {
   width: min(520px, calc(100vw - 40px));
 }
 .result-dialog .dialog-body p {
+  margin-top: 0;
   color: var(--ink-secondary);
-  font-size: var(--fs-ui);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-read);
   overflow-wrap: anywhere;
 }
 .result-dialog dl {
@@ -1660,30 +1870,59 @@ progress {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
-@media (min-width: 1560px) {
+@media (min-width: 1680px) {
   .gallery-grid {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 @media (max-width: 1280px) {
   :root {
-    --sidebar-width: 220px;
-    --gap-x: 22px;
-    --gap-y: 30px;
+    --rail-width: 232px;
+    --gap-x: 24px;
+    --gap-y: 32px;
   }
   .topbar {
     padding: 0 var(--space-5);
   }
   .main-content {
-    padding: var(--space-5) var(--space-5) 0;
+    padding: var(--space-6) var(--space-5) 0;
   }
+}
+@media (max-width: 1080px) {
   .head-indicator {
     display: none;
   }
 }
-@media (max-width: 980px) {
+@media (max-width: 900px) {
   :root {
-    --sidebar-width: 208px;
+    --gap-x: 20px;
+    --gap-y: 28px;
+  }
+  .sidebar {
+    top: 54px;
+    inset: 54px auto 0 0;
+    width: 268px;
+    max-width: 84vw;
+    padding: var(--space-5) var(--space-5) var(--space-5);
+    border-right: 1px solid var(--mount-line);
+    box-shadow: var(--shadow-lift);
+    transform: translateX(-100%);
+    transition: transform 180ms ease;
+  }
+  .sidebar.is-open {
+    transform: translateX(0);
+  }
+  .main {
+    margin-left: 0;
+  }
+  .mobile-menu {
+    display: inline-flex;
+  }
+  .topbar-brand {
+    display: inline-flex;
+  }
+  .main-content {
+    padding: var(--space-5) var(--space-4) 0;
   }
   .gallery-toolbar {
     flex-wrap: wrap;
@@ -1697,12 +1936,8 @@ progress {
     width: 100%;
     margin-left: 0;
   }
-  .toolbar-selects select {
+  .toolbar-selects .select-field {
     flex: 1;
-    min-width: 0;
-  }
-  .card-select {
-    opacity: 1;
   }
   .preview-layout {
     grid-template-columns: minmax(0, 1fr);
@@ -1711,7 +1946,7 @@ progress {
     min-height: 320px;
     padding: var(--space-5);
     border-right: 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--mount-line);
   }
   .preview-details {
     max-height: none;
@@ -1720,51 +1955,40 @@ progress {
 }
 @media (max-width: 700px) {
   :root {
-    --sidebar-width: 244px;
-    --gap-x: 14px;
-    --gap-y: 24px;
-    --fs-display: clamp(2rem, 9vw, 2.5rem);
+    --gap-x: 16px;
+    --gap-y: 26px;
+    --fs-hero: clamp(2.5rem, 11.5vw, 3.25rem);
+    --space-7: 36px;
+    --space-8: 48px;
   }
-  .sidebar {
-    top: 54px;
-    padding: var(--space-5) 20px;
-    box-shadow: 0 22px 48px -20px #1d2b3f5c;
-    transform: translateX(-100%);
-    transition: transform 160ms ease;
+  /* The gloss closes up its tracking as the viewport narrows so it stays one
+   * line; below the width where even that overflows it wraps between words,
+   * and each word stays whole. */
+  .gallery-subtitle {
+    gap: 0 0.24em;
+    margin-top: 12px;
+    font-size: 0.8125rem;
+    letter-spacing: -0.004em;
   }
-  .sidebar.is-open {
-    transform: translateX(0);
-  }
-  .brand {
-    margin-bottom: var(--space-4);
-  }
-  .main {
-    margin-left: 0;
+  .gallery-intro {
+    padding-bottom: var(--space-6);
   }
   .topbar {
-    position: sticky;
-    top: 0;
-    z-index: 25;
-    height: 54px;
+    height: 50px;
     padding: 0 var(--space-4);
     gap: 10px;
   }
-  .mobile-menu {
-    display: inline-flex;
+  .sidebar {
+    top: 50px;
+    inset: 50px auto 0 0;
+    padding-top: var(--space-4);
   }
   .topbar-brand {
-    display: block;
-    color: var(--ink);
-    font-size: var(--fs-sm);
-    font-weight: 600;
-    letter-spacing: var(--tracking-mark);
-  }
-  .topbar-actions {
-    gap: 6px;
+    font-size: 15px;
   }
   .topbar .button {
-    min-height: 40px;
-    padding: 8px 11px;
+    min-height: 38px;
+    padding: 7px 10px;
     font-size: var(--fs-xs);
   }
   .topbar .subtle span,
@@ -1772,17 +1996,11 @@ progress {
     display: none;
   }
   .topbar .subtle {
-    padding-inline: 10px;
+    padding-inline: 9px;
   }
   .topbar .icon {
     width: 17px;
     height: 17px;
-  }
-  .main-content {
-    padding: var(--space-4) var(--space-4) 0;
-  }
-  .gallery-intro {
-    padding: 2px 0 var(--space-5);
   }
   .gallery-section {
     padding-top: var(--space-4);
@@ -1790,14 +2008,13 @@ progress {
   .section-heading {
     align-items: center;
     gap: 10px;
-    padding-bottom: 12px;
   }
   .section-heading h2 {
     font-size: var(--fs-lg);
   }
   .section-heading h2 > span {
     display: block;
-    margin: 2px 0 0;
+    margin: 3px 0 0;
     font-size: var(--fs-xs);
   }
   .section-actions {
@@ -1805,7 +2022,7 @@ progress {
     flex-shrink: 0;
   }
   .section-actions .button {
-    min-height: 40px;
+    min-height: 38px;
     padding: 6px 10px;
     font-size: var(--fs-xs);
   }
@@ -1820,56 +2037,55 @@ progress {
     margin: var(--space-4) 0 var(--space-5);
   }
   .search-field {
-    height: 44px;
+    height: 42px;
   }
   .search-field input {
-    padding: 11px 0;
-    font-size: var(--fs-sm);
-  }
-  .toolbar-selects {
-    gap: 10px;
-  }
-  .toolbar-selects select {
-    height: 42px;
-    padding-inline: 9px 24px;
+    padding: 10px 0;
     font-size: var(--fs-xs);
   }
+  .toolbar-selects select {
+    height: 40px;
+    padding-inline: 9px 28px;
+    font-size: var(--fs-xs);
+  }
+  .card-image-wrap {
+    padding: 9px;
+  }
   .card-select {
-    top: 0;
-    left: 0;
+    top: 2px;
+    left: 2px;
   }
   .card-content {
     padding-top: 10px;
   }
   .card-heading {
-    font-size: var(--fs-read);
+    font-size: var(--fs-body);
   }
-  /* Touch: the title row and rail controls get a full-size target. */
   .card-title {
-    padding: 10px 0;
+    padding: 9px 0;
   }
   .card-tags {
-    gap: 0 8px;
-    margin: 0 0 7px;
+    margin: 0 0 8px;
   }
   .card-tag {
     max-width: 8em;
   }
+  .state-chip {
+    top: 16px;
+    right: 16px;
+  }
   .tag-filter {
-    min-height: 36px;
-    padding: 6px 10px;
+    min-height: 32px;
+    padding: 5px 10px;
   }
   .repo-card .text-button {
-    min-height: 36px;
-  }
-  .card-footer {
-    gap: 0 8px;
+    min-height: 34px;
   }
   .gallery-footer {
     flex-direction: column;
     gap: 4px;
-    margin-top: var(--space-6);
-    padding: 14px 0 24px;
+    margin-top: var(--space-7);
+    padding: 14px 0 var(--space-5);
   }
   .selection-bar {
     flex-wrap: wrap;
@@ -1877,17 +2093,14 @@ progress {
     padding: 9px 10px;
   }
   .selection-bar label,
-  .selection-bar .text-button {
-    font-size: var(--fs-xs);
-  }
-  .selection-bar label,
   .selection-bar .text-button,
   .selection-bar .small-button {
-    min-height: 40px;
+    font-size: var(--fs-xs);
+    min-height: 38px;
   }
   .selection-bar input[type="checkbox"] {
-    width: 20px;
-    height: 20px;
+    width: 19px;
+    height: 19px;
   }
   .selection-bar .small-button {
     margin-left: auto;
@@ -1895,22 +2108,21 @@ progress {
   .setup-banner {
     align-items: flex-start;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
+    padding: var(--space-4);
+    margin-top: var(--space-5);
   }
   .setup-banner .button {
-    min-height: 40px;
+    min-height: 38px;
     padding: 8px 12px;
     font-size: var(--fs-xs);
   }
   .empty-state {
-    min-height: 260px;
-    padding: var(--space-6) var(--space-4);
+    min-height: 240px;
+    padding: var(--space-7) 0;
   }
   .empty-state h3 {
-    font-size: var(--fs-ui);
-  }
-  .empty-state p {
-    font-size: var(--fs-sm);
+    font-size: var(--fs-body);
   }
   .toast {
     left: 50%;
@@ -1918,17 +2130,16 @@ progress {
     width: max-content;
     max-width: calc(100vw - 32px);
     padding: 11px 15px;
-    font-size: var(--fs-xs);
   }
   .dialog {
     width: calc(100vw - 24px);
     max-height: calc(100dvh - 24px);
   }
   .dialog-header {
-    padding: 13px var(--space-4);
+    padding: 14px var(--space-4);
   }
   .dialog-header h2 {
-    font-size: var(--fs-lg);
+    font-size: 1.25rem;
   }
   .dialog-body {
     padding: var(--space-4);
@@ -1940,12 +2151,11 @@ progress {
   }
   .dialog-footer > .muted {
     max-width: 100%;
-    font-size: var(--fs-micro);
   }
   .dialog .button {
-    min-height: 40px;
-    padding: 9px 12px;
-    font-size: var(--fs-sm);
+    min-height: 38px;
+    padding: 8px 12px;
+    font-size: var(--fs-xs);
   }
   .dialog .drop-zone {
     min-height: 140px;
@@ -1958,9 +2168,10 @@ progress {
   .dialog label {
     gap: 8px;
   }
-  .dialog input[type="checkbox"] {
-    width: 20px;
-    height: 20px;
+  .dialog input:not([type="file"]):not([type="checkbox"]),
+  .dialog textarea,
+  .dialog select {
+    font-size: var(--fs-xs);
   }
   .upload-row img {
     width: 40px;
@@ -1987,9 +2198,15 @@ progress {
     gap: 6px;
   }
 }
-@media (max-width: 430px) {
+@media (max-width: 480px) {
   .gallery-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* At 390px the gloss still fits on one line once the size and the word gaps
+   * close up one more step, which the brief prefers to wrapping. */
+  .gallery-subtitle {
+    gap: 0 0.22em;
+    font-size: 0.75rem;
   }
 }
 @media (prefers-reduced-motion: reduce) {

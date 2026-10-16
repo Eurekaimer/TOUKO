@@ -222,7 +222,7 @@ function renderWorkspace() {
       ? `${location.owner}/${location.name}`
       : location.path.split("/").filter(Boolean).at(-1);
   $("repo-detail").textContent = !location
-    ? "连接你自己的 Git 仓库后开始收藏"
+    ? "连接仓库后，图片就归档在这里。"
     : `${location.backend === "github" ? (location.private ? "GitHub 私有仓库" : "GitHub 公开仓库") : "本地 Git 仓库"}，分支 ${location.branch}`;
   $("repo-detail").title = location?.path || "";
   $("repo-dot").classList.toggle("connected", !!location);
@@ -282,16 +282,19 @@ function renderFilters() {
       },
     );
     item.setAttribute("aria-pressed", String(filters.collection === name));
+    const leader = element("span", "ledger-leader");
+    leader.setAttribute("aria-hidden", "true");
     item.append(
       icon("folder"),
       element("span", "", name),
+      leader,
       element("span", "count", count),
     );
     $("collection-filters").append(item);
   }
   if (!collections.length)
     $("collection-filters").append(
-      element("p", "sidebar-hint", "图片的分类会出现在这里"),
+      element("p", "sidebar-hint", "归档图片后，分类会列在这里。"),
     );
   $("tag-filters").replaceChildren();
   for (const [name, count] of tags) {
@@ -310,7 +313,9 @@ function renderFilters() {
     $("tag-filters").append(item);
   }
   if (!tags.length)
-    $("tag-filters").append(element("p", "sidebar-hint", "图片的标签会出现在这里"));
+    $("tag-filters").append(
+      element("p", "sidebar-hint", "归档图片后，标签会列在这里。"),
+    );
 }
 function visibleAssets() {
   if (!workspace) return [];
@@ -383,7 +388,9 @@ function card(view) {
     renderGallery();
   });
   select.append(checkbox);
-  // Only the selection control floats over the picture; state is stated in the caption.
+  // Only the selection control floats over the picture; the state slip is
+  // pinned to the mount itself, so it reads as a kraft label on the mat rather
+  // than as one more caption detail.
   media.append(open, select);
   const content = element("div", "card-content");
   const title = button(asset.title || asset.original_name, "card-title", () =>
@@ -412,14 +419,17 @@ function card(view) {
     );
   if (!asset.collections.length)
     badges.append(element("span", "card-tag none", "未分类"));
-  if (view.state !== "committed")
-    badges.append(
-      element(
-        "span",
-        `state-chip ${view.state}`,
-        view.state === "added" ? "待发布" : "有修改",
-      ),
+  // A staged picture gets a kraft slip pinned to the top of its mount: the mat
+  // is already kraft paper, and the slip is what says in words which state it
+  // is in. Colour alone never carries this.
+  let stateSlip;
+  if (view.state !== "committed") {
+    stateSlip = element(
+      "span",
+      `state-chip ${view.state}`,
+      view.state === "added" ? "待发布" : "有修改",
     );
+  }
   const footer = element("div", "card-footer");
   const dimensions = element("span");
   dimensions.append(
@@ -435,6 +445,7 @@ function card(view) {
   );
   content.append(heading, badges, footer);
   node.append(media, content);
+  if (stateSlip) node.append(stateSlip);
   return node;
 }
 function renderTrail() {
@@ -496,8 +507,8 @@ function renderGallery() {
         "p",
         "",
         active
-          ? "换个关键词试试，或者清除筛选看全部图片。"
-          : "上传 PNG、JPEG 或 GIF，再用标签与分类整理。",
+          ? "换个关键词试试，或者清除筛选，看全部图片。"
+          : "把 PNG、JPEG 或 GIF 拖进来，再用标签和分类归档。",
       ),
     );
     empty.append(
@@ -570,7 +581,7 @@ function openPreview(id) {
   $("delivery-url").value = "";
   $("delivery-note").textContent =
     view.state === "added"
-      ? "尚未发布 — 这是提交后才会生效的地址。"
+      ? "还没发布：这个地址要等提交之后才能访问。"
       : "链接跟随分支；jsDelivr 的缓存传播可能有延迟。";
   clearError("edit-error");
   showDialog("preview-dialog");
@@ -919,13 +930,13 @@ function bindEvents() {
       $("delivery-url").value = value.url;
       $("delivery-note").textContent = value.committed
         ? "图片已提交。链接跟随分支，CDN 传播可能有延迟。"
-        : "尚未发布 — 这是提交后才会生效的地址。";
+        : "还没发布：这个地址要等提交之后才能访问。";
       try {
         await navigator.clipboard.writeText(value.url);
         toast(
           value.committed
             ? "已复制图片链接"
-            : "已复制预期链接。图片还没发布，提交后才能访问。",
+            : "已复制链接，但图片还没发布，提交后才能访问。",
         );
       } catch {
         $("delivery-url").focus();
