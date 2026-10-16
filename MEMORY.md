@@ -134,7 +134,7 @@ bash examples/demo.sh
 ## 已知限制与未执行项
 
 - **真实GitHub live smoke未执行**：用户没有提供专用gallery repo/token。不能拿Eurekaimer/TOUKO代码仓库充当gallery。已提供 `examples/github-acceptance.sh`（只从 `GITHUB_TOKEN` 读取凭据、拒绝源码仓库作为gallery、非零退出保留现场），其断言已在真实本地 bare Git 仓库上完整跑通（init幂等、批量提交、两个provider URL一致性、verify、第二设备逐字段metadata一致、末引用删除在第三设备不可见）；GitHub专属步骤（token认证、public raw bytes校验）仍待用户提供专用repo/token后执行。执行方法见docs/github.md。不要让用户把token发聊天。
-- 原生桌面壳已存在：`cmd/touko-desktop` 用 MyGo 打开同一 Webview（`internal/desktop/app.go`，缺系统 webview 时明确报错而非静默回退）。它仍是新代码，尚未由用户确认可用。
+- 原生桌面壳已存在并在本机实测：`cmd/touko-desktop` 用 MyGo 打开同一 Webview（`internal/desktop/app.go`）。真实启动 `/tmp/touko-desktop --state-dir … --port 7807` 打印 `TOUKO MyGo: http://127.0.0.1:7807`、窗口进程存活、页面 HTTP 200（标题「图片库 · TOUKO」），终止后进程退出且端口释放。缺系统 webview 时明确报错而非静默回退。
 - GitHub force:false仅fast-forward，不是任意外部force/reset下的严格CAS。分支应禁止force-push；TOUKO固定parent/HEADchecks保护正常non-force并发。不能宣称解决外部管理员rewrite race。
 - localgit/private GitHub无公网URL/Markdown；public推导URL不等于commit完成或CDN传播。jsDelivr延迟不是远端commit失败。
 - 普通rm只保证latest HEAD，不purge history/CDN。已有本地浏览器Webview；没有原生桌面壳、thumbnail、R2、OAuthlogin、自动merge、namespace move/objectreplace或假migration。
