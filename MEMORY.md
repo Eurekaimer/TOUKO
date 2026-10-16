@@ -4,7 +4,7 @@
 
 ## 当前交付状态
 
-CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 `188cef1`）。真实浏览器已重新核验桌面/移动布局、字体真实加载、筛选与轨迹、预览原图、待发布、多选、对话框与 Esc 关闭。真实 GitHub live smoke 仍未执行，缺少用户授权的专用 gallery/token，不能用本地检查冒充线上成功；`examples/github-acceptance.sh` 已就绪待用户执行。
+CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 `407a5c1`）。整页重设计已按 Anthropic `frontend-design` skill 重建并经主代理独立复核（CDP 实测字体、契约 id、折行、对比度）。真实 GitHub live smoke 仍未执行，缺少用户授权的专用 gallery/token；`examples/github-acceptance.sh` 已就绪待用户执行。无人值守期间的迭代协议见 `local://touko-iteration-protocol.md`，日志见 `local://touko-iteration-log.md`。
 
 用户曾要求暂停保存记忆，随后明确要求继续并完成全部内容，且**每个实现 commit 后必须更新本文件**。步骤5、6、7完成后均已立即更新；不再把上次暂停时的未验证状态当作当前状态。后续也要保持代码、行为检查、对应文档和记忆同步，不要一次做大量用户无法追踪的设计变化。
 
@@ -12,7 +12,8 @@ CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 
 
 - 用户要求简洁、美观、设计感强、字体好看，参考 PicList 的图库布局；可在界面内整理 tags 和分类。分类直接对应现有平面 `Collections`，不引入未经要求的层级或 format 迁移。
 - 最新视觉参考：《终将成为妳》的校服与两位主人公配色。使用奶油米色、深藏蓝作底，绿色主色，侑的珊瑚橙与灯子的暗樱红少量点缀。
-- 用户明确允许图片进入网页设计。原始 `logo/TOUKO.png` 不修改；页面内只保留从它派生的 `favicon.png`，不再使用角色图条带。字体为自托管的 IBM Plex Sans SC（正文、拉丁、数字与中文同族）与 Monaspace Radon（拉丁展示标题，含 wght/wdth/slnt 变量轴；无 CJK，中文标题回退 Plex SC），均为 SIL OFL 并内嵌许可证；用户点名要求 Radon。此前临时使用的 Manrope / Source Sans 3 / Italianno / Inter / Newsreader 与 `static/brand/` 目录已删除。
+- 用户点名要求：**所有**英文部分与中文部分都要换字体——英文用 Monaspace Radon，中文用 LXGW 文楷（霞鹜文楷）。当前字体：Monaspace Radon（拉丁/数字/UI，变量轴 wght 200-800、wdth 100-125、slnt 0…-11，无 CJK）、LXGW WenKai（中文，Regular 400 + Medium 500，SIL OFL 且其附加许可明确允许为 web 交付子集化为 WOFF2）、另外 `TOUKO Wordmark`（Quicksand 圆几何字体，子集出 T/O/U/K 四字形，仅用于字标，1.3KB）。三者均 SIL OFL，许可证内嵌。此前临时使用的 Manrope / Source Sans 3 / Italianno / Inter / Newsreader / IBM Plex Sans SC 与 `static/brand/` 目录均已删除。
+- 用户要求左上角 TOUKO 字标要更「规整圆润、有设计感」，按 logotype 处理而不是默认排字；此项与整页重设计一并交给子代理执行。
 - 用户要求参照设计规范而不是即兴发挥：已取用 Anthropic 公开的 `frontend-design` skill 作为审查标准（含其「AI 生成页面」常见特征清单），用于修正流于模板的配色/排版特征。
 - 用户提到“可以考虑使用mygo制作”，含义尚不确定且为可选建议；不据此擅自引入新框架。当前确定采用 Go `net/http` + `embed` + 原生 HTML/CSS/JS，无 Node 构建依赖、无运行时字体/脚本 CDN。
 - `touko serve --port 7788` 仅绑定127.0.0.1；GitHub token只保留服务端环境变量，不进入浏览器、localStorage、config或SQLite。API校验Host/Origin/CSRF，图片仅按Asset ID读取。
@@ -61,6 +62,11 @@ CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 
 | 11 | `3fc5815` | `feat(desktop): serve the gallery and open it in a MyGo window` |
 | 12 | `3fb95a9` | `feat(webview): set the display face to Monaspace Radon` |
 | 13 | `188cef1` | `docs: document the gallery interface, desktop shell and acceptance flow` |
+| 14 | `a10fe26` | `docs(memory): record the webview commits and current verification state` |
+| 15 | `15b9356` | `docs(memory): record the desktop shell smoke run` |
+| 16 | `7ee4f06` | `feat(webview): add the LXGW WenKai and wordmark fonts` |
+| 17 | `3e958d9` | `feat(webview): add Bodoni Moda italic for the hero headline` |
+| 18 | `407a5c1` | `feat(webview): rebuild the interface around a mounted-photograph system` |
 
 每个 coherent implementation commit 前均运行并通过 `gofmt -l`、`go vet ./...` 与 `go test ./...`；Webview/Radon 相关提交另跑 `go test -race ./...`。Webview 提交前还在真实浏览器核验了契约钩子（117 id + 25 JS class 全部存在）、字体真实加载与交互路径。hash 均来自实际 `git commit` 输出，不猜测未生成的 hash。
 
