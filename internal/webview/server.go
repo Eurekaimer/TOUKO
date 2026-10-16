@@ -38,6 +38,9 @@ type Server struct {
 	cacheMu     sync.Mutex
 	cachedTree  repository.TreeID
 	cachedBlobs map[string]repository.GitEntry
+	// clone holds the working copy's one-time-per-process state; its own mutex
+	// keeps concurrent previews from starting competing clones.
+	clone cloneOnce
 }
 
 func New(service *app.Service, token, origin string) (*Server, error) {

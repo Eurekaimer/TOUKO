@@ -41,8 +41,19 @@ func (s *Server) openImage(ctx context.Context, selector string) (io.ReadCloser,
 	if staged != nil {
 		return staged, asset.Object, nil
 	}
-	// Tree and blob IDs belong to the captured snapshot. Release the workspace
-	// gate before network access so a grid can open several originals at once.
+	// A committed picture is served from the local working copy whenever it is
+	// there: reading a file needs no network, no object database and no token.
+	// The clone is materialised on first use, so this normally hits immediately.
+	if err := s.ensureClone(ctx); err != nil {
+		return nil, domain.ContentObject{}, err
+	}
+	if file, ok, err := localImage(s.service.Dir, asset); err != nil {
+		return nil, domain.ContentObject{}, err
+	} else if ok {
+		return file, asset.Object, nil
+	}
+	// Not in the working copy (a repository used before the clone existed, or a
+	// picture the checkout has not reached): fall back to the Git API.
 	git, err := s.backend(ctx)
 	if err != nil {
 		return nil, domain.ContentObject{}, err
