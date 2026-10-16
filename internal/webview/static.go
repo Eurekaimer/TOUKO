@@ -27,8 +27,9 @@ func staticHandler() http.Handler {
 			"/fonts/lxgw-wenkai-regular.woff2",
 			"/fonts/lxgw-wenkai-medium.woff2",
 			"/fonts/wordmark-quicksand.woff2",
+			"/fonts/bodoni-italic-latin.woff2",
 			"/fonts/Monaspace-OFL.txt", "/fonts/LXGW-OFL.txt",
-			"/fonts/Quicksand-OFL.txt":
+			"/fonts/Quicksand-OFL.txt", "/fonts/BodoniModa-OFL.txt":
 			server.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)

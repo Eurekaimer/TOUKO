@@ -1,16 +1,16 @@
 /* TOUKO · album paper
  *
  * Subject: a private, Git-backed image notebook. The page is one material —
- * album paper — and the pictures are mounted on it. Two typefaces only:
- * Monaspace Radon (oblique display) for words that belong to the collector,
- * IBM Plex Sans SC for every word the product says, Latin, Chinese or digit.
+ * album paper — and the pictures are mounted on it. Three faces, each with one
+ * job: Monaspace Radon for Latin letters and figures, LXGW WenKai for Chinese,
+ * and a round geometric alphabet reserved for the TOUKO wordmark.
  * Colour: cream paper, uniform navy ink, coral for what is staged or active,
  * sakura only for destructive actions, kraft for "not on the remote yet".
  */
 
 /* --- Fonts ------------------------------------------------------------- */
-/* Monaspace Radon covers no CJK by design, so it is a Latin-only display face;
- * the IBM Plex Sans SC fallback after it holds Chinese titles. */
+/* Monaspace Radon: Latin display and interface letters, oblique through its
+ * slnt axis. No CJK by design, so Chinese falls through to LXGW WenKai. */
 @font-face {
   font-family: "Monaspace Radon";
   src: url("/fonts/monaspace-radon-var.woff2") format("woff2-variations");
@@ -19,19 +19,38 @@
   font-stretch: 100% 125%;
   font-display: swap;
 }
-/* One family covers Latin and CJK, so a line never changes typeface halfway. */
+/* LXGW WenKai: the Chinese face. A kai (楷) text face by construction, so it
+ * steps in wherever Radon has no glyph. */
 @font-face {
-  font-family: "IBM Plex Sans SC";
-  src: url("/fonts/plex-sc-regular.woff2") format("woff2");
+  font-family: "LXGW WenKai";
+  src: url("/fonts/lxgw-wenkai-regular.woff2") format("woff2");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
 }
 @font-face {
-  font-family: "IBM Plex Sans SC";
-  src: url("/fonts/plex-sc-medium.woff2") format("woff2");
+  font-family: "LXGW WenKai";
+  src: url("/fonts/lxgw-wenkai-medium.woff2") format("woff2");
   font-style: normal;
   font-weight: 500 700;
+  font-display: swap;
+}
+/* Hero display only: a high-contrast didone italic, the "意大利斜体" the user
+ * asked for on the headline. Italic-only, so it can never set roman copy. */
+@font-face {
+  font-family: "Bodoni Moda";
+  src: url("/fonts/bodoni-italic-latin.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 400 900;
+  font-display: swap;
+}
+/* Wordmark only: a round geometric alphabet subsetted to the letters T, O, U
+ * and K. Never used for copy, so it cannot fall back into body text. */
+@font-face {
+  font-family: "TOUKO Wordmark";
+  src: url("/fonts/wordmark-quicksand.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300 700;
   font-display: swap;
 }
 
@@ -69,11 +88,13 @@
 
   /* Type scale: 11 / 12 / 13 / 15 / 20 / 26 / 40. */
   --font-ui:
-    "IBM Plex Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-    system-ui, -apple-system, sans-serif;
+    "Monaspace Radon", "LXGW WenKai", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   --font-display:
-    "Monaspace Radon", "IBM Plex Sans SC", "PingFang SC", "Hiragino Sans GB",
+    "Monaspace Radon", "LXGW WenKai", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", ui-monospace, monospace;
+  --font-mark: "TOUKO Wordmark", "Monaspace Radon", sans-serif;
+  --font-hero: "Bodoni Moda", "Monaspace Radon", "LXGW WenKai", serif;
   --fs-micro: 0.6875rem; /* 11px — file metadata */
   --fs-xs: 0.75rem; /* 12px — captions, help */
   --fs-sm: 0.8125rem; /* 13px — chrome */
