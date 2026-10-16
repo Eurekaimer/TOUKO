@@ -21,6 +21,8 @@ Another device selects the existing repository with `repo use --local /absolute/
 
 See [repository format](docs/repository-format.md) and [local state](docs/local-state.md).
 
+TOUKO 读取时使用本地工作副本：首次使用 GitHub 仓库时自动浅克隆（`--depth 1`）到 `<state-dir>/clone`，之后预览、`sync`、`verify` 都直接读本地文件，不消耗 GitHub API 配额、无网络也能看图；只有写入（`commit`、`repo init`）才调用 API。
+
 ## Webview 图片手帖
 
 ```sh

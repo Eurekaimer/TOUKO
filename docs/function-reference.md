@@ -555,6 +555,20 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `(*Server).imageBlob` | 由cached tree与canonical path查GitEntry；首次Tree读取后只保留该tree被引用的placement映射。检查mode/type/SHA；只缓存一棵树、不缓存binary，缺对象明确corrupt。 |
 | `staticHandler` | embed.FS内固定资源白名单的GET/HEAD服务：HTML/JS/CSS、favicon、内嵌字体（Monaspace Radon、LXGW 文楷、字标子集）与各自OFL许可证。 | 
 
+### [`localgit/clone.go`](../internal/localgit/clone.go)、[`webview/clone.go`](../internal/webview/clone.go)：本地工作副本
+
+| 精确符号 | 作用与不变量 |
+| --- | --- |
+| `localgit.Clone` | 在 dir 建立或复用某分支的**浅**工作副本（`--depth 1 --no-tags --single-branch`）；目录非空且不是本仓库时拒绝，绝不覆盖用户文件。 |
+| `localgit.Update` | `fetch` 分支后 `reset --hard` + `clean -fd`，使工作树与远端**严格一致**（远端删除的文件会消失）。只用于 TOUKO 管理的目录。 |
+| `localgit.WorkingCopy` | 缺失则 Clone，然后 Open；读命令用它。 |
+| `localgit.cloneMirror/credentialHelper` | 凭据经 Git credential protocol + 继承 fd3 管道传入，不进 URL/argv/env/文件；`validateRemote` 拒绝内嵌凭据的 URL；错误文本经 `redact`。 |
+| `repository.Location.RemoteURL`/`CloneDir` | 由 location 派生 clone 地址与 `<state-dir>/clone`，避免各处手拼。 |
+| `webview.(*Server).ensureClone` | 预览前确保工作副本存在。**只建不 fetch**——预览绝不联网，否则无网时即使本地有文件也会失败。 |
+| `webview.localImage` | 从工作副本 `os.Open` 图片并校验 size；未命中返回 ok=false 让调用方回退 API；size 不符视为不可信。 |
+| `webview.(*Server).updateClone`/`CloneStatus`/`forgetClone` | 刷新副本 / 报告副本位置 / 仓库切换时清记忆。**目前 updateClone 与 CloneStatus 无人调用**（见记忆的「下一步建议」）。 |
+| `cli.(*runtime).reader` | 读操作选本地 clone；`backend` 仍是写操作与 localgit 的选择器。 |
+
 ### [`static/app.js`](../internal/webview/static/app.js)：按用户操作查函数
 
 浏览器不实现 repository planner；所有真实 mutation 经 API/Service。`workspace` 是最近服务器快照，filters/selected 是临时展示状态。CSS 在 [`style.css`](../internal/webview/static/style.css)，dialog、表单和固定SVG符号在 [`index.html`](../internal/webview/static/index.html)。无动态 HTML 注入、外部脚本或 localStorage token。

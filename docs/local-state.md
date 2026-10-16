@@ -9,3 +9,22 @@ Ingest streams a source once into a synced temporary file while computing SHA-25
 First change binds staging to the committed HEAD. Add/edit stays add; add/remove cancels; committed edits merge; remove after edit becomes delete. Repeated deletion is harmless; edit after staged deletion conflicts. Selectors resolve against committed IDs plus staged adds before deletion state is checked. Multi-selector removal is atomic. Tags and collections are trimmed, sorted, deduplicated and case-preserving. Read views overlay staging; they hide deletions and label records committed/added/modified.
 
 `reset --staged` discards all unpublished local changes; it does not change remote history. An unresolved publication must be reconciled with the remote before discarding its journal.
+
+## The local checkout
+
+For a GitHub repository, TOUKO keeps a working copy at `<state-dir>/clone`. It is
+a shallow clone of the selected branch (`--depth 1`), so the files on disk are
+the pictures as they exist now, not every version ever pushed; a re-encoded
+image would otherwise store a whole extra blob in history and inflate the
+checkout with material TOUKO never reads.
+
+Previews read that directory directly. `sync`, `verify` and `reset` read through
+it too, which is why listing a gallery, hashing every picture and inspecting
+remote relationships cost no GitHub API calls and work with no connection. Only
+writes (`commit`, `repo init`) use the API.
+
+The checkout is created the first time a GitHub repository is used. It is safe
+to delete: the next `sync` recreates it. Refreshing it belongs to `sync` and
+never to a preview, so a machine that is offline still shows the pictures it
+already has, and a clone that is genuinely missing fails with the clone error
+rather than pretending the picture is unavailable.
