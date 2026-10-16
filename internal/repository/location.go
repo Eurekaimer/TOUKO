@@ -15,6 +15,19 @@ type Location struct {
 	Private bool   `json:"private"`
 }
 
+// RemoteURL is where a GitHub repository is cloned from. Credentials never belong
+// here; the clone passes them to Git's credential helper instead.
+func (l Location) RemoteURL() string {
+	return "https://github.com/" + l.Owner + "/" + l.Name + ".git"
+}
+
+// CloneDir is the working copy of a GitHub repository inside a state directory.
+// Keeping it beside the index means one state directory owns one checkout, so a
+// repository switch cannot mix two repositories' files.
+func CloneDir(stateDir string) string {
+	return filepath.Join(stateDir, "clone")
+}
+
 func (l Location) Validate() error {
 	if l.Branch == "" || strings.HasPrefix(l.Branch, "-") || strings.ContainsAny(l.Branch, "\x00\r\n") {
 		return fmt.Errorf("invalid branch")

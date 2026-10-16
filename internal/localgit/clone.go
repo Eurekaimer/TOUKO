@@ -63,6 +63,16 @@ func Clone(ctx context.Context, remote, dir, branch, token string) error {
 	return nil
 }
 
+// WorkingCopy opens the checkout at dir, creating it from remote when absent.
+// Readers use it so a repository that was selected before the clone existed still
+// reads locally instead of falling back to the network.
+func WorkingCopy(ctx context.Context, remote, dir, branch, token string) (*Repository, error) {
+	if err := Clone(ctx, remote, dir, branch, token); err != nil {
+		return nil, err
+	}
+	return Open(ctx, dir, branch)
+}
+
 // Update fetches the branch and moves the working copy to exactly what the
 // remote now holds, so deletions leave the directory and additions appear.
 func Update(ctx context.Context, dir, branch, token string) error {

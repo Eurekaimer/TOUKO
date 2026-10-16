@@ -162,6 +162,21 @@ func (r *runtime) backend(ctx context.Context, s *app.Service) (repository.Git, 
 	}
 }
 
+// reader is the Git port for operations that only read. A GitHub repository is
+// read from its local checkout, so listing metadata, verifying bytes and finding
+// relationships cost no API calls and work with no connection. The checkout is
+// created on first use.
+func (r *runtime) reader(ctx context.Context, s *app.Service) (repository.Git, error) {
+	location, err := s.Location(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if location.Backend != "github" {
+		return r.backend(ctx, s)
+	}
+	return localgit.WorkingCopy(ctx, location.RemoteURL(), repository.CloneDir(s.Dir), location.Branch, os.Getenv("GITHUB_TOKEN"))
+}
+
 func (r *runtime) encode(v any) error { return json.NewEncoder(r.stdout).Encode(v) }
 
 func (r *runtime) command() *cobra.Command {
@@ -245,7 +260,7 @@ func (r *runtime) resetCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		git, err := r.backend(cmd.Context(), s)
+		git, err := r.reader(cmd.Context(), s)
 		if err != nil {
 			return err
 		}

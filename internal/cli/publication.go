@@ -43,7 +43,7 @@ func (r *runtime) verifyCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		git, err := r.backend(cmd.Context(), s)
+		git, err := r.reader(cmd.Context(), s)
 		if err != nil {
 			return err
 		}

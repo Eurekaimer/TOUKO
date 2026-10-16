@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -117,7 +118,7 @@ func (r *runtime) syncCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		git, err := r.backend(cmd.Context(), s)
+		git, err := r.reader(cmd.Context(), s)
 		if err != nil {
 			return err
 		}
@@ -125,8 +126,28 @@ func (r *runtime) syncCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		// `sync` is the explicit "talk to the remote" action, so it is where the
+		// local working copy is refreshed. Previews never fetch, which is what
+		// keeps them working with no connection.
+		location, locationErr := s.Location(cmd.Context())
+		if locationErr == nil && location.Backend == "github" {
+			if err := r.syncClone(cmd.Context(), s, location); err != nil {
+				return err
+			}
+		}
 		return r.printSync(result)
 	}}
+}
+
+// syncClone brings the local working copy in step with the branch that was just
+// read. A repository used before the clone existed gets one created here.
+func (r *runtime) syncClone(ctx context.Context, s *app.Service, location repository.Location) error {
+	dir := filepath.Join(s.Dir, "clone")
+	remote := "https://github.com/" + location.Owner + "/" + location.Name + ".git"
+	if err := localgit.Clone(ctx, remote, dir, location.Branch, os.Getenv("GITHUB_TOKEN")); err != nil {
+		return err
+	}
+	return localgit.Update(ctx, dir, location.Branch, os.Getenv("GITHUB_TOKEN"))
 }
 
 func (r *runtime) printSync(result app.SyncResult) error {
