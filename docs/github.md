@@ -106,6 +106,10 @@ Tree 写入包含 `base_tree`，删除显式 `sha:null`；recursive tree `trunca
 
 **GitHub `force:false` 只保证 fast-forward，不提供 expected-old-SHA CAS。** TOUKO 固定唯一 parent 为 staging base，发布前复查 HEAD，正常 non-force 并发由 non-fast-forward 拒绝保护；无法保证外部管理员任意 force/reset 与 PATCH 之间的严格 CAS。Local Git 的 update-ref 则有 expected-old CAS。
 
-本轮未提供专用远端仓库/token，因此真实 GitHub live smoke **未执行**。离线真实 Git/SQLite 与 httptest-backed Git Data API 故障测试不等于线上成功；不要将它们混淆。
+真实 GitHub live 验收**已执行**（专用公开仓库 `Eurekaimer/touko-gallery-test`，2026-10-16）。脚本 13 项断言全部通过，包括：`auth status` 只显示登录名、`repo use` 选中 main 分支、`repo init` 幂等、批量 `add` 不移动远端 HEAD、`commit` 发布 3 项变更、两个 provider 的 URL 与 canonical object path 一致、`verify` assets=3 objects=3、**raw GitHub 字节的 SHA-256 等于记录的 object hash**、第二设备 `sync` 后逐字段 metadata 相等、末引用删除在第三台设备不可见。
+
+独立复核（不依赖脚本自述）：以 raw CDN 直取远端，`.touko/repository.json` 返回 200 且 `format_version:1`、`repository_id: dc117605-…`、`hash_algorithm: sha256`；原 `README.md` 仍为 200（`repo init` 只增加 manifest，不重写既有文件）；伪造路径与不存在的文件返回 404。
+
+仍未验证的部分：私有仓库路径（本次用的是公开仓库，私有会改走 `delivery_unavailable` 断言）、分支保护下被拒的写入、组织仓库的 token 审批。这些属于脚本已覆盖但本轮未实际触发的分支。
 
 协议依据：[refs](https://docs.github.com/en/rest/git/refs)、[trees](https://docs.github.com/en/rest/git/trees)、[blobs](https://docs.github.com/en/rest/git/blobs)、[compare](https://docs.github.com/en/rest/commits/commits#compare-two-commits)。

@@ -4,7 +4,7 @@
 
 ## 当前交付状态
 
-CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 `407a5c1`）。整页重设计已按 Anthropic `frontend-design` skill 重建并经主代理独立复核（CDP 实测字体、契约 id、折行、对比度）。真实 GitHub live smoke 仍未执行，缺少用户授权的专用 gallery/token；`examples/github-acceptance.sh` 已就绪待用户执行。无人值守期间的迭代协议见 `local://touko-iteration-protocol.md`，日志见 `local://touko-iteration-log.md`。
+CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 `407a5c1`）。整页重设计已按 Anthropic `frontend-design` skill 重建并经主代理独立复核（CDP 实测字体、契约 id、折行、对比度）。真实 GitHub live 验收**已执行并通过**（专用公开仓库 `Eurekaimer/touko-gallery-test`，13 项断言全绿，含 raw 字节 SHA-256 与跨设备恢复/删除）；已用 raw CDN 独立复核远端 manifest 与 README。私有仓库路径、分支保护拒绝、组织 token 审批三类分支仍未实测。无人值守期间的迭代协议见 `local://touko-iteration-protocol.md`，日志见 `local://touko-iteration-log.md`。
 
 用户曾要求暂停保存记忆，随后明确要求继续并完成全部内容，且**每个实现 commit 后必须更新本文件**。步骤5、6、7完成后均已立即更新；不再把上次暂停时的未验证状态当作当前状态。后续也要保持代码、行为检查、对应文档和记忆同步，不要一次做大量用户无法追踪的设计变化。
 
@@ -141,7 +141,10 @@ bash examples/demo.sh
 
 ## 已知限制与未执行项
 
-- **真实GitHub live smoke未执行**：用户没有提供专用gallery repo/token。不能拿Eurekaimer/TOUKO代码仓库充当gallery。已提供 `examples/github-acceptance.sh`（只从 `GITHUB_TOKEN` 读取凭据、拒绝源码仓库作为gallery、非零退出保留现场），其断言已在真实本地 bare Git 仓库上完整跑通（init幂等、批量提交、两个provider URL一致性、verify、第二设备逐字段metadata一致、末引用删除在第三设备不可见）；GitHub专属步骤（token认证、public raw bytes校验）仍待用户提供专用repo/token后执行。执行方法见docs/github.md。不要让用户把token发聊天。
+- **真实GitHub live 验收已通过**（2026-10-16，公开仓库 `Eurekaimer/touko-gallery-test`）：`examples/github-acceptance.sh` 13 项断言全绿——auth 只显示登录名、repo use 选中 main、init 幂等、批量 add 不动远端 HEAD、commit 发布 3 项、github/jsdelivr URL 与 canonical path 一致、verify assets=3 objects=3、raw 字节 SHA-256 等于记录 hash、第二设备逐字段恢复、末引用删除在第三设备不可见。独立复核：raw 直取 `.touko/repository.json`（format_version 1、repository_id dc117605-…），README.md 仍 200（init 只增不重写），伪造路径 404。
+- **脚本凭据约束**：只从 `GITHUB_TOKEN` 读、拒绝 `eurekaimer/touko` 源码仓库作 gallery、失败非零退出保留现场、**默认不上传用户 `logo/TOUKO.png`**（需 `TOUKO_ACCEPT_INCLUDE_LOGO=1` 显式开启）。已用假 token 实测：失败报 GitHub 真实 401 且不回显 token。
+- **仍未实测的分支**：私有仓库路径（走 `delivery_unavailable` 断言）、分支保护拒绝写入、组织仓库 token 审批。
+- 教训：验收脚本曾被自己的离线 harness 用正则删掉 auth/`repo use` 段，导致“重复 repo use 缺 `--json`”这类解析 bug 漏到用户真实运行；现 harness 保留原样只换传输层，此类 bug 会被本地复现。
 - 原生桌面壳已存在并在本机实测：`cmd/touko-desktop` 用 MyGo 打开同一 Webview（`internal/desktop/app.go`）。真实启动 `/tmp/touko-desktop --state-dir … --port 7807` 打印 `TOUKO MyGo: http://127.0.0.1:7807`、窗口进程存活、页面 HTTP 200（标题「图片库 · TOUKO」），终止后进程退出且端口释放。缺系统 webview 时明确报错而非静默回退。
 - GitHub force:false仅fast-forward，不是任意外部force/reset下的严格CAS。分支应禁止force-push；TOUKO固定parent/HEADchecks保护正常non-force并发。不能宣称解决外部管理员rewrite race。
 - localgit/private GitHub无公网URL/Markdown；public推导URL不等于commit完成或CDN传播。jsDelivr延迟不是远端commit失败。
