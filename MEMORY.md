@@ -1,26 +1,44 @@
 # TOUKO 项目记忆与后续入口
 
+**用户语言偏好：一律用中文回复。**
+
 ## 当前交付状态
 
-批准的 CLI 核心 7 个步骤已全部完成并提交；离线真实 Git/SQLite、GitHub adapter、CLI、样例图片和可重复 demo 已交付。用户要求的详细中文操作/架构/逐函数教程已完成，README 提供阅读入口。本文件记录实际实现 commit、验证与下一阶段要求；保存本文的文档提交本身以 Git 历史为准，避免自引用 hash。
+CLI 核心、中文教程与本轮 Webview 已实现。真实浏览器已完成桌面/移动布局、上传预览、标签分类、发布校验、共享对象删除、多选移除/显式丢弃和跨设备冲突验收。当前正在保存实现提交及同步教程；真实 GitHub live smoke 未执行，缺少用户授权的专用 gallery/token，不能用本地检查冒充线上成功。
 
 用户曾要求暂停保存记忆，随后明确要求继续并完成全部内容，且**每个实现 commit 后必须更新本文件**。步骤5、6、7完成后均已立即更新；不再把上次暂停时的未验证状态当作当前状态。后续也要保持代码、行为检查、对应文档和记忆同步，不要一次做大量用户无法追踪的设计变化。
 
-## 用户确认：Webview 放到下一阶段
+## 当前 Webview 要求与确定的设计
 
-用户提出界面要求后，明确选择了「下一阶段实现 Webview」，本轮不增加 GUI，也没有占位界面。
+- 用户要求简洁、美观、设计感强、字体好看，参考 PicList 的图库布局；可在界面内整理 tags 和分类。分类直接对应现有平面 `Collections`，不引入未经要求的层级或 format 迁移。
+- 最新视觉参考：《终将成为妳》的校服与两位主人公配色。使用奶油米色、深藏蓝作底，绿色主色，侑的珊瑚橙与灯子的暗樱红少量点缀。
+- 用户明确允许图片进入网页设计。原始 `logo/TOUKO.png` 不修改；页面内只保留从它派生的 `favicon.png`，不再使用角色图条带。字体为自托管的 IBM Plex Sans SC（正文、拉丁、数字与中文同族）与 Monaspace Radon（拉丁展示标题，含 wght/wdth/slnt 变量轴；无 CJK，中文标题回退 Plex SC），均为 SIL OFL 并内嵌许可证；用户点名要求 Radon。此前临时使用的 Manrope / Source Sans 3 / Italianno / Inter / Newsreader 与 `static/brand/` 目录已删除。
+- 用户要求参照设计规范而不是即兴发挥：已取用 Anthropic 公开的 `frontend-design` skill 作为审查标准（含其「AI 生成页面」常见特征清单），用于修正流于模板的配色/排版特征。
+- 用户提到“可以考虑使用mygo制作”，含义尚不确定且为可选建议；不据此擅自引入新框架。当前确定采用 Go `net/http` + `embed` + 原生 HTML/CSS/JS，无 Node 构建依赖、无运行时字体/脚本 CDN。
+- `touko serve --port 7788` 仅绑定127.0.0.1；GitHub token只保留服务端环境变量，不进入浏览器、localStorage、config或SQLite。API校验Host/Origin/CSRF，图片仅按Asset ID读取。
+- Webview复用 app 的 staging、commit/sync/recovery，不另写存储/发布逻辑；已在真实浏览器完成下面记录的验收。今后每次变更仍需实际运行相应路径，再小步提交、更新本记忆及教程。
 
-- **视觉**：简洁、美观，参考 PicList 的图库布局与操作体验；不要做成只展示 CLI 输出的网页壳。
-- **整理**：可在界面内部管理图片 tags（标签）和分类。现有领域字段 `Tags` / `Collections` 可复用；分类是否需要层级、是否直接对应 Collections，应在下一阶段与用户确认，不能擅自改 format v1。
-- **架构**：复用 app 的 UUID、staged overlay、edit/rm、commit/sync/recovery；不要在前端另建第二套状态/存储来源。清楚区分 added/modified/committed 和未发布状态。
-- 开始前先与用户确认页面布局和关键交互，以小步提交、同步记忆、实际浏览器视觉和功能验证推进。当前没有确定 Webview 技术栈，不要把猜测写成已选方案。
+## Webview 本轮实测与正在展示的预览
+
+- 启动入口：`touko --state-dir PATH serve --port 7788`，0为动态端口。源码入口是 `internal/cli/serve.go`、`internal/webview/{server,api,preview,static}.go` 与 `static/{index.html,style.css,app.js}`；`app/view.go` 的 ReadView 从同一 SQLite snapshot 生成页面视图。
+- 用户中途要求打开成果窗口：已用可见浏览器打开，并用 `xdg-open http://127.0.0.1:7799` 向现有桌面浏览器发送打开请求。**预览服务仍运行于 http://127.0.0.1:7799/**，当前进程名 `touko-7799-redesign`；binary `/tmp/touko-7799`（重设计构建），state `/tmp/touko-webview-acceptance/state-a`，真实 bare gallery `/tmp/touko-webview-acceptance/gallery.git`。此前 7799 曾长期挂在旧构建上并向用户展示了过期页面；每次前端改动后必须重建该 binary 并重启预览，不能只重建而不替换正在服务的进程。
+- Webview 前端改动由子代理执行，主代理只做集成与验证；设计审查使用 Anthropic `frontend-design` skill，避免即兴取舍。
+- 实测桌面1440×1024、移动390×844；移动无横向溢出，侧栏筛选可收起，详情从原图顶部打开，支持Esc/焦点恢复/reduced-motion。原图、favicon和内嵌字体请求均实际200。
+- 界面导入用户TOUKO原图和3张自生成PNG验收图；4个add一次暂存。修改中文title/tags/collections，筛选得到指定单图，刷新后metadata仍完整；新增图多次编辑仍是同一add。
+- 界面发布后verify为4 assets/4 objects；独立state-b sync完整还原。再次导入同一logo得到不同UUID与相同hash：5 assets/4 objects。界面移除第一份并提交后为4 assets/4 objects，另一引用仍可预览；最终HEAD `70a709d11a88eef755b09f9338225e0c3bfa8365`。
+- 多选全部4图、确认暂存移除后画面0图/4 changes；明确确认丢弃后恢复4图/0 changes。上传bad.png真实400，错误可见且标题/文件仍保留。
+- B在旧HEAD编辑已被A删除的UUID，界面commit真实返回`conflict: delete_modify`，保留1条update与旧HEAD，不自动reset。B经明确丢弃、sync后与A的完整AssetView metadata及HEAD一致，被删UUID不存在。
+- 实际HTTP拒绝wrong Host和缺CSRF均403；原图SHA-256与Asset.Object.Hash相同。16个并发原图请求全200。原实现32个并发请求有30个409，已用短snapshot gate修复并保留`TestConcurrentGalleryPreviews`回归；网络/图片流不占工作区锁。
+- `go test ./...`、`go vet ./...`、`go test -race ./...`已通过；真实服务曾Ctrl+C正常exit0。完整测试在实现提交前再统一执行，不能把这条记录替代后续变更检查。
+- 原始`logo/TOUKO.png`未修改，sha256仍为`a6d1e0baae6395177c9795d35341b9c24bce709ab4df51648990ede0ead37068`；只提交用户允许的webp/favicon衍生资源与字体OFL，不提交原始logo。
+- 完整使用及专用GitHub仓库验收在[Webview教程](docs/webview.md)；页面状态、HTTP接口与每个具名控制器函数已补入代码导读/函数导航。未引入Node依赖或外部运行时CDN。
 
 ## 阅读顺序
 
 1. [实际操作教程](docs/usage.md)：构建、demo、用户 logo、标签/分类、stdin、批量、删除、恢复、JSON。
 2. [架构与设计教程](docs/code-guide.md)：三种身份/四种状态、依赖方向、阅读顺序、逐步调用链、失败窗口、设计取舍、安全修改练习。
 3. [逐函数导航](docs/function-reference.md)：各生产包的函数/方法（含非导出 helpers）的输入输出、副作用、错误及存在理由，另有 demo Python helpers。
-4. [Repository format](docs/repository-format.md)、[Local state](docs/local-state.md)、[Publication/recovery](docs/publication.md)、[GitHub 接入](docs/github.md)。
+4. [Webview 使用与真实 GitHub 验收](docs/webview.md)，以及 [Repository format](docs/repository-format.md)、[Local state](docs/local-state.md)、[Publication/recovery](docs/publication.md)、[GitHub 接入](docs/github.md)。
 
 完整原批准计划的内部副本为 `local://touko-demo-core-plan.md`。若下一会话无法读取内部路径，以仓库实际代码、上述文档和本文件恢复；不要猜测不可读取的原文。
 
@@ -38,7 +56,7 @@
 | 6 | `7cad22f` | `feat(github): support safe repository publication and derived delivery URLs` |
 | 7 | `270c0ac` | `test(demo): exercise recovery deletion and publication failure scenarios` |
 
-每个 coherent implementation commit 前均运行并通过 go test ./... 与 go vet ./...。最终另有中文教程/README/本记忆的文档提交，不将其冒充第8个实现步骤。
+每个 coherent implementation commit 前均运行并通过 go test ./... 与 go vet ./...。CLI最终教程另有`0e8c50c docs: explain architecture functions and hands-on workflows`；本轮Webview实现hash在实际commit输出后立即补记，不猜测尚未生成的hash。
 
 ## 可直接继续操作的真实 demo
 
@@ -109,16 +127,17 @@ bash examples/demo.sh
 
 ## 已知限制与未执行项
 
-- **真实GitHub live smoke未执行**：用户没有提供专用gallery repo/token。不能拿Eurekaimer/TOUKO代码仓库充当gallery。下一步按docs/github.md：用户自行建专用repo并初始化README，在执行机交互式设置repository-scoped GITHUB_TOKEN，auth/use/init/add/commit/url/verify，换全新state-dir做恢复/删除验收。不要让用户把token发聊天。
+- **真实GitHub live smoke未执行**：用户没有提供专用gallery repo/token。不能拿Eurekaimer/TOUKO代码仓库充当gallery。已提供 `examples/github-acceptance.sh`（只从 `GITHUB_TOKEN` 读取凭据、拒绝源码仓库作为gallery、非零退出保留现场），其断言已在真实本地 bare Git 仓库上完整跑通（init幂等、批量提交、两个provider URL一致性、verify、第二设备逐字段metadata一致、末引用删除在第三设备不可见）；GitHub专属步骤（token认证、public raw bytes校验）仍待用户提供专用repo/token后执行。执行方法见docs/github.md。不要让用户把token发聊天。
+- 原生桌面壳已存在：`cmd/touko-desktop` 用 MyGo 打开同一 Webview（`internal/desktop/app.go`，缺系统 webview 时明确报错而非静默回退）。它仍是新代码，尚未由用户确认可用。
 - GitHub force:false仅fast-forward，不是任意外部force/reset下的严格CAS。分支应禁止force-push；TOUKO固定parent/HEADchecks保护正常non-force并发。不能宣称解决外部管理员rewrite race。
 - localgit/private GitHub无公网URL/Markdown；public推导URL不等于commit完成或CDN传播。jsDelivr延迟不是远端commit失败。
-- 普通rm只保证latest HEAD，不purge history/CDN。没有GUI、thumbnail、R2、OAuthlogin、自动merge、namespace move/objectreplace或假migration。
+- 普通rm只保证latest HEAD，不purge history/CDN。已有本地浏览器Webview；没有原生桌面壳、thumbnail、R2、OAuthlogin、自动merge、namespace move/objectreplace或假migration。
 - 用户logo仍是用户未提交文件；不得为“清理工作区”将它删除或擅自stage。其他后续用户变更也不加入实现提交。
 
 ## 后续开发方式
 
-先读操作教程和架构教程，再按函数导航定位，不要猜API。每次先明确用户可观察行为与修改层，沿已有模式写行为测试、做真实CLI/浏览器smoke、更新docs与本记忆，然后小步commit。避免实现断言/源文本测试、mock echo、假Store、占位命令和掩盖失败的fallback。新增Webview前让用户理解并选择视觉与交互，始终复用已有核心。
+先读操作教程和架构教程，再按函数导航定位，不要猜API。每次先明确用户可观察行为与修改层，沿已有模式做行为测试和真实CLI/浏览器smoke、更新docs与本记忆，然后小步commit。避免实现断言/源文本测试、mock echo、假Store、占位命令和掩盖失败的fallback。Webview视觉方向已获用户明确要求，不重复索取确认；始终复用现有核心。
 
-## 最终教程检查
+## CLI 阶段的教程检查记录
 
-已执行一次性文档 smoke：70 个本地 Markdown 链接全部指向存在的目标；Go AST 收集到的186个生产函数/方法名称均出现在逐函数参考中。该检查只证明链接可达与名称覆盖，不冒充逐条语义自动证明；教程内容另按模块/调用链与实现核对。检查脚本已删除。README、code-guide、function-reference 与本记忆由最终文档提交统一保存；不再有待实现的本轮功能。
+CLI教程阶段执行过一次性文档smoke：70个本地Markdown链接全部可达；Go AST收集到的186个生产函数/方法名称均出现在函数参考中。它只证明当时的链接/名称覆盖，不是本轮Webview新增代码的验证，也不证明逐条语义；本轮的实际检查结果另行记录。

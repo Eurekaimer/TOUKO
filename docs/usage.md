@@ -2,6 +2,8 @@
 
 本文讲实际操作；想理解代码，接着读 [架构学习路线](code-guide.md) 和 [逐函数导航](function-reference.md)。协议细节分别在 [format](repository-format.md)、[local state](local-state.md)、[publication/recovery](publication.md)、[GitHub](github.md)。
 
+需要图形界面时，直接读 [Webview 启动与真实仓库验收](webview.md)。`touko serve` 和本文的 CLI 共用 state-dir；不需要导出/导入第二套图库，但同一工作区的并发写入仍由锁保护。
+
 ## 1. 环境与构建
 
 CLI 需要 Go 1.26+（构建时）、Git（localgit backend；须支持 `show-ref --exists`）、可写的本地 state 目录。SQLite 是纯 Go driver，不需要 CGO 或另外启动数据库服务。离线 demo 另外需要 Bash、Python 3（仅标准库断言，不是 CLI 的运行依赖）。

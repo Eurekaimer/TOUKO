@@ -2,7 +2,7 @@
 
 本文按生产源码逐文件解释函数和方法，包含非导出的关键 helper；不把测试辅助函数算作产品 API。适合在阅读 [代码导读](code-guide.md) 后，带着具体符号搜索这里，再回源码逐行理解。实际操作顺序见 [使用教程](usage.md)。格式、状态和发布契约分别见 [repository-format.md](repository-format.md)、[local-state.md](local-state.md)、[publication.md](publication.md)。
 
-本文描述代码职责和失败语义，不是检查执行记录，也不表示已用真实 GitHub token 完成线上验收。当前没有 GUI、R2、缩略图或插件系统；delivery 只推导链接，不负责上传到 CDN、探测链接或清除 CDN 缓存。
+本文描述代码职责和失败语义，不是检查执行记录，也不表示已用真实 GitHub token 完成线上验收。CLI 与本地 Webview 共用业务核心；当前没有 R2、缩略图服务或插件系统。delivery 只推导链接，不负责上传到 CDN、探测链接或清除 CDN 缓存。
 
 ## 1. 如何用这份导航
 
@@ -439,6 +439,12 @@ Cobra 命令构造函数返回 `*cobra.Command`；真正业务发生在其匿名
 | `(*runtime).authCommand` | 构造 auth/status；读取 GITHUB_TOKEN、GET /user。 | 只输出 login/authenticated，不打开本地图库 DB，不显示 token；没有 auth login。构造 Location 只是满足 client 校验，User 请求实际 endpoint 是 `/user`。 |
 | `(*runtime).urlCommand` | SELECTOR、provider → 推导链接与 committed 标记。 | provider 先校验；从本地 Location/Show 推导，不探测网络。view.State==added 时 committed=false，其余包括 metadata-only modified 为 true（图片本体早已 committed）。JSON 用布尔值表达，人类模式 prospective 链接在 stderr 警告。deleted 不可见；local/private 不输出假公网链接。 |
 
+### [`serve.go`](../internal/cli/serve.go)
+
+| 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
+| --- | --- | --- |
+| `(*runtime).serveCommand` | `serve --port 7788` → 运行本地浏览器图库服务；0 选择可用端口。 | 拒绝 `--json`/非法 port，只绑定127.0.0.1；Service 和 token 在服务端借给 webview.New。打印实际 URL。取消时先 Shutdown，超时 Close，再等连接 handler 全部退出，才让 Run 关闭 Service；不会在 publication 收尾期间关闭 SQLite。 |
+
 ## 11. `cmd/touko`：进程边界
 
 ### [`main.go`](../cmd/touko/main.go)
@@ -483,3 +489,95 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `main` | 按四图单批提交→fresh device→stale edit conflict→末引用删除→scratch SQLite 重建→Unicode stdin→delivery preflight→拒绝重跑的顺序完成验收。保留结果并打印可继续操作的命令；不接触 token、不清历史。 |
 
 `examples/images/` 三张 64×48 RGB PNG 为自生成红/绿/蓝图案，hash 不同；重复 add red 证明同内容去重，不额外复制 fixture。用户 `logo/TOUKO.png` 不属于脚本生成物，只有用户执行打印的 add 命令时才被读取。
+
+## 14. `internal/webview`：本地图库边界与浏览器控制器
+
+### `app/view.go`：同一事务的页面视图
+
+| 精确符号 | 作用、输入与输出 | 副作用与约束 |
+| --- | --- | --- |
+| `(*Service).ReadView` | ctx → index.State、[]AssetView、error。一次 Store.Load 后以原 overlay 推导图库。 | 不做网络、不另开类别数据库、不自行持锁。需要协调 staged 文件生命周期的调用方持 Service.Lock 到打开文件为止；state 与 visible assets 来自同一个 SQLite 事务。 |
+
+### [`server.go`](../internal/webview/server.go)：请求与错误边界
+
+| 精确符号 | 作用、输入与输出 | 副作用与约束 |
+| --- | --- | --- |
+| `New` | 已打开的 Service、服务端 token、精确 loopback origin → *Server。 | 验证 origin/port、拒绝 token 控制字符；生成32随机bytes的CSRF。借用 Service，不负责关闭它。token 不进入 JSON/HTML。 |
+| `(*Server).ServeHTTP` | http.Handler 入口。 | 设置 CSP、no-store、nosniff、frame/referrer/CORP 等 header；校验精确 Host/Origin 和 Fetch Metadata；写入必须带 Origin 与恒时比较的 X-Touko-CSRF。API 路由与静态资源分流，无 CORS 放行。 |
+| `(*Server).json` | 任意结果 → JSON 响应。 | 设置 UTF-8 Content-Type；连接输出错误不能回滚已经完成的业务。 |
+| `(*Server).fail` | HTTP status、code、message → error envelope。 | 统一 `{\"error\":{\"code\",\"message\"}}`；message 中若出现当前 token，先替换为 redacted，不输出请求授权 header。 |
+| `(*requestError).Error`、`usage`、`tooLarge` | 生成/呈现请求错误。 | usage 为400，尺寸/数量上限为413；不把 domain conflict 伪装成参数错误。 |
+| `(*Server).respondError` | error 链 → 状态码和错误 JSON。 | missing404、conflict/busy409、unauthorized401、corrupt/hash422、GitHub API502、其他IO500；按 errors.Is/As 保留分类。 |
+| `decodeJSON` | 有界 request body → 指定 input struct。 | 限1MiB、要求 application/json 与恰好一个对象，拒绝 null/数组/未知字段/尾随第二个值。第二次解码直接读 raw bytes，不复制为 string。 |
+| `bodyError` | 解码/读取错误 → request error。 | MaxBytesError 原样保留以返回413；其他 malformed input 返回400。 |
+
+### [`api.go`](../internal/webview/api.go)：装配现有业务，而非另写业务
+
+| 精确符号 | 作用、输入与输出 | 副作用与约束 |
+| --- | --- | --- |
+| `(*Server).api` | 白名单 path、method → endpoint handler。 | image/url/edit 要求规范完整 UUID；其他 method 返回405。workMu 串行状态操作，已取消请求不进入 mutation；原图另走短 snapshot gate。成功后才写结果，无自动 reset/retry。 |
+| `(*Server).location` | ctx → *Location 或 nil。 | 仅检查已知 state-dir/config.json 是否缺失；未选择仓库可 onboarding，损坏 config 必须报错，不能当空工作区。 |
+| `(*Server).backend` | 当前 Location → localgit/GitHub adapter。 | GitHub token 只保留在实例内部；未选择仓库为 usage。没有可由浏览器指定的 API host。 |
+| `(*Server).state` | ctx → 页面完整状态。 | 持 Service.Lock，ReadView 一次性返回 head/base/assets/changes/publication；changes 按ID排序，空数组非null。只返回 auth.configured，不返回 token。 |
+| `(*Server).auth` | ctx → configured 与可选 login。 | 无 token 不访问网络；有 token 调真实 GET /user，只响应身份与实际错误，不接收新 token。 |
+| `(*Server).selectRepository` | 严格 JSON → 仓库选择。 | local 要绝对 path，可 create；先拒绝换仓再创建 bare Git。GitHub 解析 OWNER/REPO 并 Discover 默认 branch/private。Select 后仅 local create 自动 Initialize，其他选择需用户显式 init/sync。 |
+| `(*Server).assetURL` | UUID、provider query → url、committed。 | 持本地锁读取可见 Asset，调用现有 BuildURL；added 为预期链接，modified 的 object 仍 committed。local/private 不产生假链接。 |
+| `(contextReader).Read` | 调用者 ctx 与 reader → bytes。 | 每次读之前检查取消；不承诺能强制打断任意自定义阻塞 reader，HTTP 连接关闭与 adapter 负责实际 IO 解除。 |
+| `(*Server).upload` | multipart files + metadata → staged AssetViews。 | request≤500,000,000 bytes、每图≤100,000,000 bytes、≤100文件；0700临时目录/0600文件，流式 spool 后 DecodeConfig 检查PNG/JPEG/GIF；metadata字段有界/不重复，Tags/Collections要求JSON字符串数组。整批预检后只调一次 Add，defer关闭文件并删除本次spool目录；失败不留下半批stage。 |
+| `(*lazyGit).resolve` | ctx → 按需打开并复用的 Git adapter。 | Reset 没有 journal 时可离线，不因提前打开不可用 backend 而失败；有 journal 时才访问远端，不能绕过恢复。 |
+| `(*lazyGit).Head`、`Commit`、`Tree`、`OpenBlob`、`IsAncestor` | repository.Git 读接口的延迟装配。 | 每个方法先 resolve，再调用同一 adapter；只解决普通 reset 的离线边界，不改变返回值/错误。 |
+| `(*lazyGit).CreateBlob`、`CreateTree`、`CreateCommit`、`UpdateRef` | repository.Git 写接口的延迟装配。 | 与上行相同；完整实现接口，不伪造未使用方法的成功结果。 |
+
+页面 API 契约：
+
+| 方法与路径 | 输入/输出重点 |
+| --- | --- |
+| GET `/api/state` | csrf、location/null、initialized、head、base_head、assets、changes、publication/null、auth.configured；没有隐式同步。 |
+| POST `/api/repo` | localgit: backend/path/branch/create；github: backend/repository/branch。 |
+| POST `/api/init`、`/api/sync` | `{}` → head、asset_count；业务仍由 Service 负责。 |
+| POST `/api/commit` | 非空 message → head、change_count、asset_count。 |
+| POST `/api/reset` | `{\"confirm\":true}`；普通丢弃保持离线，有 journal 先恢复/核验。 |
+| POST `/api/remove` | 非空 selectors 数组，完整UUID，原子暂存移除。 |
+| POST `/api/assets/<uuid>/edit` | 可选 title、tags、collections；省略保留，空数组清空。 |
+| POST `/api/upload` | 重复 files；namespace默认default，可选title，tags/collections为JSON字符串数组 → assets。 |
+| GET `/api/assets/<uuid>/image` | 原始图片流；不接受文件系统路径，已移除/不存在为404。 |
+| GET `/api/assets/<uuid>/url?provider=github或jsdelivr` | url、committed，public GitHub only。 |
+| GET `/api/auth` | 配置状态与实际GitHub login，不输出凭据。 |
+| POST `/api/verify` | `{}` → 固定远端HEAD的head/assets/objects，不检查未发布视图。 |
+
+### [`preview.go`](../internal/webview/preview.go)、[`static.go`](../internal/webview/static.go)
+
+| 精确符号 | 作用与不变量 |
+| --- | --- |
+| `(*Server).preview` | openImage后设置真实MIME/长度，CopyN流出原图；断流则ErrAbortHandler中止，不把JSON拼进图像或假装图片完整。 |
+| `(*Server).openImage` | staged reader直接返回；已提交记录在释放状态锁后按captured tree找blob、校验size、OpenBlob。网络/图片流不占workMu，不使用branch外链redirect。 |
+| `(*Server).imageSnapshot` | workMu+Service.Lock下ReadView并按完整UUID查可见Asset；新增payload先Open和Stat再解锁，避免reset/commit unlink竞态。staged delete不可见。 |
+| `(*Server).imageBlob` | 由cached tree与canonical path查GitEntry；首次Tree读取后只保留该tree被引用的placement映射。检查mode/type/SHA；只缓存一棵树、不缓存binary，缺对象明确corrupt。 |
+| `staticHandler` | embed.FS内固定资源白名单的GET/HEAD服务：HTML/JS/CSS、favicon、内嵌字体（Monaspace Radon、IBM Plex Sans SC）与各自OFL许可证。 | 
+
+### [`static/app.js`](../internal/webview/static/app.js)：按用户操作查函数
+
+浏览器不实现 repository planner；所有真实 mutation 经 API/Service。`workspace` 是最近服务器快照，filters/selected 是临时展示状态。CSS 在 [`style.css`](../internal/webview/static/style.css)，dialog、表单和固定SVG符号在 [`index.html`](../internal/webview/static/index.html)。无动态 HTML 注入、外部脚本或 localStorage token。
+
+| 精确函数/符号 | 职责与关键边界 |
+| --- | --- |
+| `$`、`element`、`icon`、`button` | ID查询、DOM/textContent、安全固定SVG use、带type=button的事件按钮。untrusted metadata只作文本或属性。 |
+| `bytes`、`date`、`list` | 十进制体积、本地日期、逗号/中文逗号/换行拆列表并trim/去重。持久化排序与规范化仍由app控制。 |
+| `showError`、`clearError`、`toast`、`responseError` | 可见错误/状态；保留实际服务端message，冲突/忙/鉴权另给操作提示。toast不是业务事实来源，不隐藏失败。 |
+| `api` | 同源fetch；POST带JSON/CSRF，非2xx与坏JSON抛实际错误。没有重试与token字段。 |
+| `setBusy`、`updateActions` | 禁重复mutation和处理中dialog交互；根据是否选仓、初始化、changes/journal/selected启用动作。 |
+| `mutate` | 单次action→重新GET state→恢复按钮；失败保留表单。已成功但刷新失败时明确要求确认状态，不重复提交冒充重试。 |
+| `refreshState` | 读取完整state、清理失效selection/卡片缓存并渲染；sequence拒绝旧刷新响应覆盖新结果。 |
+| `showDialog`、`hideDialog`、`closeNavigation` | 原生modal焦点约束、处理期间禁止关闭、移动导航状态；close事件恢复可用原焦点。详情默认聚焦关闭按钮，不跳过原图滚到编辑栏。 |
+| `resetFilters`、`ready` | 清除查询/namespace/分类/标签；上传前要求选仓并初始化，不自动写远端。 |
+| `renderWorkspace`、`counts`、`renderFilters` | 用真实Asset/changes计算统计、namespace、仓库状态和动态分类/标签计数；分类与标签可组合筛选。 |
+| `visibleAssets` | 搜索title/filename/tags/collections，namespace/分类/标签AND组合；时间/标题排序，ID稳定tie-break。不改SQLite。 |
+| `imageURL`、`card`、`renderGallery` | UUID原图端点、lazy img、可访问选择/详情按钮、state/chips/尺寸/体积；过滤期间复用卡片DOM，显示空/错误/选择状态，无seed图库。 |
+| `openPreview` | 填真实原图与完整metadata，编辑控件可清空列表；只public GitHub显示URL控件，新增提示prospective。 |
+| `renderPending`、`openPending` | 展示规范化add/update/delete、base与publication警告。删除无Asset payload时显示UUID，不补造metadata。 |
+| `confirm`、`removeAssets` | 共用明确确认dialog，保留实际失败；remove只暂存UUID列表，成功刷新后关闭对应详情，不立即宣称远端删除。 |
+| `releaseUploadFiles`、`setUploadFiles`、`renderUploadFiles`、`openUpload` | 维护File/ObjectURL、客户端数量/体积提示和可移除预览；移除/关闭revoke，失败保留本批输入。 |
+| `upload` | FormData+XHR，把传输百分比和服务端校验阶段分开；完整batch一次API请求，不把每个文件变成独立commit。 |
+| `openRepository`、`updateRepositoryFields` | local create/use与GitHub字段切换，已有Location回填；不提供token输入，换仓需新state-dir。 |
+| `result` | 验证结果等数据用dl/textContent展示，长HEAD可换行。 |
+| `bindEvents` | 连接表单、同步/发布/校验、确认、拖放、selection、URLcopy、auth、Esc与搜索快捷键；真实逻辑在上述具名函数和API，匿名回调不另造业务层。 |

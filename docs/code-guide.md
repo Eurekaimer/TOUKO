@@ -2,7 +2,7 @@
 
 这篇教程面向会编程、但没有参与本轮实现的读者。目标不是记住目录，而是能回答三个问题：**一条命令到底改了什么？中途失败留下什么？修改某个功能时，哪些边界不能破坏？**
 
-当前实现是管理 PNG/JPEG/GIF 的 CLI 核心：以 Git 保存图片和元数据，以 SQLite 保存本地快照、暂存修改及发布日志。后端是实际本地 Git 与 GitHub Git Data API；没有 GUI、缩略图、R2、插件框架或自动冲突合并。
+当前实现管理 PNG/JPEG/GIF，提供 CLI 和本地浏览器 Webview：以 Git 保存图片和元数据，以 SQLite 保存本地快照、暂存修改及发布日志。后端是实际本地 Git 与 GitHub Git Data API；没有缩略图服务、R2、插件框架或自动冲突合并。Webview 不引入第二套存储或发布流程。
 
 本文的函数名以源码为准，不依赖容易变化的行号。逐函数查询见 [函数参考](function-reference.md)，日常操作和 GitHub 接入见 [使用教程](usage.md)。本文中的命令是供你执行的练习，**不是已经运行过的验收记录，也没有虚构运行输出**。GitHub HTTP 测试不等于使用真实 token 完成了线上验收。
 
@@ -60,6 +60,7 @@
 | 6 | `internal/app/commit.go`、`sync.go`、`repo.go`、`verify.go` | 哪一步使修改对外可见？各个中断窗口怎样恢复？ |
 | 7 | `internal/repository/git.go`、`internal/localgit/repository.go`、`internal/github/{client,repository}.go`、`internal/delivery/url.go` | 同一端口怎样落到真实 Git 命令和 HTTP？两者原子性有何差别？ |
 | 8 | `cmd/touko/main.go`、`internal/cli/{root,repo,assets,publication,delivery}.go` | 参数、标准输入、输出契约和后端装配如何连接前面的业务？ |
+| 9 | `internal/cli/serve.go`、`internal/webview/{server,api,preview,static}.go`、`static/{index.html,style.css,app.js}` | 本地 HTTP 边界怎样接到相同 Service？网页状态为什么不能取代 SQLite stage？ |
 
 第一遍读每个函数时只标注四件事：**输入、输出、不变量、副作用**。第二遍再跟错误分支。最后通过测试理解为什么需要这些防线，比照着代码逐行翻译更有效。
 
@@ -74,6 +75,11 @@ flowchart TD
     CLI --> Local[internal/localgit]
     CLI --> GitHub[internal/github]
     CLI --> Delivery[internal/delivery]
+    CLI --> Web[internal/webview]
+    Web --> App
+    Web --> Local
+    Web --> GitHub
+    Web --> Delivery
     App --> Repo[internal/repository]
     App --> Index[internal/index]
     App --> Ingest[internal/image]
@@ -486,14 +492,28 @@ sqlite3 -readonly "$A/index.db" \
 
 `url SELECTOR --provider github|jsdelivr` 的结果由 branch 与 object path 推导，不是 immutable commit URL。对 staged add，`--json` 的 `committed:false` 和人类输出的 stderr 提示说明它还是 prospective link；metadata-only modified 的图片 placement 已提交，因此不应把 committed 字段理解为“所有当前 metadata 已提交”。local/private 不提供公网链接或 Markdown 假成功。
 
-当前范围之外：GUI/TUI、缩略图、R2、复制/插件后端、OAuth login、namespace move、原图替换、自动 merge、历史 purge、CDN 缓存清除。调试和学习时不要把这些未实现能力误认为现有命令的隐含承诺。
+当前范围之外：原生桌面壳/TUI、缩略图服务、R2、复制/插件后端、OAuth login、namespace move、原图替换、自动 merge、历史 purge、CDN 缓存清除。调试和学习时不要把这些未实现能力误认为现有命令或页面的隐含承诺。
 
-用户已明确选择 **下一阶段** 实现 Webview：视觉简洁美观、参考 PicList，界面内管理图片标签和分类。本轮不放占位界面。后续应复用 `Tags/Collections` 与 app staging/publication 状态机；是否需要层级分类等新语义，先与用户确认，再决定格式/索引变化，不能在前端悄悄引入第二套来源。
+### 8.8 Webview：先读状态，再追事件，最后追副作用
+
+这是一份由 Go binary 内嵌的本地网页，不是独立云服务，也不依赖 Node 打包。启动与真实仓库操作见 [Webview 教程](webview.md)。
+
+1. **进程边界**：`serveCommand` 只绑定 `127.0.0.1`，用实际监听端口构造精确 Origin；把 CLI 打开的 Service 借给 `webview.New`。Ctrl+C 取消请求，Shutdown 给正在处理的连接一个收尾窗口；强制关闭连接后仍等待 handler 退出，最后才关闭 SQLite，避免发布收尾与 Store.Close 竞争。
+2. **HTTP 边界**：先读 `Server.ServeHTTP` 的 Host、Origin、Fetch Metadata 和 CSRF 检查，再读 `api` 路由。CSRF 来自每次启动随机 nonce；没有跨域开放，也没有 token 输入/输出接口。静态文件通过白名单和 `embed.FS` 提供，不能下载 state-dir 任意文件。
+3. **一致视图**：`GET /api/state` 调 `Service.ReadView`，一次 Store.Load 同时得到 HEAD、base、changes、journal 与 overlay；不是先 List、再 Load 拼出不同时刻的两个结果。`Server.workMu` 串行本服务的状态操作，文件锁继续阻止其他 CLI 同时修改同一工作区。
+4. **前端状态**：`workspace` 是服务器快照，`filters` 是搜索/namespace/分类/标签/排序，`selected` 是待批量操作的 UUID，`uploadFiles` 只保存尚未发到本机服务的 File/ObjectURL。刷新网页仍能恢复 stage，因为它在 SQLite，不在 localStorage。`refreshSequence` 不让较旧的刷新响应覆盖较新的请求结果。
+5. **上传路径**：`bindEvents → upload → POST /api/upload → Server.upload → Service.Add`。浏览器用 XHR 展示真实传输进度；服务端以私有临时目录流式 spool，检查整批输入后只调用一次 Add。失败显示服务端错误并保留表单；不会显示假成功或自动重试。File ObjectURL 在移除/关闭时 revoke。
+6. **编辑与分类**：`openPreview` 填入真实 metadata，保存时 `list` 拆分中英文逗号/换行，`POST /api/assets/<uuid>/edit` 交给 Service.Edit。分类就是现有平面 Collections；列表替换、留空清空，不改 format v1。DOM 用 textContent 与属性赋值，绝不把标题/标签拼成 HTML。
+7. **原图读取**：`imageSnapshot` 在锁内获取一致视图、打开 staged payload，之后才释放锁。已提交图片由缓存 tree 的 placement 找到 immutable blob，网络读取与原图流不占工作区锁，不追随当前 branch URL。即使别的设备推进分支，未同步页面仍看到自己缓存 HEAD 的图片；private GitHub 的 bytes 由服务端代理，不泄露 token。只缓存一个 tree 的引用映射，不把原图长期留在内存。
+8. **发布与恢复**：`mutate` 禁重复写入并在成功后重新读 state；commit、sync、reset、verify 都回到原 Service coordinator。409/conflict 保留修改并给出处理提示，不自动 reset；reset/移除有明确确认。journal 被单独显示，不根据 toast 猜远端是否成功。
+
+修改页面前，先决定变化属于“过滤/展示”还是“实际 metadata/发布协议”。前者留在 app.js；后者沿 API → Service → domain/planner 检查，不能在前端写 Git tree 或另存一套分类 JSON。完整接口与各具名函数见 [函数导航的 Webview 章节](function-reference.md#14-internalwebview本地图库边界与浏览器控制器)。
 
 ## 9. 下一步按问题查文档
 
 - 想知道一个具体函数的参数、返回值、所有权和副作用：读 [函数参考](function-reference.md)，再跳到对应源码。
 - 想实际构建、跑 demo、连接专用 GitHub gallery：读 [使用教程](usage.md)。
+- 想使用图库界面、理解 HTTP 边界或验收自己的 GitHub repo：读 [Webview 教程](webview.md) 与上面的 8.8。
 - 想判断 metadata/path 的改变是否破坏兼容：读 [仓库格式](repository-format.md)。
 - 想处理 state-dir、暂存与删库风险：读 [本地状态](local-state.md)。
 - 想理解发布恢复与后端安全边界：读 [发布协议](publication.md)。
