@@ -10,7 +10,7 @@
 # second gallery implementation.
 
 pkgname=touko-git
-pkgver=r40.f8c5798
+pkgver=r42.0d6cba3
 pkgrel=1
 pkgdesc='Local-first image gallery that keeps every picture in your own Git repository'
 arch=('x86_64' 'aarch64')
