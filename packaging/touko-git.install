@@ -1,0 +1,18 @@
+post_install() {
+  refresh_desktop_caches
+}
+
+post_upgrade() {
+  refresh_desktop_caches
+}
+
+post_remove() {
+  refresh_desktop_caches
+}
+
+refresh_desktop_caches() {
+  command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q
+  command -v gtk-update-icon-cache >/dev/null 2>&1 &&
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null
+  return 0
+}

@@ -62,14 +62,21 @@ go build -o /tmp/touko ./cmd/touko
 
 `import` 读取 Git 已提交图片，按内容识别 PNG/JPEG/GIF（包括无后缀文件），只暂存 metadata，保留原路径和原 Git blob，不复制到 `objects/`、不重新上传。省略 `--directory` 扫描全仓库，已管理路径与非图片会跳过；它不是从本机目录上传文件（本机文件用 `add`）。**首次提交含显式 `path` 的导入或目录上传会把仓库升级到 format v2；旧客户端将 fail-closed 拒绝读取，请先升级所有设备。** 默认 canonical 上传不会无故升级 v1。缓存损坏/丢失可用 `reindex` 保留耐久暂存重建；尚未迁移的 schema1 数据库是例外，必须先从健康旧库迁移，不能先删除唯一未发布状态。详见 [CLI 教程](docs/usage.md)。
 
-若想用原生窗口而不是浏览器打开同一界面，可使用已有 MyGo 桌面壳。它不启动完整浏览器、不使用 Electron，但仍依赖系统 WebView 渲染内核；内存占用需计入 renderer 等子进程实测，不能承诺“没有浏览器内核”：
+若想用原生窗口而不是浏览器打开同一界面，可用 MyGo 桌面壳（`touko-desktop`）：独立窗口、无地址栏、不使用 Electron，但仍依赖系统 WebView 渲染内核（GTK3 + WebKitGTK 4.1），内存占用需计入 renderer 等子进程实测，不能承诺“没有浏览器内核”。窗口关闭默认缩到系统托盘（托盘菜单：显示主窗口 / 在浏览器中打开 / 打开工作区目录 / 退出），从托盘退出才真正释放 HTTP 与 SQLite：
 
 ```sh
+# 方式一：直接构建
 go build -o /tmp/touko-desktop ./cmd/touko-desktop
 /tmp/touko-desktop --state-dir "$HOME/.local/share/touko-gallery"
+
+# 方式二：装成本地包（Arch 系），同时安装 CLI、桌面条目与各尺寸图标
+cd packaging && makepkg -si
+touko-desktop
 ```
 
-用户已要求连接窗口改为**仓库 / 分支两级联动下拉**；当前分支仍为文本框，新交互尚未完成。后续顺序为：完成并确认 Webview → 优化既有 MyGo 独立窗口并实测内存 → 确认后再做 AUR。当前状态见 [MEMORY](MEMORY.md)，具体计划见 [Webview 文档](docs/webview.md)。
+本地包 `packaging/PKGBUILD` 直接从当前 checkout 构建（含未提交改动），因此 `makepkg -si` 测的就是手上这份代码；发布版应改为固定 tag 的源码包加校验和。桌面条目必须与窗口 app_id（可执行文件基名 `touko-desktop`）同名，任务栏/应用菜单才会显示图标——这与微信、qBittorrent 走的是同一条 freedesktop 规则。
+
+后续顺序为：优化 MyGo 窗口体验并实测完整进程树内存 → 确认后再做 AUR 发布。当前状态见 [MEMORY](MEMORY.md)，具体计划与实测证据见 [Webview 文档](docs/webview.md)。
 
 ## 可操作 demo
 

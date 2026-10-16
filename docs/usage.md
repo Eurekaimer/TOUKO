@@ -19,6 +19,24 @@ CGO_ENABLED=0 go build -o /tmp/touko ./cmd/touko
 
 不要直接修改 `.touko` metadata 或 SQLite 表来操作图片；使用 CLI 保持内容描述、staging base 和 publication journal 一致。
 
+### 桌面窗口与本地包（可选）
+
+`touko-desktop` 用系统 WebView（Linux 需要 GTK3 + WebKitGTK 4.1，Windows WebView2，macOS WKWebView）显示与 `touko serve` 完全相同的界面，不启动完整浏览器、不使用 Electron，但仍有渲染内核，内存要按完整进程树量。窗口关闭默认隐藏到系统托盘；托盘菜单提供显示主窗口、在浏览器中打开、打开工作区目录和退出，只有“退出”才会释放 HTTP 端口与 SQLite，SIGINT/SIGTERM 也一样。没有托盘支持时它会明确提示“关闭窗口即停止 TOUKO”，不会留下无法找回的隐藏窗口。
+
+```bash
+go build -o /tmp/touko-desktop ./cmd/touko-desktop
+/tmp/touko-desktop --state-dir "$HOME/.local/share/touko-gallery"   # 省略则用默认 state 目录
+```
+
+Arch 系可以直接装成本地包：`packaging/PKGBUILD` 从当前 checkout 构建（含未提交改动），安装 `touko`、`touko-desktop`、桌面条目和 16–256px 图标：
+
+```bash
+cd packaging && makepkg -si     # 需要 fakeroot；会要求 sudo 安装
+touko-desktop
+```
+
+任务栏/应用菜单的图标靠 freedesktop 规则：窗口的 app_id 是**可执行文件基名**，所以包里装的桌面条目叫 `touko-desktop.desktop`，图标放在 `hicolor/<尺寸>/apps/touko.png`。把二进制改名会让图标查不到。图标由 `packaging/make-icons.py`（需要 Pillow）从本机 `logo/TOUKO.png` 裁出方形后生成；原 logo 不进入仓库与包，重新生成只影响 `internal/desktop/assets/` 下已提交的派生 PNG。
+
 ## 2. 先运行自动验收 demo
 
 ```bash

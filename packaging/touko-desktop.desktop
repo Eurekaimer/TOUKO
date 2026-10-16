@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=TOUKO
+GenericName=Image gallery
+GenericName[zh_CN]=图片图库
+Comment=Keep your pictures in your own Git repository
+Comment[zh_CN]=把图片归档并发布在你自己的 Git 仓库里
+Exec=touko-desktop
+Icon=touko
+Terminal=false
+Categories=Graphics;Viewer;
+Keywords=image;gallery;git;picture;photo;
+Keywords[zh_CN]=图片;图库;图床;相册;
+StartupNotify=true
+# The window's Wayland app id is the executable name, so this file is named
+# after it; StartupWMClass covers compositors that match on the X11 class.
+StartupWMClass=touko-desktop

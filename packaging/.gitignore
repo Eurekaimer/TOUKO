@@ -1,0 +1,6 @@
+# makepkg output; never committed.
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.pkg.tar.gz

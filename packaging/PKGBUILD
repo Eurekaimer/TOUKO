@@ -1,0 +1,62 @@
+# Maintainer: Eurekaimer <eurekaimer@users.noreply.github.com>
+#
+# Local test package. It compiles the checkout that contains this directory,
+# including uncommitted changes, instead of downloading a release tarball, so
+# `makepkg -si` always tests exactly what is on disk right now. A published
+# package must instead pin a tagged source tarball and its checksum.
+#
+# Both front ends are installed: the `touko` CLI and the `touko-desktop` MyGo
+# window. They share one embedded web UI and one HTTP API, so the window adds no
+# second gallery implementation.
+
+pkgname=touko-git
+pkgver=r40.f8c5798
+pkgrel=1
+pkgdesc='Local-first image gallery that keeps every picture in your own Git repository'
+arch=('x86_64' 'aarch64')
+url='https://github.com/Eurekaimer/TOUKO'
+license=('MIT')
+depends=('glibc')
+optdepends=(
+  'gtk3: MyGo desktop window'
+  'webkit2gtk-4.1: MyGo desktop window (WebKitGTK renderer)'
+  'libayatana-appindicator: tray icon that reopens or quits the window'
+  'github-cli: touko auth login, repo list and GitHub publishing'
+)
+makedepends=('go' 'git')
+install="$pkgname.install"
+source=()
+b2sums=()
+
+# Label local builds with the commit they were compiled from. The declared
+# pkgver stays as the fallback for checkouts that are not a Git repository.
+pkgver() {
+  cd "$startdir/.."
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$startdir/.."
+  export GOTOOLCHAIN=local
+  export CGO_ENABLED=0
+  go build -trimpath -buildvcs=true -ldflags '-s -w' -o "$srcdir/touko" ./cmd/touko
+  go build -trimpath -buildvcs=true -ldflags '-s -w' -o "$srcdir/touko-desktop" ./cmd/touko-desktop
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 "$srcdir/touko" "$pkgdir/usr/bin/touko"
+  install -Dm755 "$srcdir/touko-desktop" "$pkgdir/usr/bin/touko-desktop"
+  install -Dm644 packaging/touko-desktop.desktop "$pkgdir/usr/share/applications/touko-desktop.desktop"
+  # The icon is the square crop of the author's artwork that
+  # packaging/make-icons.py derives; the original logo file is deliberately not
+  # part of the package.
+  for size in 16 24 32 48 64 128 256; do
+    install -Dm644 "internal/desktop/assets/touko-$size.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/touko.png"
+  done
+  install -Dm644 internal/desktop/assets/touko-256.png "$pkgdir/usr/share/pixmaps/touko.png"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -d "$pkgdir/usr/share/doc/$pkgname"
+  install -m644 README.md docs/*.md "$pkgdir/usr/share/doc/$pkgname/"
+}
