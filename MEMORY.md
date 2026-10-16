@@ -4,7 +4,7 @@
 
 ## 当前交付状态
 
-CLI 核心、中文教程与本轮 Webview 已实现。真实浏览器已完成桌面/移动布局、上传预览、标签分类、发布校验、共享对象删除、多选移除/显式丢弃和跨设备冲突验收。当前正在保存实现提交及同步教程；真实 GitHub live smoke 未执行，缺少用户授权的专用 gallery/token，不能用本地检查冒充线上成功。
+CLI 核心、中文教程与本轮 Webview 已实现并分小步提交（最新 `188cef1`）。真实浏览器已重新核验桌面/移动布局、字体真实加载、筛选与轨迹、预览原图、待发布、多选、对话框与 Esc 关闭。真实 GitHub live smoke 仍未执行，缺少用户授权的专用 gallery/token，不能用本地检查冒充线上成功；`examples/github-acceptance.sh` 已就绪待用户执行。
 
 用户曾要求暂停保存记忆，随后明确要求继续并完成全部内容，且**每个实现 commit 后必须更新本文件**。步骤5、6、7完成后均已立即更新；不再把上次暂停时的未验证状态当作当前状态。后续也要保持代码、行为检查、对应文档和记忆同步，不要一次做大量用户无法追踪的设计变化。
 
@@ -55,8 +55,14 @@ CLI 核心、中文教程与本轮 Webview 已实现。真实浏览器已完成�
 | 5 | `7a82b24` | `feat(app): publish recoverable commits and verify current-state deletion` |
 | 6 | `7cad22f` | `feat(github): support safe repository publication and derived delivery URLs` |
 | 7 | `270c0ac` | `test(demo): exercise recovery deletion and publication failure scenarios` |
+| 8 | `0e8c50c` | `docs: explain architecture functions and hands-on workflows` |
+| 9 | `6526ae9` | `test(github): add one-command live acceptance script` |
+| 10 | `1821343` | `feat(webview): add the local gallery interface` |
+| 11 | `3fc5815` | `feat(desktop): serve the gallery and open it in a MyGo window` |
+| 12 | `3fb95a9` | `feat(webview): set the display face to Monaspace Radon` |
+| 13 | `188cef1` | `docs: document the gallery interface, desktop shell and acceptance flow` |
 
-每个 coherent implementation commit 前均运行并通过 go test ./... 与 go vet ./...。CLI最终教程另有`0e8c50c docs: explain architecture functions and hands-on workflows`；本轮Webview实现hash在实际commit输出后立即补记，不猜测尚未生成的hash。
+每个 coherent implementation commit 前均运行并通过 `gofmt -l`、`go vet ./...` 与 `go test ./...`；Webview/Radon 相关提交另跑 `go test -race ./...`。Webview 提交前还在真实浏览器核验了契约钩子（117 id + 25 JS class 全部存在）、字体真实加载与交互路径。hash 均来自实际 `git commit` 输出，不猜测未生成的 hash。
 
 ## 可直接继续操作的真实 demo
 
