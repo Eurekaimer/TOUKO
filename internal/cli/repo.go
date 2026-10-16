@@ -3,11 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
+	"github.com/Eurekaimer/TOUKO/internal/credential"
+	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/github"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
@@ -78,7 +79,11 @@ func (r *runtime) repoCommand() *cobra.Command {
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 				return usage("repository must be OWNER/REPO")
 			}
-			client, err := github.New(repository.Location{Backend: "github", Owner: parts[0], Name: parts[1], Branch: "main"}, os.Getenv("GITHUB_TOKEN"))
+			token, _, err := credential.Resolve(cmd.Context())
+			if err != nil {
+				return err
+			}
+			client, err := github.New(repository.Location{Backend: "github", Owner: parts[0], Name: parts[1], Branch: "main"}, token)
 			if err != nil {
 				return &usageError{err}
 			}
@@ -108,7 +113,32 @@ func (r *runtime) repoCommand() *cobra.Command {
 	}}
 	use.Flags().StringVar(&usePath, "local", "", "Existing local Git repository")
 	use.Flags().StringVar(&branch, "branch", "", "Git branch (local: main; GitHub: repository default)")
-	repo.AddCommand(init, use)
+	list := &cobra.Command{Use: "list", Short: "List repositories accessible to the current GitHub login", Args: arguments(cobra.NoArgs), RunE: func(cmd *cobra.Command, args []string) error {
+		token, _, err := credential.Resolve(cmd.Context())
+		if err != nil {
+			return err
+		}
+		client, err := github.New(repository.Location{Backend: "github", Owner: "account", Name: "repositories", Branch: "main"}, token)
+		if err != nil {
+			return err
+		}
+		repositories, err := client.ListRepositories(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if r.json {
+			return r.encode(struct {
+				Repositories []github.RepositoryInfo `json:"repositories"`
+			}{repositories})
+		}
+		for _, info := range repositories {
+			if _, err := fmt.Fprintf(r.stdout, "%s\t%s\tprivate=%t\tcan_push=%t\n", info.FullName, info.DefaultBranch, info.Private, info.CanPush); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	repo.AddCommand(init, use, list)
 	return repo
 }
 
@@ -118,36 +148,99 @@ func (r *runtime) syncCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		git, err := r.reader(cmd.Context(), s)
+		location, err := s.Location(cmd.Context())
 		if err != nil {
 			return err
 		}
-		result, err := s.Sync(cmd.Context(), git)
-		if err != nil {
-			return err
-		}
-		// `sync` is the explicit "talk to the remote" action, so it is where the
-		// local working copy is refreshed. Previews never fetch, which is what
-		// keeps them working with no connection.
-		location, locationErr := s.Location(cmd.Context())
-		if locationErr == nil && location.Backend == "github" {
-			if err := r.syncClone(cmd.Context(), s, location); err != nil {
-				return err
+		result, err := s.SyncWith(cmd.Context(), func(ctx context.Context, recovering bool) (repository.Git, error) {
+			if location.Backend == "github" {
+				if recovering {
+					// A shallow clone cannot establish publication or read an
+					// unpublished candidate; recovery must use the API.
+					return r.backend(ctx, s)
+				}
+				if err := r.syncClone(ctx, s, location); err != nil {
+					return nil, err
+				}
 			}
+			return r.reader(ctx, s)
+		})
+		if err != nil {
+			return err
 		}
 		return r.printSync(result)
 	}}
 }
 
-// syncClone brings the local working copy in step with the branch that was just
-// read. A repository used before the clone existed gets one created here.
+// syncClone explicitly refreshes the TOUKO-managed checkout before indexing.
 func (r *runtime) syncClone(ctx context.Context, s *app.Service, location repository.Location) error {
-	dir := filepath.Join(s.Dir, "clone")
-	remote := "https://github.com/" + location.Owner + "/" + location.Name + ".git"
-	if err := localgit.Clone(ctx, remote, dir, location.Branch, os.Getenv("GITHUB_TOKEN")); err != nil {
+	token, _, err := credential.Resolve(ctx)
+	if err != nil {
 		return err
 	}
-	return localgit.Update(ctx, dir, location.Branch, os.Getenv("GITHUB_TOKEN"))
+	dir := repository.CloneDir(s.Dir)
+	if err := localgit.Clone(ctx, location.RemoteURL(), dir, location.Branch, token); err != nil {
+		return err
+	}
+	return localgit.Update(ctx, dir, location.Branch, token)
+}
+
+func (r *runtime) reindexCommand() *cobra.Command {
+	return &cobra.Command{Use: "reindex", Short: "Rebuild the committed cache without discarding unpublished changes", Args: arguments(cobra.NoArgs), RunE: func(cmd *cobra.Command, args []string) error {
+		dir, err := app.StateDir(r.stateDir)
+		if err != nil {
+			return err
+		}
+		// Location needs only config.json: do not open a possibly corrupt cache.
+		s := &app.Service{Dir: dir}
+		location, err := s.Location(cmd.Context())
+		if err != nil {
+			return err
+		}
+		if location.Backend == "github" {
+			if err := r.syncClone(cmd.Context(), s, location); err != nil {
+				return err
+			}
+		}
+		git, err := r.reader(cmd.Context(), s)
+		if err != nil {
+			return err
+		}
+		result, err := app.Reindex(cmd.Context(), dir, git)
+		if err != nil {
+			return err
+		}
+		return r.printSync(result)
+	}}
+}
+
+func (r *runtime) importCommand() *cobra.Command {
+	var directory, namespace string
+	var tags, collections []string
+	cmd := &cobra.Command{Use: "import", Short: "Stage existing Git images in place, preserving their paths", Args: arguments(cobra.NoArgs), RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := r.service(cmd.Context())
+		if err != nil {
+			return err
+		}
+		git, err := r.reader(cmd.Context(), s)
+		if err != nil {
+			return err
+		}
+		result, err := s.ImportLegacy(cmd.Context(), git, app.ImportOptions{Directory: directory, Namespace: domain.Namespace(namespace), Tags: tags, Collections: collections})
+		if err != nil {
+			return err
+		}
+		if r.json {
+			return r.encode(result)
+		}
+		_, err = fmt.Fprintf(r.stdout, "Imported %d; skipped %d. Changes are staged; run commit to publish metadata.\n", result.Imported, result.Skipped)
+		return err
+	}}
+	cmd.Flags().StringVar(&directory, "directory", "", "Only import images under this repository directory")
+	cmd.Flags().StringVar(&namespace, "namespace", "default", "Namespace for imported images")
+	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Tag for imported images (repeatable)")
+	cmd.Flags().StringArrayVar(&collections, "collection", nil, "Collection for imported images (repeatable)")
+	return cmd
 }
 
 func (r *runtime) printSync(result app.SyncResult) error {

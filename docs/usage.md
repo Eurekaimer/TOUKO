@@ -2,11 +2,11 @@
 
 本文讲实际操作；想理解代码，接着读 [架构学习路线](code-guide.md) 和 [逐函数导航](function-reference.md)。协议细节分别在 [format](repository-format.md)、[local state](local-state.md)、[publication/recovery](publication.md)、[GitHub](github.md)。
 
-需要图形界面时，直接读 [Webview 启动与真实仓库验收](webview.md)。`touko serve` 和本文的 CLI 共用 state-dir；不需要导出/导入第二套图库，但同一工作区的并发写入仍由锁保护。
+需要图形界面时，直接读 [Webview 启动与真实仓库验收](webview.md)。`touko serve` 和本文的 CLI 共用工作区格式；不需要导出/导入第二套图库，同一工作区的并发写入由锁保护。Web 在同一服务中为不同仓库/分支保存独立 URL 工作区；CLI 操作其中一个时，用该工作区实际的 state 路径，而非一律使用 Web 的根 state-dir。
 
 ## 1. 环境与构建
 
-CLI 需要 Go 1.26+（构建时）、Git（localgit backend；须支持 `show-ref --exists`）、可写的本地 state 目录。SQLite 是纯 Go driver，不需要 CGO 或另外启动数据库服务。离线 demo 另外需要 Bash、Python 3（仅标准库断言，不是 CLI 的运行依赖）。
+CLI 构建需要 Go 1.27.1 或更高版本（以 `go.mod` 为准）、Git（须支持 SHA-1 repository 和 `show-ref --exists`）、可写的本地 state 目录。SQLite 是纯 Go driver，不需要 CGO 或另外启动数据库服务。GitHub 浏览器登录需要安装 GitHub CLI（`gh`）；已有 `gh` 登录可直接复用。离线 demo 另外需要 Bash、Python 3（仅标准库断言，不是 CLI 的运行依赖）。
 
 在项目根目录：
 
@@ -54,7 +54,7 @@ printf 'Asset ID: %s\n' "$ID"
 "$ROOT/touko" --state-dir "$ROOT/device-a" verify
 ```
 
-`add` 不发布远端。UUID 是图片记录身份，不是文件路径或 hash。再次导入相同 bytes 得到新 UUID；同 namespace 共用一份 binary。`--output id` 只输出 UUID，适合 shell 捕获，不能和 `--json` 合用。
+`add` 不发布远端。UUID 是图片记录身份，不是文件路径或 hash。再次上传相同 bytes 得到新 UUID；默认路径下同 namespace 共用一份 binary。`--output id` 只输出 UUID，适合 shell 捕获，不能和 `--json` 合用；在旧 Git 图库原地纳管已有图片用后文的 `import`。
 
 ## 4. 从零建一个自己的离线 gallery
 
@@ -71,7 +71,22 @@ ID=$(/tmp/touko add logo/TOUKO.png --namespace blog --title '我的 logo' --tag 
 
 Gallery 是 **bare Git repository**，没有普通 checkout 工作区。可以用 `git --git-dir "$HOME/Pictures/my-gallery.git" ls-tree -r --name-only main` 查看当前 committed paths；不要用文件浏览器找工作区图片。
 
-State 目录优先级为 `--state-dir` → `TOUKO_HOME` → `$XDG_DATA_HOME/touko` → `$HOME/.local/share/touko`。每台设备/每个 gallery 用独立 state-dir；`repo use` 不会把已有另一仓库的 cache/stage 混进来。
+State 目录优先级为 `--state-dir` → `TOUKO_HOME` → `$XDG_DATA_HOME/touko` → `$HOME/.local/share/touko`。CLI 每台设备/每个 gallery 使用独立 state-dir；`repo use` 不会把另一仓库的 cache/stage 混进来。Web 切换仓库则自动使用独立工作区，旧根 state 作为默认工作区保留，新工作区在 `<state-root>/workspaces/<key>/`。从网页显示的本地副本路径去掉末尾 `/clone` 可得到该 GitHub 工作区的 CLI state 路径；不要凭空猜 key。
+
+### GitHub 登录与选择仓库
+
+```bash
+# 安装 gh 后在终端运行；无需把 token 粘贴到网页。
+/tmp/touko auth login
+/tmp/touko auth status
+/tmp/touko repo list
+/tmp/touko --state-dir "$HOME/.local/share/touko-github-gallery" repo use OWNER/gallery
+/tmp/touko --state-dir "$HOME/.local/share/touko-github-gallery" sync
+```
+
+`auth login` 调用真实 `gh auth login --hostname github.com --web --git-protocol https`；`auth status` 仅输出登录名和凭据来源，不输出 token。凭据优先级为 `GITHUB_TOKEN` → `GH_TOKEN` → `gh` 登录；没有凭据可匿名读取公开仓库，但列出当前账户仓库和写入需要认证。显式 env 凭据无效不会偷偷回退到 gh。`repo list --json` 可查看 `full_name/default_branch/private/can_push`，只读仓库无法发布。
+
+`repo use` 只选择仓库，不初始化远端；已有 TOUKO 仓库接着 `sync`，尚无 TOUKO manifest 的旧图库则按下节显式 `repo init`。普通 `sync` 先联网更新 GitHub clone，再索引其固定 HEAD，**一次调用即更新图库**；`verify` 和已有 clone 的预览不 fetch，只校验/读取当前本地副本，不能用来确认远端是否有新提交。首次读取需联网建立浅克隆；发布仍用 GitHub API，不执行 `git push`。
 
 ## 5. 查找与修改
 
@@ -90,7 +105,7 @@ State 目录优先级为 `--state-dir` → `TOUKO_HOME` → `$XDG_DATA_HOME/touk
 - `find` 对 title、original filename、tags、collections 作不区分大小写的子串搜索，query 不能为空。
 - `edit` 只改 title/tags/collections；未提供的字段不变。重复 `--tag/--collection` 表示完整新列表，不是追加；trim/去空/去重/排序但保持大小写。显式清空用 clear flags，不能和同字段设置同时使用。
 - ls/show/find 是 committed snapshot 上叠加 staging，状态为 committed/added/modified，staged-deleted 记录隐藏。
-- 未实现 namespace move、换图、thumbnail、GUI 或自动合并；CLI 不提供假命令。
+- 未实现 namespace move、换图、thumbnail 或自动合并；图形界面已有，见 [Webview 教程](webview.md)。Web 还可搜索真实仓库路径，并按目录递归筛选；CLI `find` 不包含路径搜索。
 
 ## 6. stdin 与批量导入
 
@@ -103,6 +118,37 @@ cat logo/TOUKO.png | /tmp/touko add - --name '剪贴板.png' --namespace notes -
 
 一次 batch 的任一输入失败，该批不会留下部分 stage rows。stdin `-` 只能单独使用，不能混其他文件；`--name` 仅对 stdin 有效。未指定 stdin name 则按实际格式命名为 stdin.png/jpg/gif。图片格式由 header 决定，不信文件扩展名。当前支持 PNG/JPEG/GIF，单个最大 100,000,000 bytes，不整张图片加载到内存。
 
+### 指定仓库上传目录
+
+```bash
+/tmp/touko add examples/images/red.png --namespace blog --directory images/blog --tag demo
+/tmp/touko status
+/tmp/touko commit -m 'images: upload into images/blog'
+```
+
+`--directory` 是**仓库内目标目录**，不是本地输入目录；文件使用确定性内容 hash 命名，metadata 记录实际路径。留空保持默认 `objects/<namespace>/sha256/...`。目录须是规范相对 POSIX 路径（`/` 分隔），不能是绝对路径、含 `..`、反斜杠、控制字符或 `.git/.touko` 路径段。相同 bytes 不同最终路径是独立 placement；删除按实际完整路径计数。
+
+### 原地导入旧图库 / PicGo
+
+```bash
+# 独立 state 与自己的专用仓库；分支可按需追加 --branch。
+LEGACY_STATE="$HOME/.local/share/touko-legacy"
+/tmp/touko --state-dir "$LEGACY_STATE" repo use OWNER/old-gallery
+# 仅在还没有 TOUKO manifest 时执行：这一步会写入 manifest。
+/tmp/touko --state-dir "$LEGACY_STATE" repo init
+/tmp/touko --state-dir "$LEGACY_STATE" sync
+/tmp/touko --state-dir "$LEGACY_STATE" import --directory img --namespace blog --tag legacy --collection '旧图'
+/tmp/touko --state-dir "$LEGACY_STATE" status --json
+/tmp/touko --state-dir "$LEGACY_STATE" commit -m 'images: manage legacy paths'
+/tmp/touko --state-dir "$LEGACY_STATE" verify
+```
+
+`import` 不接受本地文件参数：扫描选定仓库固定 Git HEAD 中已提交的图片，`--directory img` 包括该目录下子目录；省略时扫描全仓库。已有 clone 想读取最新远端时先 `sync`。未初始化时明确拒绝导入，必须先由用户显式 `repo init`，不会自动接管原仓库。
+
+支持按真实 header 识别 PNG/JPEG/GIF，包括 Unicode 名和**无后缀**图片。导入只新增待发布 metadata，保留原路径与原 Git blob，不移动、不复制到 canonical objects、不重新上传；原路径旧链接不因导入而改变。已有 metadata 管理的路径、非普通文件/非图片会计入 skipped，`.touko` 不扫描；重复导入不创建重复记录。无法读取、损坏或不安全路径等失败不会留下部分导入。结果给出 imported/skipped 数量，检查后仍需显式 `commit`。
+
+**版本警告：导入和非空 `add --directory` 会产生显式 `path`；首次发布这样的 metadata 将 manifest 从 v1 升级到 v2，升级与 metadata 在同一个 commit 中完成。旧客户端会 fail-closed 拒绝 v2，发布前先升级其他设备。** 现有 v1 仍可读取，默认 canonical 上传不强制升级。导入后执行 `rm` 并提交会删除其原路径（仅当最后一个路径引用消失）；不是“只取消纳管”，且不会清理未知文件。
+
 ## 7. 删除、撤销与多设备
 
 ```bash
@@ -114,7 +160,7 @@ cat logo/TOUKO.png | /tmp/touko add - --name '剪贴板.png' --namespace notes -
 /tmp/touko reset --staged
 ```
 
-最后一个引用删除才删当前 tree 的 binary，跨 namespace 独立计数。`rm` 不擦 Git 历史，不承诺 CDN 全球缓存立刻失效。对 staged add 执行 rm 只是取消新增；已 staged-delete 再 rm 幂等，但 delete→edit 是冲突，不隐式恢复。
+最后一个**实际完整路径**引用删除才删当前 tree 的 binary；默认 canonical 路径包含 namespace，自定义路径和旧图路径则按各自完整路径计数。`rm` 不擦 Git 历史，不承诺 CDN 全球缓存立刻失效。对 staged add 执行 rm 只是取消新增；已 staged-delete 再 rm 幂等，但 delete→edit 是冲突，不隐式恢复。
 
 另一个设备或 state-dir：
 
@@ -132,14 +178,26 @@ cat logo/TOUKO.png | /tmp/touko add - --name '剪贴板.png' --namespace notes -
 | --- | --- | --- |
 | busy | 等待同一 state-dir 的写命令退出 | 不删除 `.lock`，不自造 stale-lock 清理 |
 | head_changed/delete_modify | 查看 status，决定保留还是 reset 全部 stage，再 sync | 不 force publish，不隐式恢复远端已删除记录 |
-| publication outcome unknown | 保留数据库与 stage，运行 sync | 不盲目重新上传，不删除 journal |
+| publication outcome unknown | 保留完整工作区与 stage，运行 sync；索引先损坏时先 reindex 再 sync | 不盲目重新上传，不删除 journal |
 | published head … local index failed | 远端可能已提交；修复本地存储后 sync | 不把它解释成远端没提交 |
 | repository_corrupt/hash_mismatch | 保留旧 cache，检查远端固定 HEAD 与 payload | 不跳过坏 metadata 生成部分 gallery |
-| unauthorized/api_error | 修复 token/权限/branch protection 或等待限流，再重试 | 不把 token 写进命令参数或聊天，不绕过保护 |
+| unauthorized/api_error | 运行 auth status，检查 gh 登录或 env 凭据权限/branch protection，或等待限流再重试 | 不把 token 写进命令参数或聊天，不绕过保护 |
 
-有 staging/publication 时不要删除 `index.db`：它们是未发布状态，远端恢复不了。仅在 CLI 已退出且 stage clean 时，可保留 config、删除自己 scratch state 的 index.db/WAL/SHM，然后 sync 重建 committed gallery。demo 会实际演示，不需要你删自己的生产数据。
+当前 SQLite schema2 的 `index.db` 只存 committed cache；未发布 changes、base HEAD 和 publication journal 保存在独立耐久 `workspace.json`，staging payload 也需保留。推荐恢复命令，不手动删表：
 
-GitHub 接入按 [专用指南](github.md) 执行。local/private repo 的 url/Markdown 不可用是正确行为，不会输出假公网链接。token 和专用 repo 未提供时，HTTP 测试不等于 GitHub live smoke。
+```bash
+# 若 Web/桌面仍使用这个工作区，先正常退出，再从 CLI 修复。
+/tmp/touko --state-dir "$HOME/.local/share/touko-my-gallery" reindex
+/tmp/touko --state-dir "$HOME/.local/share/touko-my-gallery" status --json
+# 有未决 publication 时由 sync 经 API 判定发布结果，reindex 不会清 journal。
+/tmp/touko --state-dir "$HOME/.local/share/touko-my-gallery" sync
+```
+
+`reindex` 完整验证固定源快照及图片 hash 后重建 committed cache，可恢复缺失、物理损坏或 metadata 逻辑损坏的 index，并保留耐久暂存。物理损坏旧文件保留在工作区的 `index-corrupt-*` 目录，不静默丢弃。CLI 的 GitHub `reindex` 会先更新 clone；若有未发布 stage 而 HEAD 已变，返回冲突，不覆盖用户修改。pending journal 保留，之后必须 `sync` 恢复，不能把重建成功当作发布成功。
+
+**旧 schema1 例外：** 旧版本把 stage/journal 存在 `index.db` 中，必须先用当前版本打开健康旧索引完成自动迁移，才有独立耐久工作区。迁移失败保留旧源；若迁移前旧 DB 已删除/损坏且无备份，远端不能恢复唯一未发布数据，`reindex` 会拒绝猜空。即使迁移后，也不要删除 `workspace.json`、暂存文件或整个 state-dir，不要在服务运行中手动删除 DB/WAL/SHM；备份应保留整个 state。
+
+GitHub 接入按 [专用指南](github.md) 执行。local/private repo 的 URL/Markdown 不可用是正确行为，不输出假公网链接。已有专用公开仓库的真实远端记录见 [MEMORY](../MEMORY.md#已知限制与未执行项)，不代表私有仓库等尚未实测分支也通过。
 
 ## 9. JSON 与退出码
 
@@ -150,7 +208,10 @@ stdout 只放命令结果；错误在 stderr。`--json` 错误形状为 `{"error
 | add/ls/find | `{"assets":[AssetView...]}` |
 | show | `{"asset":AssetView}` |
 | status | `{"head":"...","base_head":"...","changes":[...]}` |
-| sync | `{"head":"...","asset_count":N}` |
+| sync/reindex | `{"head":"...","asset_count":N}` |
+| import | `{"imported":N,"skipped":N}` |
+| repo list | `{"repositories":[{"full_name":"OWNER/REPO","default_branch":"main","private":false,"can_push":true}]}` |
+| auth status | `{"login":"LOGIN","authenticated":true,"source":"gh"}`（source 也可能为 `github_token/gh_token`） |
 | commit | `{"head":"...","change_count":N,"asset_count":N}` |
 | verify | `{"head":"...","assets":N,"objects":N}` |
 | url | `{"url":"...","committed":true/false}` |

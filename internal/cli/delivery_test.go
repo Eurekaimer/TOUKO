@@ -96,6 +96,8 @@ func TestMarkdownPreflightPreservesStage(t *testing.T) {
 }
 func TestGitHubUsageAndMissingAuth(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PATH", t.TempDir())
 	for _, args := range [][]string{{"repo", "use"}, {"repo", "use", "example/gallery", "--local", "/tmp/not-used"}, {"repo", "use", "bad/name/extra"}} {
 		exit, _, _ := deliveryRun(t, t.TempDir(), nil, args...)
 		if exit != 2 {

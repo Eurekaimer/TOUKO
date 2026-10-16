@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
+	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/github"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
@@ -156,7 +156,11 @@ func (r *runtime) backend(ctx context.Context, s *app.Service) (repository.Git, 
 	case "localgit":
 		return localgit.Open(ctx, location.Path, location.Branch)
 	case "github":
-		return github.New(location, os.Getenv("GITHUB_TOKEN"))
+		token, _, err := credential.Resolve(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return github.New(location, token)
 	default:
 		return nil, fmt.Errorf("unsupported backend %q", location.Backend)
 	}
@@ -174,7 +178,11 @@ func (r *runtime) reader(ctx context.Context, s *app.Service) (repository.Git, e
 	if location.Backend != "github" {
 		return r.backend(ctx, s)
 	}
-	return localgit.WorkingCopy(ctx, location.RemoteURL(), repository.CloneDir(s.Dir), location.Branch, os.Getenv("GITHUB_TOKEN"))
+	token, _, err := credential.Resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return localgit.WorkingCopy(ctx, location.RemoteURL(), repository.CloneDir(s.Dir), location.Branch, token)
 }
 
 func (r *runtime) encode(v any) error { return json.NewEncoder(r.stdout).Encode(v) }
@@ -191,7 +199,7 @@ func (r *runtime) command() *cobra.Command {
 	root.PersistentFlags().StringVar(&r.stateDir, "state-dir", "", "Local state directory")
 	root.PersistentFlags().BoolVar(&r.json, "json", false, "Write JSON output")
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.AddCommand(r.repoCommand(), r.syncCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand(), r.authCommand(), r.urlCommand(), r.serveCommand())
+	root.AddCommand(r.repoCommand(), r.syncCommand(), r.reindexCommand(), r.importCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand(), r.authCommand(), r.urlCommand(), r.serveCommand())
 	return root
 }
 
@@ -260,7 +268,7 @@ func (r *runtime) resetCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		git, err := r.reader(cmd.Context(), s)
+		git, err := r.backend(cmd.Context(), s)
 		if err != nil {
 			return err
 		}
