@@ -64,6 +64,7 @@ import os
 import shlex
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -142,7 +143,7 @@ actual_branch = selected['branch']
 require(actual_branch, 'selected location has no branch')
 if branch:
     require(actual_branch == branch, f'--branch {branch} selected {actual_branch}')
-second = document(a, 'repo', 'use', repository, '--branch', actual_branch)['location']
+second = document(a, 'repo', 'use', repository, '--branch', actual_branch, '--json')['location']
 require(second == selected, f're-selecting the explicit branch changed the location: {second} != {selected}')
 print(f'PASS selected {repository} branch {actual_branch} (private={selected["private"]}) without remote writes', flush=True)
 
@@ -211,8 +212,28 @@ print(f'PASS verify {verified["head"]}: assets={verified["assets"]} objects={ver
 # --- 5. the bytes really are on the remote ---------------------------------
 if not selected['private']:
     local = assets(a)[staged[0]]
-    with urllib.request.urlopen(public_url('github', local), timeout=30) as response:
-        remote_bytes = response.read()
+    # GitHub's raw endpoint is served through a CDN, so a just-created commit can
+    # still be a 404 for a short while. Retry the propagation window only; a real
+    # mismatch still fails this check, and exhausting the window reports honestly
+    # instead of pretending the bytes were never fetched.
+    import time
+    remote_bytes, last = None, None
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(public_url('github', local), timeout=30) as response:
+                remote_bytes = response.read()
+            break
+        except urllib.error.HTTPError as error:
+            last = error
+            if error.code not in (404, 500, 502, 503, 504):
+                raise
+            if attempt == 5:
+                raise AssertionError(
+                    f'raw GitHub still returned HTTP {error.code} after {attempt + 1} attempts '
+                    f'(about 60s); the commit may not have propagated yet, so the byte check '
+                    f'was not performed') from error
+            time.sleep(3 * (attempt + 1))
+    require(remote_bytes is not None, 'raw GitHub returned no bytes')
     digest = hashlib.sha256(remote_bytes).hexdigest()
     require(digest == local['object']['hash'],
             f'raw GitHub bytes differ from the recorded hash: {digest} != {local["object"]["hash"]}')
