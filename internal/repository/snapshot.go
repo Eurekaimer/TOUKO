@@ -83,6 +83,7 @@ func ReadSnapshot(ctx context.Context, r Reader, head domain.RepositoryHead) (Sn
 		return s, err
 	}
 	descriptions := make(map[domain.ObjectHash]domain.ContentObject)
+	pathDescriptions := make(map[string]domain.ContentObject)
 	for _, entry := range s.Entries {
 		if !strings.HasPrefix(entry.Path, ".touko/assets/") {
 			continue
@@ -98,6 +99,9 @@ func ReadSnapshot(ctx context.Context, r Reader, head domain.RepositoryHead) (Sn
 		if err != nil {
 			return s, err
 		}
+		if s.Manifest.FormatVersion == 1 && a.Path != "" {
+			return s, corrupt(fmt.Errorf("explicit asset path requires repository format v2"))
+		}
 		if _, ok := s.Assets[a.ID]; ok {
 			return s, corrupt(fmt.Errorf("duplicate asset %s", a.ID))
 		}
@@ -105,9 +109,13 @@ func ReadSnapshot(ctx context.Context, r Reader, head domain.RepositoryHead) (Sn
 			return s, corrupt(fmt.Errorf("contradictory object description %s", a.Object.Hash))
 		}
 		descriptions[a.Object.Hash] = a.Object
-		objectPath := BuildObjectPath(a.Namespace, a.Object)
+		objectPath := ObjectPath(a)
+		if previous, ok := pathDescriptions[objectPath]; ok && previous != a.Object {
+			return s, corrupt(fmt.Errorf("contradictory object descriptions for path %s", objectPath))
+		}
+		pathDescriptions[objectPath] = a.Object
 		e, ok := entries[objectPath]
-		if !ok || e.Type != "blob" || e.Mode != "100644" || e.Size != a.Object.Size {
+		if !ok || e.Type != "blob" || (e.Mode != "100644" && e.Mode != "100755") || e.Size != a.Object.Size {
 			return s, corrupt(fmt.Errorf("missing or invalid referenced object %s", objectPath))
 		}
 		s.Assets[a.ID] = a

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	ingest "github.com/Eurekaimer/TOUKO/internal/image"
 	"github.com/Eurekaimer/TOUKO/internal/index"
+	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/Eurekaimer/TOUKO/internal/staging"
 )
 
@@ -23,6 +25,7 @@ type Input struct {
 }
 type AddOptions struct {
 	Namespace         domain.Namespace
+	Directory         string
 	Title             *string
 	Tags, Collections []string
 }
@@ -90,6 +93,11 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 	if err != nil {
 		return nil, err
 	}
+	if opts.Directory != "" {
+		if err := domain.ValidateRepositoryPath(opts.Directory); err != nil {
+			return nil, err
+		}
+	}
 	original := st
 	original.Changes = make(map[domain.AssetID]domain.Change, len(st.Changes))
 	for id, c := range st.Changes {
@@ -106,6 +114,15 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 		return nil, err
 	}
 	out := make([]AssetView, 0, len(inputs))
+	paths := make(map[string]domain.ContentObject, len(st.Assets)+len(st.Changes)+len(inputs))
+	for _, asset := range st.Assets {
+		paths[repository.ObjectPath(asset)] = asset.Object
+	}
+	for _, change := range st.Changes {
+		if change.Asset != nil {
+			paths[repository.ObjectPath(*change.Asset)] = change.Asset.Object
+		}
+	}
 	for _, input := range inputs {
 		if input.Reader == nil {
 			return nil, fmt.Errorf("nil input")
@@ -133,6 +150,17 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 		}
 		now := time.Now().UTC()
 		a := domain.Asset{ID: id, Namespace: ns, Object: result.Object, OriginalName: name, Title: title, Tags: normalize(opts.Tags), Collections: normalize(opts.Collections), CreatedAt: now, UpdatedAt: now}
+		if opts.Directory != "" {
+			a.Path = path.Join(opts.Directory, a.Object.Hash.String()+"."+a.Object.Ext)
+		}
+		if err := a.Validate(); err != nil {
+			return nil, err
+		}
+		objectPath := repository.ObjectPath(a)
+		if existing, ok := paths[objectPath]; ok && existing != a.Object {
+			return nil, fmt.Errorf("occupied image path %s", objectPath)
+		}
+		paths[objectPath] = a.Object
 		st.Changes[id] = domain.Change{Kind: domain.Add, AssetID: id, Asset: &a}
 		out = append(out, AssetView{Asset: a, State: "added"})
 	}

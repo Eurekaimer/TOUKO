@@ -44,7 +44,10 @@ func placements(assets map[domain.AssetID]domain.Asset) (map[string]ObjectPlacem
 			return nil, corrupt(fmt.Errorf("contradictory object description %s", a.Object.Hash))
 		}
 		descriptions[a.Object.Hash] = a.Object
-		p := BuildObjectPath(a.Namespace, a.Object)
+		p := ObjectPath(a)
+		if previous, ok := out[p]; ok && previous.Object != a.Object {
+			return nil, corrupt(fmt.Errorf("contradictory descriptions for path %s", p))
+		}
 		out[p] = ObjectPlacement{Path: p, Namespace: a.Namespace, Object: a.Object}
 	}
 	return out, nil
@@ -122,7 +125,22 @@ func PlanCommit(base Snapshot, changes domain.ChangeSet) (CommitPlan, error) {
 			}
 		}
 		p.MetadataWrites = append(p.MetadataWrites, MetadataWrite{Path: AssetPath(id), Data: encoded})
-		touched[BuildObjectPath(a.Namespace, a.Object)] = true
+		touched[ObjectPath(a)] = true
+	}
+	if base.Manifest.FormatVersion == 1 {
+		for _, a := range p.FinalAssets {
+			if a.Path == "" {
+				continue
+			}
+			manifest := base.Manifest
+			manifest.FormatVersion = 2
+			data, err := EncodeManifest(manifest)
+			if err != nil {
+				return CommitPlan{}, err
+			}
+			p.MetadataWrites = append(p.MetadataWrites, MetadataWrite{Path: ManifestPath, Data: data})
+			break
+		}
 	}
 	for id := range base.Assets {
 		if _, ok := p.FinalAssets[id]; !ok {
@@ -132,7 +150,7 @@ func PlanCommit(base Snapshot, changes domain.ChangeSet) (CommitPlan, error) {
 	for path, placement := range before {
 		if _, ok := after[path]; !ok {
 			entry, exists := entries[path]
-			if !exists || entry.Type != "blob" || entry.Mode != "100644" || entry.Size != placement.Object.Size {
+			if !exists || entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") || entry.Size != placement.Object.Size {
 				return CommitPlan{}, corrupt(fmt.Errorf("missing base placement %s", path))
 			}
 			p.Deletions = append(p.Deletions, path)
@@ -147,8 +165,8 @@ func PlanCommit(base Snapshot, changes domain.ChangeSet) (CommitPlan, error) {
 			p.NewObjects = append(p.NewObjects, placement)
 			continue
 		}
-		if entry.Type != "blob" || entry.Mode != "100644" || entry.Size != placement.Object.Size {
-			return CommitPlan{}, corrupt(fmt.Errorf("occupied canonical placement %s", path))
+		if entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") || entry.Size != placement.Object.Size {
+			return CommitPlan{}, corrupt(fmt.Errorf("occupied object placement %s", path))
 		}
 		if touched[path] {
 			placement.Blob = BlobID(entry.SHA)

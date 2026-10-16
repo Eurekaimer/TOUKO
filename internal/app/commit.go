@@ -413,7 +413,7 @@ func validateCandidate(ctx context.Context, r repository.Reader, st index.State)
 	}
 	for _, object := range objects {
 		entry, ok := actual[object.Path]
-		if !ok || entry.Type != "blob" || entry.Mode != "100644" || entry.Size != object.Object.Size {
+		if !ok || entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") || entry.Size != object.Object.Size {
 			return snap, candidateCorrupt("object placement missing")
 		}
 		if object.Blob != "" && string(object.Blob) != entry.SHA {

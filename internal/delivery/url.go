@@ -22,25 +22,10 @@ func BuildURL(location repository.Location, objectPath string, provider Provider
 	if err := location.Validate(); err != nil {
 		return "", err
 	}
-	parts := strings.Split(objectPath, "/")
-	if len(parts) != 6 || parts[0] != "objects" || parts[2] != "sha256" {
-		return "", fmt.Errorf("invalid object path")
-	}
-	ns, err := domain.ParseNamespace(parts[1])
-	if err != nil || string(ns) != parts[1] {
-		return "", fmt.Errorf("invalid object namespace")
-	}
-	filename := strings.Split(parts[5], ".")
-	if len(filename) != 2 {
-		return "", fmt.Errorf("invalid object filename")
-	}
-	var hash domain.ObjectHash
-	if err = hash.UnmarshalText([]byte(filename[0])); err != nil {
+	if err := domain.ValidateRepositoryPath(objectPath); err != nil {
 		return "", err
 	}
-	if (filename[1] != "png" && filename[1] != "jpg" && filename[1] != "gif") || parts[3] != filename[0][:2] || parts[4] != filename[0][2:4] {
-		return "", fmt.Errorf("invalid canonical object path")
-	}
+	parts := strings.Split(objectPath, "/")
 	for i, p := range parts {
 		parts[i] = url.PathEscape(p)
 	}

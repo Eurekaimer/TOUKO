@@ -13,7 +13,7 @@ import (
 )
 
 func reservedPath(path string) bool {
-	return path == ".touko" || strings.HasPrefix(path, ".touko/") || path == "objects" || strings.HasPrefix(path, "objects/")
+	return path == ".touko" || strings.HasPrefix(path, ".touko/")
 }
 func (s *Service) Initialize(ctx context.Context, r repository.Git) (SyncResult, error) {
 	unlock, err := s.Lock(ctx)

@@ -36,7 +36,7 @@ func encode(v any) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 func ValidateManifest(m domain.Repository) error {
-	if m.FormatVersion != 1 || m.HashAlgorithm != "sha256" || m.ID == (domain.RepositoryID{}) {
+	if (m.FormatVersion != 1 && m.FormatVersion != 2) || m.HashAlgorithm != "sha256" || m.ID == (domain.RepositoryID{}) {
 		return corrupt(fmt.Errorf("unsupported or invalid repository manifest (version %d)", m.FormatVersion))
 	}
 	return nil

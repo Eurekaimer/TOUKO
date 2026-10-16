@@ -59,7 +59,7 @@ func TestCanonicalPlacementAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DecodeManifest(bytes.Replace(b, []byte(`"format_version":1`), []byte(`"format_version":2`), 1)); !errors.Is(err, domain.ErrRepositoryCorrupt) {
+	if _, err := DecodeManifest(bytes.Replace(b, []byte(`"format_version":1`), []byte(`"format_version":3`), 1)); !errors.Is(err, domain.ErrRepositoryCorrupt) {
 		t.Fatal(err)
 	}
 }
@@ -89,4 +89,23 @@ func FuzzDecodeAsset(f *testing.F) {
 			t.Fatal("escaped placement")
 		}
 	})
+}
+
+func TestExplicitAssetPathValidationAndRoundTrip(t *testing.T) {
+	a := sampleAsset(t)
+	for _, unsafe := range []string{"/absolute.png", "../outside.png", "img/../../outside.png", "img//file.png", "img/./file.png", "img\\file.png", ".git/config", "img/.GIT/config", ".touko/assets/file.png", "img/.touko/file.png", "img/new\nline.png", "img/\x00.png", "."} {
+		a.Path = unsafe
+		if _, err := EncodeAsset(a); !errors.Is(err, domain.ErrRepositoryCorrupt) {
+			t.Fatalf("accepted unsafe asset path %q: %v", unsafe, err)
+		}
+	}
+	a.Path = "图片/old image"
+	data, err := EncodeAsset(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeAsset(data, a.ID.String()+".json")
+	if err != nil || ObjectPath(decoded) != a.Path {
+		t.Fatalf("lost original safe path: %#v, %v", decoded, err)
+	}
 }

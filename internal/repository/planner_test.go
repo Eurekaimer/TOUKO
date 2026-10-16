@@ -15,7 +15,10 @@ func planBase(t *testing.T, assets ...domain.Asset) Snapshot {
 	paths := map[string]bool{}
 	for _, a := range assets {
 		s.Assets[a.ID] = a
-		p := BuildObjectPath(a.Namespace, a.Object)
+		p := ObjectPath(a)
+		if a.Path != "" {
+			s.Manifest.FormatVersion = 2
+		}
 		if !paths[p] {
 			s.Entries = append(s.Entries, GitEntry{Path: p, Type: "blob", Mode: "100644", SHA: "blob", Size: a.Object.Size})
 			paths[p] = true
@@ -109,5 +112,52 @@ func TestPlanMetadataEditAndEmptyBatch(t *testing.T) {
 	p = mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID}, domain.Change{Kind: domain.Update, AssetID: b.ID, Asset: &b})
 	if len(p.MetadataWrites) != 1 || p.FinalAssets[b.ID].Title != "edited" || len(p.FinalAssets) != 1 || slices.Contains(p.Deletions, BuildObjectPath(a.Namespace, a.Object)) {
 		t.Fatal(p)
+	}
+}
+
+func TestPlanCustomPathReferenceCountsAcrossNamespaces(t *testing.T) {
+	a := sampleAsset(t)
+	a.Path = "img/shared.png"
+	b := cloneIdentity(t, a)
+	b.Namespace = "notes"
+	c := cloneIdentity(t, a)
+	c.Path = ""
+	s := planBase(t, a, b, c)
+	s.Entries = append(s.Entries, GitEntry{Path: "img/unmanaged.png", Type: "blob", Mode: "100644", SHA: "unmanaged", Size: 99})
+	one := mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID})
+	if slices.Contains(one.Deletions, a.Path) {
+		t.Fatal("removed custom path still referenced by another namespace")
+	}
+	both := mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID}, domain.Change{Kind: domain.Delete, AssetID: b.ID})
+	if !slices.Contains(both.Deletions, a.Path) || slices.Contains(both.Deletions, ObjectPath(c)) || slices.Contains(both.Deletions, "img/unmanaged.png") {
+		t.Fatalf("full path reference isolation failed: %#v", both.Deletions)
+	}
+}
+
+func TestPlanFirstExplicitPathUpgradesManifestInSameBatch(t *testing.T) {
+	a := sampleAsset(t)
+	a.Path = "img/existing"
+	base := planBase(t)
+	base.Entries = append(base.Entries, GitEntry{Path: a.Path, Type: "blob", Mode: "100644", SHA: "legacy", Size: a.Object.Size})
+	plan := mustPlan(t, base, domain.Change{Kind: domain.Add, AssetID: a.ID, Asset: &a})
+	manifestWrites := 0
+	for _, write := range plan.MetadataWrites {
+		if write.Path == ManifestPath {
+			manifest, err := DecodeManifest(write.Data)
+			if err != nil || manifest.FormatVersion != 2 || manifest.ID != base.Manifest.ID {
+				t.Fatalf("bad upgrade: %#v, %v", manifest, err)
+			}
+			manifestWrites++
+		}
+	}
+	if manifestWrites != 1 || len(plan.MetadataWrites) != 2 || len(plan.NewObjects) != 0 || len(plan.ReusedObjects) != 1 || base.Manifest.FormatVersion != 1 {
+		t.Fatalf("upgrade is not atomic metadata-only adoption: %#v", plan)
+	}
+	a.Path = ""
+	canonical := mustPlan(t, base, domain.Change{Kind: domain.Add, AssetID: a.ID, Asset: &a})
+	for _, write := range canonical.MetadataWrites {
+		if write.Path == ManifestPath {
+			t.Fatal("ordinary canonical upload rewrites v1 manifest")
+		}
 	}
 }

@@ -96,7 +96,7 @@ func VerifySnapshot(ctx context.Context, r Reader, s Snapshot) (VerifyResult, er
 	for _, path := range paths {
 		placement := placements[path]
 		entry, ok := entries[path]
-		if !ok || entry.Type != "blob" || entry.Mode != "100644" || entry.Size != placement.Object.Size {
+		if !ok || entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") || entry.Size != placement.Object.Size {
 			return VerifyResult{}, corrupt(fmt.Errorf("missing or invalid object %s", path))
 		}
 		blob := BlobID(entry.SHA)

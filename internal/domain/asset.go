@@ -2,8 +2,11 @@ package domain
 
 import (
 	"fmt"
+	"path"
 	"regexp"
+	"strings"
 	"time"
+	"unicode"
 )
 
 type Namespace string
@@ -37,6 +40,7 @@ type Asset struct {
 	ID           AssetID       `json:"id"`
 	Namespace    Namespace     `json:"namespace"`
 	Object       ContentObject `json:"object"`
+	Path         string        `json:"path,omitempty"`
 	OriginalName string        `json:"original_name"`
 	Title        string        `json:"title"`
 	Tags         []string      `json:"tags"`
@@ -56,5 +60,29 @@ func (a Asset) Validate() error {
 	if a.ID == (AssetID{}) || !namespacePattern.MatchString(string(a.Namespace)) || a.CreatedAt.IsZero() || a.UpdatedAt.IsZero() || a.UpdatedAt.Before(a.CreatedAt) {
 		return fmt.Errorf("invalid asset identity, namespace or timestamps")
 	}
+	if a.Path != "" {
+		if err := ValidateRepositoryPath(a.Path); err != nil {
+			return err
+		}
+	}
 	return a.Object.Validate()
+}
+
+// ValidateRepositoryPath accepts only normalized relative POSIX paths outside
+// Git internals and TOUKO metadata. It applies to both files and directories.
+func ValidateRepositoryPath(value string) error {
+	if value == "" || value == "." || path.Clean(value) != value || strings.HasPrefix(value, "/") || strings.Contains(value, "\\") {
+		return fmt.Errorf("invalid repository path %q", value)
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == ".." || strings.EqualFold(part, ".git") || strings.EqualFold(part, ".touko") {
+			return fmt.Errorf("reserved or unsafe repository path %q", value)
+		}
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("control character in repository path %q", value)
+		}
+	}
+	return nil
 }

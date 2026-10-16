@@ -30,12 +30,32 @@ func TestDeliveryRoutesAndRestrictions(t *testing.T) {
 		t.Fatal(err)
 	}
 	l.Backend = "github"
-	for _, bad := range []string{"../secret", "objects/../sha256/aa/aa/" + h + ".png", "objects/blog/sha256/bb/aa/" + h + ".png", p + "?x"} {
+	for _, bad := range []string{"../secret", "objects/../sha256/aa/aa/" + h + ".png", "/img/photo.png", "img/.git/photo.png", ".touko/photo.png", "img\\photo.png", "img/photo\n.png", "img//photo.png"} {
 		if _, err = BuildURL(l, bad, GitHub); err == nil {
 			t.Fatalf("accepted %s", bad)
 		}
 	}
 	if _, err = BuildURL(l, p, "unknown"); err == nil {
 		t.Fatal("unknown provider accepted")
+	}
+}
+
+func TestLegacyImageDeliveryRoutes(t *testing.T) {
+	location := repository.Location{Backend: "github", Owner: "owner", Name: "gallery", Branch: "feature/demo"}
+	for _, test := range []struct {
+		path, escaped string
+	}{
+		{"img/旧图 无后缀", "img/%E6%97%A7%E5%9B%BE%20%E6%97%A0%E5%90%8E%E7%BC%80"},
+		{"uploads/a #?%.png", "uploads/a%20%23%3F%25.png"},
+	} {
+		for provider, prefix := range map[Provider]string{
+			GitHub:   "https://raw.githubusercontent.com/owner/gallery/refs/heads/feature%2Fdemo/",
+			JSDelivr: "https://cdn.jsdelivr.net/gh/owner/gallery@feature%2Fdemo/",
+		} {
+			got, err := BuildURL(location, test.path, provider)
+			if err != nil || got != prefix+test.escaped {
+				t.Fatalf("%s %q = %q, %v; want %q", provider, test.path, got, err, prefix+test.escaped)
+			}
+		}
 	}
 }

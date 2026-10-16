@@ -14,7 +14,7 @@ import (
 )
 
 func (r *runtime) addCommand() *cobra.Command {
-	var namespace, title, name, output string
+	var namespace, directory, title, name, output string
 	var tags, collections []string
 	cmd := &cobra.Command{Use: "add FILE...", Short: "Stage images, or read one image from stdin with add -", Args: arguments(cobra.MinimumNArgs(1)), RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("output") && r.json {
@@ -39,7 +39,7 @@ func (r *runtime) addCommand() *cobra.Command {
 		if err != nil {
 			return &usageError{err}
 		}
-		opts := app.AddOptions{Namespace: ns, Tags: tags, Collections: collections}
+		opts := app.AddOptions{Namespace: ns, Directory: directory, Tags: tags, Collections: collections}
 		if cmd.Flags().Changed("title") {
 			opts.Title = &title
 		}
@@ -90,7 +90,7 @@ func (r *runtime) addCommand() *cobra.Command {
 		}
 		if output == "markdown" {
 			for _, view := range assets {
-				link, err := delivery.BuildURL(location, repository.BuildObjectPath(view.Asset.Namespace, view.Asset.Object), delivery.JSDelivr)
+				link, err := delivery.BuildURL(location, repository.ObjectPath(view.Asset), delivery.JSDelivr)
 				if err != nil {
 					return err
 				}
@@ -104,6 +104,7 @@ func (r *runtime) addCommand() *cobra.Command {
 		return r.printAssets(assets)
 	}}
 	cmd.Flags().StringVar(&namespace, "namespace", "default", "Object namespace")
+	cmd.Flags().StringVar(&directory, "directory", "", "Repository directory for uploaded images (default: canonical objects path)")
 	cmd.Flags().StringVar(&title, "title", "", "Image title (defaults to original name)")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Tag; repeat for multiple tags")
 	cmd.Flags().StringArrayVar(&collections, "collection", nil, "Collection; repeat for multiple collections")

@@ -147,7 +147,7 @@ func TestInitializeRefusesReservedPathsAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := blob(t, ctx, raw, []byte("README"))
-	tree, err := raw.CreateTree(ctx, "", []repository.TreeChange{{Path: "README.md", Blob: id}, {Path: "objects/occupied", Blob: id}})
+	tree, err := raw.CreateTree(ctx, "", []repository.TreeChange{{Path: "README.md", Blob: id}, {Path: ".touko/occupied", Blob: id}})
 	if err != nil {
 		t.Fatal(err)
 	}
