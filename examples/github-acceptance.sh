@@ -23,7 +23,7 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
         '  a raw-byte SHA-256 check, and a last-reference deletion on a third device.' \
         '' \
         'Prerequisites: the repository must exist with an initial commit (add a README),' \
-        'and GITHUB_TOKEN must carry Contents: read and write for it. Requires Go 1.26+,' \
+        'and GITHUB_TOKEN must carry Contents: read and write for it. Requires Go 1.27.1+,' \
         'Git, Bash and Python 3.8+ stdlib. Go modules must already be cached.'
     exit 0
 fi
@@ -191,7 +191,7 @@ require(published_head != init.get('head'), 'commit did not advance the remote h
 require(document(a, 'status', '--json')['changes'] == [], 'staging was not cleared after commit')
 print(f'PASS commit published {commit["change_count"]} changes as {published_head}', flush=True)
 
-# --- 4. delivery URLs and remote verification -------------------------------
+# --- 4. delivery URLs and freshly synchronized snapshot verification --------
 for kind in ('github', 'jsdelivr'):
     if selected['private']:
         refused = failure(a, 'url', staged[0], '--provider', kind, '--json')
@@ -203,6 +203,9 @@ for kind in ('github', 'jsdelivr'):
     require(link == expected, f'{kind} URL mismatch:\n  got      {link}\n  expected {expected}')
     print(f'PASS {kind} URL matches the canonical object path for this branch', flush=True)
 
+# verify intentionally does not fetch an existing clone.
+synced = document(a, 'sync', '--json')
+require(synced['head'] == published_head, 'sync did not fetch the published head before verify')
 verified = document(a, 'verify', '--json')
 require(verified['assets'] == len(staged), f'verify saw {verified} assets, expected {len(staged)}')
 require(verified['objects'] >= 1, 'verify found no content objects')
@@ -265,6 +268,7 @@ print(f'PASS fresh device B recovered {len(local_assets)} assets with identical 
 target = staged[-1]
 cli(b, 'rm', target)
 cli(b, 'commit', '-m', 'acceptance: delete one image')
+cli(b, 'sync')
 remaining = assets(b)
 require(target not in remaining, 'deleted asset is still present on device B')
 require(document(b, 'verify', '--json')['assets'] == len(remaining), 'verify disagrees after deletion')
