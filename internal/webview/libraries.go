@@ -344,6 +344,30 @@ func (m *workspaceSet) libraryAPI(w http.ResponseWriter, r *http.Request, id, re
 			return
 		}
 		m.root.json(w, result)
+	case "api/detail":
+		if r.Method != "GET" && r.Method != "HEAD" {
+			w.Header().Set("Allow", "GET")
+			m.root.fail(w, 405, "usage", "method not allowed")
+			return
+		}
+		result, err := m.libraryDetail(r.Context(), id)
+		if err != nil {
+			m.root.respondError(w, err)
+			return
+		}
+		m.root.json(w, result)
+	case "api/select":
+		if r.Method != "POST" {
+			w.Header().Set("Allow", "POST")
+			m.root.fail(w, 405, "usage", "method not allowed")
+			return
+		}
+		result, err := m.selectLibrary(w, r, id)
+		if err != nil {
+			m.root.respondError(w, err)
+			return
+		}
+		m.root.json(w, result)
 	case "api/members":
 		if r.Method != "POST" {
 			w.Header().Set("Allow", "POST")
@@ -492,7 +516,15 @@ func (m *workspaceSet) handleLibraries(w http.ResponseWriter, r *http.Request, w
 			return nil, err
 		}
 		active := map[string]any{"kind": config.Active.Kind, "id": config.Active.ID}
-		return map[string]any{"current": workspaceID, "active": active, "libraries": config.Libraries}, nil
+		type librarySummary struct {
+			libraryView
+			MemberCount int `json:"member_count"`
+		}
+		summaries := make([]librarySummary, 0, len(config.Libraries))
+		for _, library := range config.Libraries {
+			summaries = append(summaries, librarySummary{libraryView: library, MemberCount: len(library.Workspaces)})
+		}
+		return map[string]any{"current": workspaceID, "active": active, "libraries": summaries}, nil
 	case http.MethodPost:
 		return m.createLibrary(w, r)
 	default:
@@ -589,6 +621,67 @@ func (m *workspaceSet) createLibrary(w http.ResponseWriter, r *http.Request) (an
 		members = append(members, map[string]any{"id": server.workspaceID, "url": workspaceURL(server.workspaceID)})
 	}
 	return map[string]any{"library": library, "url": libraryURL(id), "members": members}, nil
+}
+
+// libraryDetail reports one library's members with their real location, so the
+// dialog can show what is connected and let the user pick which one to open.
+func (m *workspaceSet) libraryDetail(ctx context.Context, id string) (any, error) {
+	library, err := m.libraryByID(id)
+	if err != nil {
+		return nil, err
+	}
+	members := make([]map[string]any, 0, len(library.Workspaces))
+	for _, memberID := range library.Workspaces {
+		entry := map[string]any{"id": memberID, "url": workspaceURL(memberID)}
+		server, err := m.open(ctx, memberID, false)
+		if err != nil {
+			entry["error"] = err.Error()
+			members = append(members, entry)
+			continue
+		}
+		if location, locErr := server.service.Location(ctx); locErr == nil {
+			entry["location"] = location
+		} else {
+			entry["error"] = locErr.Error()
+		}
+		members = append(members, entry)
+	}
+	return map[string]any{"library": library, "members": members, "url": libraryURL(id)}, nil
+}
+
+// selectLibrary makes one of the configured libraries the active view.
+func (m *workspaceSet) selectLibrary(w http.ResponseWriter, r *http.Request, id string) (any, error) {
+	var input struct {
+		Workspace string `json:"workspace"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil {
+		return nil, err
+	}
+	library, err := m.libraryByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if input.Workspace != "" {
+		present := false
+		for _, member := range library.Workspaces {
+			if member == input.Workspace {
+				present = true
+				break
+			}
+		}
+		if !present {
+			return nil, usage("workspace is not a member of this library")
+		}
+	}
+	config, err := m.loadViews()
+	if err != nil {
+		return nil, err
+	}
+	config.Active = activeView{Kind: "library", ID: id}
+	if err := m.saveViews(config); err != nil {
+		return nil, err
+	}
+	return map[string]any{"url": libraryURL(id), "library": library}, nil
 }
 
 // addMembers appends repositories to an existing library. Already-connected

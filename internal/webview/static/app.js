@@ -1583,19 +1583,58 @@ async function openRepository() {
     if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
     $("library-nav").replaceChildren();
     for (const library of value.libraries) {
+      const row = element("div", "library-entry");
+      const current = view?.kind === "library" && view.library?.id === library.id;
       const link = element("a", "workspace-link", library.name);
       link.href = `/l/${library.id}/`;
-      if (view?.kind === "library" && view.library?.id === library.id) {
+      link.append(element("span", "muted", `${library.member_count} 个仓库`));
+      if (current) {
         link.setAttribute("aria-current", "page");
         link.append(element("span", "muted", "当前图库"));
       }
-      $("library-nav").append(link);
+      link.addEventListener("click", (event) => {
+        if (busy) event.preventDefault();
+      });
+      row.append(link);
+      // The per-member list is what makes a library manageable: each repository
+      // can be opened on its own, with its own staging and publication.
+      const detail = element("div", "library-members");
+      detail.append(element("small", "muted", "正在读取成员…"));
+      row.append(detail);
+      $("library-nav").append(row);
+      void loadLibraryMembers(library.id, detail, session);
     }
     if (!value.libraries.length)
       $("library-nav").append(element("p", "sidebar-hint", "连接多个仓库后，会在这里合并成一个图库。"));
   } catch (error) {
     if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
     $("library-nav").replaceChildren(element("p", "sidebar-hint", `图库列表读取失败：${error.message}`));
+  }
+}
+// loadLibraryMembers fills one library's member list. It is read-only: opening a
+// member only navigates, so a mis-click cannot change a repository's state.
+async function loadLibraryMembers(id, host, session) {
+  try {
+    const detail = await api("detail", undefined, `/l/${id}`);
+    if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
+    host.replaceChildren();
+    for (const member of detail.members || []) {
+      const location = member.location;
+      const name = location
+        ? location.backend === "github"
+          ? `${location.owner}/${location.name} · ${location.branch}`
+          : `${location.path} · ${location.branch}`
+        : "未连接";
+      const item = element("a", "workspace-link member", name);
+      item.href = member.url;
+      if (member.error) item.append(element("span", "muted", member.error));
+      host.append(item);
+    }
+    if (!(detail.members || []).length)
+      host.append(element("small", "muted", "这个图库还没有成员。"));
+  } catch (error) {
+    if (session !== repositoryDialogSequence) return;
+    host.replaceChildren(element("small", "muted", `成员读取失败：${error.message}`));
   }
 }
 function updateRepositoryFields() {

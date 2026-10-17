@@ -2407,3 +2407,31 @@ progress {
   color: var(--sakura-strong);
   border-color: var(--sakura-strong);
 }
+
+/* Library management: one entry per library, with its members listed beneath. */
+.library-entry + .library-entry {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+.library-entry .workspace-link {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.library-members {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 0 var(--space-4);
+  font-size: var(--fs-micro);
+}
+.library-members .workspace-link {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+  color: var(--ink-secondary);
+}
+.library-members .workspace-link.member::before {
+  content: "└";
+  color: var(--line-strong);
+}
