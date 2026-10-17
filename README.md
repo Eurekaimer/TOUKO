@@ -1,114 +1,146 @@
+<div align="center">
+
+<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2FEurekaimer%2FTOUKO-IMGBED-04%2Fmain%2Fobjects%2Fdefault%2Fsha256%2Fa6%2Fe0%2Fa6e002cde06d25d106a9e80bafcc7762003491f4a2bf4f5bc2a8332d5411c6b0.png&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
+
 # TOUKO
-TOUKO treats image management as tree-oriented repository operations instead of individual file uploads.
 
-## CLI
+**把图片存进你自己的 Git 仓库。**
 
-Requires Go 1.27.1 or later (see `go.mod`) and Git supporting SHA-1 repositories and `show-ref --exists`. No CGO required.
+内容寻址 · Git 暂存语义 · 本地优先读取 · 多仓库统一图库
+
+[![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![License](https://img.shields.io/badge/license-MIT-9c5238)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-1b2a3d)](#安装)
+[![Docs](https://img.shields.io/badge/docs-7%20guides-7f3f59)](docs/webview.md)
+
+[简体中文](README.md) · [English](README_en.md)
+
+</div>
+
+---
+
+TOUKO 是一个以 Git 仓库为数据库的图片库。它不像网盘那样把图片交给第三方托管，而是把每一张图、每一份元数据都写进**你拥有的仓库**——GitHub 是唯一数据源，jsDelivr 只是可选的分发层。
+
+## 名字
+
+TOUKO 取自《终将成为你》（やがて君になる）的**七海灯子**（Nanami Touko）。
+
+> 好きって、なんだろう。
+> 好きって、なに？
+>
+> —— 七海灯子
+
+她用整个故事追问「喜欢」是什么，也追问自己是谁。图片库也在追问同类问题：一张图属于谁、存在哪里、谁能访问、删掉后还算不算存在。TOUKO 把答案交给 Git——每次改动都有记录，每个文件都以内容命名。
+
+## 为什么不是另一个 PicGo
+
+PicGo 和 PicList 解决的是「上传完就拿到链接」。TOUKO 解决的是「一年后我还能不能找回这张图，并确定它就是我当初上传的那一张」。
+
+| | 传统图床客户端 | TOUKO |
+| --- | --- | --- |
+| 状态存放 | 远端目录 + 本地配置 | Git 仓库本身，可完整重建 |
+| 去重 | 通常无 | 内容寻址，相同字节共用对象 |
+| 发布 | 逐张即时上传 | 暂存后一次提交，失败保留现场 |
+| 换机 | 重新配置 | `repo use` + `sync` 完整恢复 |
+| 删除 | 删文件 | 有定义的删除，历史仍可追溯 |
+| 规模 | 单仓库 | 多仓库统一图库，按容量分配 |
+
+## 特性
+
+- **仓库即数据库**——远端保存 Asset、对象、标题、标签、分类、MIME、尺寸与内容哈希。本地 SQLite 只是可重建的缓存。
+- **内容寻址**——文件名是内容的 SHA-256。同样的字节天然去重，链接永远不会指向被覆盖的旧图。
+- **暂存 → 提交**——上传、编辑、删除先进入暂存区；`commit` 才写成一个 Git 提交，中途失败不会留下半个图库。
+- **本地优先读取**——预览读本地浅克隆，不联网、不打扰远端。需要最新状态时才 `sync`。
+- **统一图库**——把多个仓库合并成一个浏览与上传入口，每个仓库仍保有自己的暂存、提交与恢复语义，上传按剩余容量自动分配。
+- **真的删除**——从最新树移除，并可校验结果；Git 历史仍然保留，这是特性而非遗漏。
+- **一个二进制**——Go 编写，无 Node 构建、无运行时 CDN；CLI、Web 界面与 MyGo 原生窗口共用同一套 HTTP 与业务逻辑。
+
+## 界面
+
+<div align="center">
+  <img src="docs/images/webview-gallery.png" alt="TOUKO 图库界面" width="820" />
+</div>
+
+奶油米色与深藏蓝、霞鹜文楷与 Monaspace Radon；单击卡片即复制 Markdown 并在指针旁提示结果。支持拖放、剪贴板粘贴、按分类/标签/目录/内容哈希筛选，以及多仓库来源过滤。
+
+## 安装
+
+需要 Go 1.27.1 或更高版本，以及支持的 Git。
 
 ```sh
-go build -o /tmp/touko ./cmd/touko
-/tmp/touko --state-dir /tmp/my-gallery-state repo init --local /tmp/my-gallery.git
-/tmp/touko --state-dir /tmp/my-gallery-state add picture.png --namespace blog --tag demo
-/tmp/touko --state-dir /tmp/my-gallery-state status --json
-/tmp/touko --state-dir /tmp/my-gallery-state commit -m "images: import"
-/tmp/touko --state-dir /tmp/my-gallery-state verify
-/tmp/touko --state-dir /tmp/my-gallery-state ls
+git clone https://github.com/Eurekaimer/TOUKO.git
+cd TOUKO
+go build -o touko ./cmd/touko
+go build -o touko-desktop ./cmd/touko-desktop   # 可选：原生窗口
 ```
 
-State flags may follow command arguments. `add - --name 剪贴板.png` reads one image from stdin. `edit ID --title TITLE --tag TAG` replaces supplied fields only; `--clear-tags` and `--clear-collections` explicitly clear lists. `rm ID...` stages atomic removal; `reset --staged` discards unpublished changes.
-
-Another device selects the existing repository with `repo use --local /absolute/gallery.git`, then `sync`. Each device needs its own state directory. Sync validates a fixed Git tree before atomically replacing the SQLite cache; corrupt metadata never produces a partial gallery.
-
-See [repository format](docs/repository-format.md) and [local state](docs/local-state.md).
-
-TOUKO 使用本地工作副本读取图片：GitHub 仓库首次读操作会浅克隆（`--depth 1`）到对应工作区的 `<state-dir>/clone`。已有 clone 时预览、`verify` 只读当前本地快照，不自动 fetch；离线可读已同步图片，但不能据此判断远端最新状态。**`sync` 会先联网更新 clone，再在同一次调用中索引更新后的固定 HEAD**。发布结果未知时通过 GitHub API 恢复 journal，不用浅克隆猜测结果；`commit`、`repo init` 仍通过 GitHub API 写入，不改为 `git push`。认证、仓库发现和列表也需要 GitHub API。
-
-## Webview 图片手帖
-
-![TOUKO 图片库界面：左侧是按分类与标签归档的图库导航，中间是照片卡片，全部来自本地示例仓库](docs/images/webview-gallery.png)
+Arch 用户可以构建本地包（从当前 checkout 编译，同时安装 CLI、桌面条目与图标）：
 
 ```sh
-go build -o /tmp/touko ./cmd/touko
-/tmp/touko --state-dir "$HOME/.local/share/touko-gallery" serve --port 7788
-```
-
-`serve` 默认打开浏览器；若打开失败，服务仍运行，可手动访问终端打印的 `http://127.0.0.1:7788`。不自动打开用 `serve --port 7788 --no-open`。空工作区可在界面创建本地 Git 图库或连接专用 GitHub 仓库。支持拖入多图、从剪贴板粘贴、原图预览、标题/标签/分类编辑、路径与内容哈希筛选搜索、多选移除、旧图库导入、待发布批次、提交、同步、重建索引及完整校验。上传和旧图库导入都只暂存到本机，**显式提交后才发布**。
-
-截图来自 `examples/images/` 的三张自生成样例，只使用本地 bare 仓库，不含任何真实账号、仓库名或凭据。
-
-推荐先安装 GitHub CLI，再执行：
-
-```sh
-/tmp/touko auth login
-/tmp/touko auth status
-/tmp/touko repo list
-```
-
-`auth login` 委托 `gh` 浏览器登录；已有 `gh` 登录无需重新输入 token。认证优先级为 `GITHUB_TOKEN` → `GH_TOKEN` → `gh` 登录，无效的显式环境凭据不会静默回退。网页“连接 / 切换仓库”自动列出全部可访问仓库（含 private/can_push），选中仓库后再列出它的全部分支并预选默认分支；没有手动 token 输入框，也不需要手填 `OWNER/REPO`（本地 Git 仓库仍填路径与分支）。每个仓库/分支拥有独立 URL 工作区、clone、索引和暂存，切换后原工作区的待发布修改保留，不必停止服务。
-
-奶油米色与深藏蓝配色，七海灯子的 favicon，内嵌 Monaspace Radon（英数）与 LXGW 文楷（中文）字体（均 SIL OFL）；无需 Node 构建或运行时 CDN。只监听本机，凭据只由服务端读取，不进入网页。
-
-完整启动、安全边界和真实 GitHub 验收步骤见 [Webview 教程](docs/webview.md)。原图预览不是缩略图服务；本地和 private GitHub 不生成公网分发链接。
-
-### 旧图库 / PicGo 与指定上传目录
-
-```sh
-# 换成自己的独立 CLI state 与专用仓库；已有 TOUKO 仓库不必重复初始化。
-/tmp/touko --state-dir /tmp/picgo-state repo use OWNER/gallery
-/tmp/touko --state-dir /tmp/picgo-state repo init
-/tmp/touko --state-dir /tmp/picgo-state sync
-/tmp/touko --state-dir /tmp/picgo-state import --directory img --namespace blog --tag legacy
-/tmp/touko --state-dir /tmp/picgo-state status
-/tmp/touko --state-dir /tmp/picgo-state commit -m "images: manage existing PicGo paths"
-/tmp/touko --state-dir /tmp/picgo-state add examples/images/red.png --directory images/blog
-/tmp/touko --state-dir /tmp/picgo-state commit -m "images: upload into directory"
-```
-
-`import` 读取 Git 已提交图片，按内容识别 PNG/JPEG/GIF（包括无后缀文件），只暂存 metadata，保留原路径和原 Git blob，不复制到 `objects/`、不重新上传。省略 `--directory` 扫描全仓库，已管理路径与非图片会跳过；它不是从本机目录上传文件（本机文件用 `add`）。**首次提交含显式 `path` 的导入或目录上传会把仓库升级到 format v2；旧客户端将 fail-closed 拒绝读取，请先升级所有设备。** 默认 canonical 上传不会无故升级 v1。缓存损坏/丢失可用 `reindex` 保留耐久暂存重建；尚未迁移的 schema1 数据库是例外，必须先从健康旧库迁移，不能先删除唯一未发布状态。详见 [CLI 教程](docs/usage.md)。
-
-若想用原生窗口而不是浏览器打开同一界面，可用 MyGo 桌面壳（`touko-desktop`）：独立窗口、无地址栏、不使用 Electron，但仍依赖系统 WebView 渲染内核（GTK3 + WebKitGTK 4.1），内存占用需计入 renderer 等子进程实测，不能承诺“没有浏览器内核”。窗口关闭默认缩到系统托盘（托盘菜单：显示主窗口 / 在浏览器中打开 / 打开工作区目录 / 退出），从托盘退出才真正释放 HTTP 与 SQLite：
-
-```sh
-# 方式一：直接构建
-go build -o /tmp/touko-desktop ./cmd/touko-desktop
-/tmp/touko-desktop --state-dir "$HOME/.local/share/touko-gallery"
-
-# 方式二：装成本地包（Arch 系），同时安装 CLI、桌面条目与各尺寸图标
 cd packaging && makepkg -si
-touko-desktop
 ```
 
-本地包 `packaging/PKGBUILD` 直接从当前 checkout 构建（含未提交改动），因此 `makepkg -si` 测的就是手上这份代码；发布版应改为固定 tag 的源码包加校验和。桌面条目必须与窗口 app_id（可执行文件基名 `touko-desktop`）同名，任务栏/应用菜单才会显示图标——这与微信、qBittorrent 走的是同一条 freedesktop 规则。
+若桌面条目启动失败，通常是 `Exec=` 指向了不在会话 `PATH` 里的裸命令名——改成二进制绝对路径即可。
 
-后续顺序为：优化 MyGo 窗口体验并实测完整进程树内存 → 确认后再做 AUR 发布。当前状态见 [MEMORY](MEMORY.md)，具体计划与实测证据见 [Webview 文档](docs/webview.md)。
-
-## 可操作 demo
+## 快速开始
 
 ```sh
-# 首次需要先下载依赖；demo 本身禁用网络构建下载。
-go mod download all
-bash examples/demo.sh
+# 连接一个已有仓库，或先 repo init 初始化
+./touko --state-dir ~/.local/share/touko repo use Eurekaimer/TOUKO-IMGBED-01
+./touko --state-dir ~/.local/share/touko sync
+
+# 加一张图，整理元数据，发布
+./touko --state-dir ~/.local/share/touko add photo.png --tag 旅行 --collection 示例
+./touko --state-dir ~/.local/share/touko commit -m "images: add a photo"
+
+# 找回来：按标题、文件名、标签、分类或内容哈希
+./touko --state-dir ~/.local/share/touko find 旅行
+./touko --state-dir ~/.local/share/touko find 4aff401b
 ```
 
-需要 Bash 和 Python 3.8+ 标准库。脚本实际运行四图 batch、三设备恢复、过期编辑冲突、共享/末引用删除、SQLite 重建和 stdin 验收；保留 demo 目录并输出继续操作命令。仓库内 `examples/images/` 有三张自生成样例。你提供的图片可用 `add logo/TOUKO.png` 导入，不会修改原图。
+常用命令：`status`、`ls`、`find`、`show`、`edit`、`rm`、`verify`、`reindex`、`import`。全部支持 `--json`。
 
-需要用既有 `examples/github-acceptance.sh` 针对**真实 GitHub 仓库**做验收时，使用专用 gallery（必须先有 README）。**该示例脚本仍显式要求 `GITHUB_TOKEN`，不同于应用本身可复用 `gh` 登录**：
+## 图形界面
 
 ```sh
-read -rsp 'GitHub token: ' GITHUB_TOKEN; printf '\n'; export GITHUB_TOKEN
-bash examples/github-acceptance.sh OWNER/专用仓库
-unset GITHUB_TOKEN
+./touko --state-dir ~/.local/share/touko serve --port 7788
 ```
 
-脚本不接受 token 参数、不打印 token，并拒绝把 TOUKO 源码仓库当 gallery。
+默认打开浏览器；`--no-open` 只启动服务。也可以用 `touko-desktop` 开一个原生窗口——无地址栏，但仍使用系统 WebView 渲染。
 
-## 阅读与学习
+只监听本机回环地址，校验 Host、Origin 与 CSRF；GitHub 凭据留在服务端进程内，绝不进入网页。
 
-1. [Webview 与真实 GitHub 测试](docs/webview.md)：启动、图库整理、专用仓库与第二设备验收。
-2. [CLI 操作教程](docs/usage.md)：从 demo 到自己的图片、标签/分类、多设备、恢复与 JSON。
-3. [架构与设计教程](docs/code-guide.md)：阅读顺序、模块边界、完整调用链、状态转换、设计取舍与修改练习。
-4. [逐函数导航](docs/function-reference.md)：每个生产函数/方法的职责、输入输出、副作用与错误边界。
-5. [GitHub 接入](docs/github.md)：专用 gallery、`gh` 登录与凭据优先级、URL/Markdown、API 原子性限制，以及 `examples/github-acceptance.sh` 一键真实验收。
-6. [发布与恢复协议](docs/publication.md)；[开发进度记忆](MEMORY.md)。
+## 图床与 CDN
 
-CLI 与 Webview 共用同一 staging/publication 核心。真实 GitHub 专用公开仓库 `Eurekaimer/touko-gallery-test` 的 live 验收已有实测记录（含 raw 字节 hash、第二设备 metadata 恢复和删除），见 [MEMORY.md](MEMORY.md#已知限制与未执行项)。本轮增量验收使用独立测试分支，未改该仓库 main；原 `Eurekaimer/MyIMGs` 仅只读克隆到本地副本用于导入验证，未写原仓库。私有仓库、分支保护拒绝写入及组织审批不可据此宣称已实测。浏览器已验证 Markdown 生成与手动复制框；当前剪贴板权限受限，不宣称自动复制成功。
+GitHub 仓库是源，jsDelivr 是可选分发层：
+
+```
+https://cdn.jsdelivr.net/gh/OWNER/REPO@BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
+https://raw.githubusercontent.com/OWNER/REPO/BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
+```
+
+jsDelivr 对 GitHub 包有体积上限，超过后整包返回 403；此时改用 raw 直链即可，内容完全相同。TOUKO 按容量把图片分配到多个仓库，并为每个 Asset 记录真实所在仓库。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [Webview](docs/webview.md) | 启动、安全边界、真实 GitHub 验收 |
+| [CLI](docs/usage.md) | 从 demo 到多设备、恢复与 JSON 输出 |
+| [架构](docs/code-guide.md) | 模块边界、调用链与设计取舍 |
+| [函数导航](docs/function-reference.md) | 每个生产函数的输入输出与存在理由 |
+| [仓库格式](docs/repository-format.md) | 远端目录结构与版本演进 |
+| [本地状态](docs/local-state.md) | SQLite 缓存、耐久暂存与重建 |
+| [发布协议](docs/publication.md) | 提交、恢复与删除语义 |
+
+## 边界
+
+预览不是缩略图服务；本地与私有仓库不生成公网链接。`rm` 从最新树移除文件，Git 历史保留——要真正清除需要重写历史，TOUKO 不提供。当前只验证 Linux/Wayland；Windows 与 macOS 的剪贴板路径按 MyGo 契约实现，尚未实机验收。
+
+## 致谢
+
+字体 Monaspace Radon、霞鹜文楷、Quicksand、Playfair Display（均为 SIL OFL）；原生窗口由 [MyGo](https://github.com/egoist/mygo) 提供；视觉审查参考 Anthropic 的 `frontend-design` 指引。
+
+## License
+
+[MIT](LICENSE)
