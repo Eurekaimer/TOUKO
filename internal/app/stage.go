@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -15,7 +14,6 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	ingest "github.com/Eurekaimer/TOUKO/internal/image"
 	"github.com/Eurekaimer/TOUKO/internal/index"
-	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/Eurekaimer/TOUKO/internal/staging"
 )
 
@@ -98,31 +96,16 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 			return nil, err
 		}
 	}
-	original := st
-	original.Changes = make(map[domain.AssetID]domain.Change, len(st.Changes))
-	for id, c := range st.Changes {
-		original.Changes[id] = c
-	}
-	success := false
+	// One ingest per input, then one shared install/save pass. Nothing is
+	// durably staged until every input has been read and prepared.
+	prepared := make([]PreparedInput, 0, len(inputs))
+	installed := false
 	defer func() {
-		if !success {
-			_ = s.cleanup(context.WithoutCancel(ctx), original)
+		if !installed {
+			discardTemps(prepared)
 		}
 	}()
 	tempDir := filepath.Join(s.Dir, "stage", "tmp")
-	if err = os.MkdirAll(tempDir, 0700); err != nil {
-		return nil, err
-	}
-	out := make([]AssetView, 0, len(inputs))
-	paths := make(map[string]domain.ContentObject, len(st.Assets)+len(st.Changes)+len(inputs))
-	for _, asset := range st.Assets {
-		paths[repository.ObjectPath(asset)] = asset.Object
-	}
-	for _, change := range st.Changes {
-		if change.Asset != nil {
-			paths[repository.ObjectPath(*change.Asset)] = change.Asset.Object
-		}
-	}
 	for _, input := range inputs {
 		if input.Reader == nil {
 			return nil, fmt.Errorf("nil input")
@@ -131,44 +114,22 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 		if err != nil {
 			return nil, err
 		}
-		if _, _, err = staging.Install(ctx, s.Dir, ns, result); err != nil {
-			return nil, err
-		}
-		id, err := domain.NewAssetID()
+		item, err := PrepareInput(result, input.Name, AddOptions{Namespace: ns, Directory: opts.Directory, Title: opts.Title, Tags: opts.Tags, Collections: opts.Collections})
 		if err != nil {
+			_ = os.Remove(result.TempPath)
 			return nil, err
 		}
-		name := input.Name
-		if name == "" {
-			name = "stdin." + result.Object.Ext
-		} else {
-			name = filepath.Base(name)
-		}
-		title := name
-		if opts.Title != nil {
-			title = *opts.Title
-		}
-		now := time.Now().UTC()
-		a := domain.Asset{ID: id, Namespace: ns, Object: result.Object, OriginalName: name, Title: title, Tags: normalize(opts.Tags), Collections: normalize(opts.Collections), CreatedAt: now, UpdatedAt: now}
-		if opts.Directory != "" {
-			a.Path = path.Join(opts.Directory, a.Object.Hash.String()+"."+a.Object.Ext)
-		}
-		if err := a.Validate(); err != nil {
-			return nil, err
-		}
-		objectPath := repository.ObjectPath(a)
-		if existing, ok := paths[objectPath]; ok && existing != a.Object {
-			return nil, fmt.Errorf("occupied image path %s", objectPath)
-		}
-		paths[objectPath] = a.Object
-		st.Changes[id] = domain.Change{Kind: domain.Add, AssetID: id, Asset: &a}
-		out = append(out, AssetView{Asset: a, State: "added"})
+		prepared = append(prepared, item)
 	}
-	bindBase(&st)
-	if err = s.Store.Save(ctx, st); err != nil {
+	next, err := applyPrepared(st, prepared)
+	if err != nil {
 		return nil, err
 	}
-	success = true
+	out, err := s.installPrepared(ctx, st, next, prepared)
+	if err != nil {
+		return nil, err
+	}
+	installed = true
 	return out, nil
 }
 func union(st index.State) map[domain.AssetID]domain.Asset {
