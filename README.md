@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2FEurekaimer%2FTOUKO-IMGBED-04%2Fmain%2Fobjects%2Fdefault%2Fsha256%2Fa6%2Fe0%2Fa6e002cde06d25d106a9e80bafcc7762003491f4a2bf4f5bc2a8332d5411c6b0.png&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
+<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2FEurekaimer%2FTOUKO-IMGBED-03%2Fmain%2Fobjects%2Fdefault%2Fsha256%2Fa6%2Fe0%2Fa6e002cde06d25d106a9e80bafcc7762003491f4a2bf4f5bc2a8332d5411c6b0.png&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
 
 # TOUKO
 
