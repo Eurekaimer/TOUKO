@@ -246,12 +246,11 @@ func (s *Server) backend(ctx context.Context) (repository.Git, error) {
 		return nil, fmt.Errorf("unsupported configured backend")
 	}
 }
+
+// state answers from one read-only database snapshot. It deliberately does not
+// take the cross-process operation lock: SQLite runs in WAL mode, so a running
+// commit must not make the gallery unreadable. Only writers are serialized.
 func (s *Server) state(ctx context.Context) (any, error) {
-	unlock, err := s.service.Lock(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
 	location, err := s.location(ctx)
 	if err != nil {
 		return nil, err
@@ -346,11 +345,6 @@ func (s *Server) assetURL(r *http.Request, selector string) (any, error) {
 	if provider != "github" && provider != "jsdelivr" {
 		return nil, usage("provider must be github or jsdelivr")
 	}
-	unlock, err := s.service.Lock(r.Context())
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
 	location, err := s.location(r.Context())
 	if err != nil {
 		return nil, err

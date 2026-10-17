@@ -300,3 +300,32 @@ func TestLibraryUploadReusesIdenticalObject(t *testing.T) {
 		t.Fatalf("a new namespace must add an asset, got %d", len(views))
 	}
 }
+
+// TestLibraryStateStaysReadableDuringPublication pins the reason reads do not
+// take the cross-process operation lock: a long commit must not turn the
+// gallery into a failed fetch.
+func TestLibraryStateStaysReadableDuringPublication(t *testing.T) {
+	f, url, members, _ := createLibraryFixture(t)
+	server, err := f.server.spaces.open(t.Context(), members[0], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := server.service.Lock(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	state := libraryCall(t, f, "GET", url+"api/state", nil, "")
+	if state.Code != http.StatusOK {
+		t.Fatalf("library state while a writer holds the lock: %d %s", state.Code, state.Body.String())
+	}
+	member := libraryCall(t, f, "GET", "/w/"+members[0]+"/api/state", nil, "")
+	if member.Code != http.StatusOK {
+		t.Fatalf("member state while a writer holds the lock: %d %s", member.Code, member.Body.String())
+	}
+	// Writes remain serialized: a mutation still reports busy instead of racing.
+	mutation := libraryCall(t, f, "POST", "/w/"+members[0]+"/api/reset", map[string]bool{"confirm": true}, server.csrf)
+	if mutation.Code != http.StatusConflict {
+		t.Fatalf("write during publication: %d, want 409", mutation.Code)
+	}
+}

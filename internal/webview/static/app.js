@@ -120,6 +120,17 @@ function responseError(data, status) {
     message += "\n请在终端运行 touko auth login，或检查 GITHUB_TOKEN / GH_TOKEN 的仓库权限，再重新读取登录。";
   return new Error(message);
 }
+// A refused connection is not a server error: the window may still be starting,
+// or the process may have exited. Say which, instead of Chromium's "failed to
+// fetch", which tells the user nothing about what to do next.
+function networkError(error) {
+  if (error instanceof TypeError) {
+    return new Error(
+      "无法连接本地 TOUKO 服务。若刚启动，请稍候再刷新；若终端里的进程已退出，请重新打开 TOUKO。",
+    );
+  }
+  return error;
+}
 async function api(path, body, prefix = viewPrefix) {
   const options = { headers: { Accept: "application/json" } };
   if (body !== undefined) {
@@ -128,7 +139,12 @@ async function api(path, body, prefix = viewPrefix) {
     options.headers["X-Touko-CSRF"] = view.csrf;
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(apiURL(path, prefix), options);
+  let response;
+  try {
+    response = await fetch(apiURL(path, prefix), options);
+  } catch (error) {
+    throw networkError(error);
+  }
   let data;
   try {
     data = await response.json();
@@ -150,7 +166,12 @@ async function apiMember(member, path, body) {
     options.headers["X-Touko-CSRF"] = member.csrf;
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(apiURL(path, prefix), options);
+  let response;
+  try {
+    response = await fetch(apiURL(path, prefix), options);
+  } catch (error) {
+    throw networkError(error);
+  }
   let data;
   try {
     data = await response.json();
@@ -1241,8 +1262,17 @@ function renderLibraryChoices() {
     if (host) host.replaceChildren(element("p", "field-help", repositoriesLoading ? "正在读取仓库…" : "读取仓库后可以勾选成员。"));
     return;
   }
-  if (host.dataset.signature === `${repositories.length}:${repositories[0]?.full_name}`) return;
-  host.dataset.signature = `${repositories.length}:${repositories[0]?.full_name}`;
+  // Members already in this library are shown checked with their real branch, so
+  // the dialog reflects the configuration instead of an empty list.
+  const members = new Map();
+  for (const member of view?.members || []) {
+    const location = member.location;
+    if (location?.backend === "github")
+      members.set(`${location.owner}/${location.name}`, location.branch);
+  }
+  const signature = `${repositories.length}:${repositories[0]?.full_name}:${[...members].sort().join(",")}`;
+  if (host.dataset.signature === signature) return;
+  host.dataset.signature = signature;
   host.replaceChildren();
   repositories.forEach((repo, index) => {
     const row = element("div", "library-repo-row");
@@ -1250,12 +1280,22 @@ function renderLibraryChoices() {
     checkbox.type = "checkbox";
     checkbox.id = `library-repo-${index}`;
     checkbox.value = repo.full_name;
+    const joined = members.get(repo.full_name);
+    checkbox.checked = joined !== undefined;
     const label = element("label", "", `${repo.full_name}${repo.private ? " · 私有" : ""}${repo.can_push ? "" : " · 只读"}`);
     label.setAttribute("for", checkbox.id);
     const select = element("select");
     select.dataset.repository = repo.full_name;
-    select.disabled = true;
+    select.disabled = !checkbox.checked;
     select.append(new Option("默认分支", ""));
+    if (joined !== undefined) {
+      select.replaceChildren(new Option(joined, joined));
+      select.value = joined;
+      select.dataset.loaded = "true";
+    }
+    // A member row states membership in words; a checked box alone is easy to
+    // miss in a long repository list.
+    if (joined !== undefined) row.classList.add("is-member");
     select.addEventListener("focus", () => loadLibraryBranches(repo.full_name, select));
     checkbox.addEventListener("change", () => {
       select.disabled = !checkbox.checked || !!select.dataset.loaded;
@@ -1281,6 +1321,10 @@ async function loadLibraryBranches(repository, select) {
     select.value = repo?.default_branch && value.branches.some((branch) => branch.name === repo.default_branch)
       ? repo.default_branch
       : value.branches[0]?.name || "";
+    if (!select.dataset.loaded || select.dataset.loaded === "true") {
+      const previous = select.value;
+      if (previous && value.branches.some((branch) => branch.name === previous)) select.value = previous;
+    }
     select.dataset.loaded = "true";
     select.disabled = !select.closest(".library-repo-row").querySelector("input").checked;
   } catch (error) {
@@ -2096,7 +2140,7 @@ try {
 } catch (error) {
   showError("page-error", error);
   $("gallery").replaceChildren(
-    element("div", "empty-state", "图库未能读取，请检查终端并点击刷新。"),
+    element("div", "empty-state", "图库未能读取。请按上方提示处理后点击刷新。"),
   );
   $("gallery").setAttribute("aria-busy", "false");
 }

@@ -97,11 +97,9 @@ func (s *Server) imageSnapshot(ctx context.Context, selector string) (index.Stat
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	var empty index.State
-	unlock, err := s.service.Lock(ctx)
-	if err != nil {
-		return empty, nil, nil, err
-	}
-	defer unlock()
+	// Previews read a database snapshot and the files in it. They must not queue
+	// behind a publication: WAL readers see the last committed state, and the
+	// staged payload is opened below before anything can unlink it.
 	st, views, err := s.service.ReadView(ctx)
 	if err != nil {
 		return empty, nil, nil, err
@@ -114,7 +112,25 @@ func (s *Server) imageSnapshot(ctx context.Context, selector string) (index.Stat
 		if view.State != "added" {
 			return st, &view.Asset, nil, nil
 		}
-		file, err := os.Open(staging.PayloadPath(s.service.Dir, view.Asset.Namespace, view.Asset.Object))
+		payload := staging.PayloadPath(s.service.Dir, view.Asset.Namespace, view.Asset.Object)
+		file, err := os.Open(payload)
+		if errors.Is(err, os.ErrNotExist) && view.State == "added" {
+			// A publication may have consumed the payload between the snapshot and
+			// this open. Re-read once: the asset is either committed now, in which
+			// case its bytes come from Git, or it is genuinely gone.
+			if latest, again, readErr := s.service.ReadView(ctx); readErr == nil {
+				for j := range again {
+					candidate := &again[j]
+					if candidate.Asset.ID.String() != selector {
+						continue
+					}
+					if candidate.State != "added" {
+						return latest, &candidate.Asset, nil, nil
+					}
+					break
+				}
+			}
+		}
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && view.Asset.Path != "" {
 				// Imported metadata references an already committed image and has
