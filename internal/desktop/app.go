@@ -182,7 +182,9 @@ func openWindow(origin string) *mygo.Window {
 	window := mygo.NewWindow(mygo.WindowOptions{
 		Title: "TOUKO", URL: origin, Width: 1440, Height: 960,
 		MinWidth: 390, MinHeight: 600, BackgroundColor: "#fbfaf7",
-		Page: mygo.PageOptions{DevTools: mygo.DevToolsDisabled},
+		// MyGo refuses Go method calls from an origin it does not trust, so the
+		// clipboard bridge would silently never appear on the page.
+		Page: mygo.PageOptions{DevTools: mygo.DevToolsDisabled, TrustedOrigins: []string{origin}},
 	})
 	page := window.Page()
 	page.OnWillNavigate(func(event *mygo.NavigateEvent) {

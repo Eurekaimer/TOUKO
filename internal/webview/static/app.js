@@ -1122,8 +1122,16 @@ function pasteErrorIsPermanent(error) {
     error?.message || "",
   );
 }
+// MyGo injects one runtime as window.mygo; bound services are reached by name
+// through mygo.call, not as globals. A browser simply has no runtime.
 function desktopBridge() {
-  return window.DesktopClipboard || null;
+  const runtime = window.mygo;
+  if (!runtime || typeof runtime.call !== "function") return null;
+  return {
+    Read: () => runtime.call("DesktopClipboard.Read"),
+    Release: (token) => runtime.call("DesktopClipboard.Release", token ?? ""),
+    WriteText: (text) => runtime.call("DesktopClipboard.WriteText", text),
+  };
 }
 function supportedClipboardType(type) {
   return ["image/png", "image/jpeg", "image/gif"].includes(type);
