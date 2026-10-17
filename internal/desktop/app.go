@@ -81,6 +81,12 @@ func Run(stateDir string, port int, output io.Writer) (err error) {
 	}
 
 	mygo.App.SetName("TOUKO")
+	// The capability protocol must exist before the window that fetches it.
+	clipboard, err := newClipboardBridge(host.URL)
+	if err != nil {
+		return err
+	}
+	defer clipboard.close()
 	watch, cancel := context.WithCancel(ctx)
 	var quitting atomic.Bool
 	var watcher sync.WaitGroup
@@ -93,6 +99,10 @@ func Run(stateDir string, port int, output io.Writer) (err error) {
 		window := openWindow(host.URL)
 		if iconErr := window.SetIcon(windowIcon); iconErr != nil {
 			fmt.Fprintf(output, "Window icon unavailable: %v\n", iconErr)
+		}
+		mygo.BindAs("DesktopClipboard", clipboard)
+		if attachErr := clipboard.attach(window, window.Page()); attachErr != nil {
+			fmt.Fprintf(output, "Clipboard paste unavailable: %v\n", attachErr)
 		}
 		ready := session{window: window, loopback: host.URL, stateDir: dir, output: output, quitting: &quitting}
 		// Hiding is only offered when the tray can bring the window back. Without
