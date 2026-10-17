@@ -530,8 +530,8 @@
             <div class="inline-controls">
               <span class="select-field"
                 ><select id="url-provider">
-                  <option value="github">GitHub Raw</option>
-                  <option value="jsdelivr">jsDelivr</option></select
+                  <option value="jsdelivr">jsDelivr（图床推荐）</option>
+                  <option value="github">GitHub Raw（直连）</option></select
                 ></span
               ><button type="button" class="button secondary" id="copy-url">
                 <svg class="icon"><use href="#i-copy" /></svg>复制链接
@@ -540,6 +540,10 @@
                 <svg class="icon"><use href="#i-copy" /></svg>复制 Markdown
               </button>
             </div>
+            <p class="field-help">
+              jsDelivr 有 CDN 缓存与 20 MB 单文件限制，适合公开图床；GitHub Raw
+              没有缓存、按原样返回文件，适合临时检查。两种链接都指向同一个已提交对象。
+            </p>
             <input
               id="delivery-url"
               readonly

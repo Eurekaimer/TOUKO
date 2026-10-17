@@ -312,6 +312,7 @@ function hideDialog(dialog) {
   if (!busy) dialog.close();
 }
 function closeNavigation() {
+  hideCursorHint();
   $("sidebar").classList.remove("is-open");
   $("toggle-nav").setAttribute("aria-expanded", "false");
 }
@@ -578,14 +579,76 @@ function imageURL(entry) {
     `/w/${entry.workspace}`,
   );
 }
+// canCopyReference reports whether this picture can have a public delivery URL at
+// all: private or local repositories deliberately produce none.
+function canCopyReference(entry) {
+  const location = memberForAsset(entry)?.location;
+  return !!location && location.backend === "github" && !location.private;
+}
+// A small label follows the pointer while a copy request runs and then reports
+// the outcome in place, so the user never has to look away from the picture.
+let cursorHint = null;
+function showCursorHint(event, text, state = "") {
+  if (!cursorHint) {
+    cursorHint = element("div", "cursor-hint");
+    cursorHint.setAttribute("role", "status");
+    cursorHint.setAttribute("aria-live", "polite");
+    document.body.append(cursorHint);
+  }
+  cursorHint.textContent = text;
+  cursorHint.className = `cursor-hint ${state}`.trim();
+  cursorHint.hidden = false;
+  const x = Math.min(event?.clientX ?? window.innerWidth / 2, window.innerWidth - 220);
+  const y = Math.min(event?.clientY ?? window.innerHeight / 2, window.innerHeight - 60);
+  cursorHint.style.transform = `translate(${Math.max(8, x + 14)}px, ${Math.max(8, y + 16)}px)`;
+}
+function hideCursorHint(delay = 0) {
+  if (!cursorHint) return;
+  const node = cursorHint;
+  setTimeout(() => {
+    if (node === cursorHint) node.hidden = true;
+  }, delay);
+}
+async function copyCardMarkdown(key, event) {
+  if (busy) return;
+  showCursorHint(event, "正在复制 Markdown…", "pending");
+  try {
+    const delivered = await copyReference(true, key);
+    const published = delivered?.committed;
+    showCursorHint(event, published ? "已复制 Markdown" : "已复制 Markdown（尚未发布，提交后才能访问）", "done");
+    setTimeout(() => hideCursorHint(), published ? 1600 : 3200);
+  } catch (error) {
+    showCursorHint(event, `复制失败：${error.message}`, "error");
+    setTimeout(() => hideCursorHint(), 4000);
+  }
+}
 function card(entry) {
   const { asset } = entry;
   const key = keyOf(entry);
   const node = element("article", "asset-card");
   node.dataset.key = key;
   const media = element("div", "card-image-wrap");
-  const open = button("", "card-open", () => openPreview(key));
-  open.setAttribute("aria-label", `查看 ${asset.title || asset.original_name}`);
+  // The picture is a button of its own: one click copies the Markdown reference,
+  // and the whole behaviour changes only where no public link can exist.
+  const open = element("button", "card-open");
+  open.type = "button";
+  const copyable = canCopyReference(entry);
+  open.setAttribute(
+    "aria-label",
+    copyable
+      ? `单击复制 Markdown，双击查看 ${asset.title || asset.original_name}`
+      : `查看 ${asset.title || asset.original_name}`,
+  );
+  open.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (copyable) void copyCardMarkdown(key, event);
+    else openPreview(key);
+  });
+  open.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    hideCursorHint();
+    openPreview(key);
+  });
   const img = element("img", "card-image");
   img.alt = asset.title || asset.original_name;
   img.loading = "lazy";
@@ -619,6 +682,7 @@ function card(entry) {
   select.append(checkbox);
   media.append(open, select);
   const content = element("div", "card-content");
+  // The title always opens the preview, including on a copyable card.
   const title = button(asset.title || asset.original_name, "card-title", () =>
     openPreview(key),
   );
@@ -1597,8 +1661,8 @@ function selectedImportMember() {
 }
 // deliveryText resolves the delivery URL once and returns the exact text plus
 // whether it is committed, so every copy path shares the same escaping rules.
-async function deliveryText(markdown) {
-  const entry = viewForKey(currentKey);
+async function deliveryText(markdown, key = currentKey) {
+  const entry = viewForKey(key);
   if (!entry) throw new Error("图片已不在当前图库，请刷新后重试。");
   const member = memberForAsset(entry);
   if (!member) throw new Error("找不到图片所属的仓库成员。");
@@ -1613,29 +1677,38 @@ async function deliveryText(markdown) {
     committed: value.committed,
   };
 }
+// copyReference copies one delivery reference. ClipboardItem is created
+// synchronously with a promise payload, so the browser still sees the user's
+// gesture while the link is requested; the desktop bridge has no such rule.
+async function copyReference(markdown, key = currentKey) {
+  const bridge = desktopBridge();
+  if (bridge) {
+    const delivered = await deliveryText(markdown, key);
+    await bridge.WriteText(delivered.text);
+    return delivered;
+  }
+  if (window.ClipboardItem && navigator.clipboard?.write) {
+    let delivered = null;
+    const pending = deliveryText(markdown, key).then((value) => {
+      delivered = value;
+      return value.text;
+    });
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "text/plain": pending.then((text) => new Blob([text], { type: "text/plain" })),
+      }),
+    ]);
+    await pending;
+    return delivered;
+  }
+  const delivered = await deliveryText(markdown, key);
+  await navigator.clipboard.writeText(delivered.text);
+  return delivered;
+}
 async function copyDelivery(markdown) {
   clearError("edit-error");
   try {
-    const bridge = desktopBridge();
-    let delivered = null;
-    if (bridge) {
-      // The desktop has no user-gesture clipboard requirement, so the request
-      // completes first and only a real clipboard error is reported.
-      delivered = await deliveryText(markdown);
-      await bridge.WriteText(delivered.text);
-    } else if (window.ClipboardItem && navigator.clipboard?.write) {
-      // The ClipboardItem is created synchronously with a promise payload, so
-      // the browser still sees a user gesture while the URL request runs.
-      const pending = deliveryText(markdown).then((value) => {
-        delivered = value;
-        return new Blob([value.text], { type: "text/plain" });
-      });
-      await navigator.clipboard.write([new ClipboardItem({ "text/plain": pending })]);
-      delivered = await pending.then(() => delivered);
-    } else {
-      delivered = await deliveryText(markdown);
-      await navigator.clipboard.writeText(delivered.text);
-    }
+    const delivered = await copyReference(markdown);
     $("delivery-url").hidden = false;
     $("delivery-url").value = delivered.text;
     $("delivery-url").setAttribute("aria-label", markdown ? "图片 Markdown" : "图片公开链接");
