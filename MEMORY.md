@@ -4,7 +4,40 @@
 
 ## 当前交付状态
 
-**最新交接（2026-10-17，第二轮）。** 上一轮的六阶段提交（`3a99579`…`76ff6ce`）之后，本轮做的是**桌面壳 + 托盘 + 应用图标 + 本地打包**，同样分阶段提交（下表）。`logo/` 始终是用户文件，禁止擅自提交或清理。
+**最新交接（2026-10-18，第三轮：本机可用性、剪贴板、统一图库与图床迁移）。**
+
+本轮新增提交（均已 push 到 `main`）：
+
+| commit | 内容 |
+| --- | --- |
+| `fc4169f` | prepared 暂存核心 + 按真实 CommitPlan 计算的容量 |
+| `d0690d8` | MyGo 原生剪贴板桥接（能力 URL，不接受路径） |
+| `3c48f48` | 多仓库统一图库、库级 CSRF、按容量路由、hash 搜索 |
+| `2fd5f0c` | README 界面截图 |
+| `94a64d3` | 信任窗口 origin 并用 `mygo.call` 调用桥接 |
+| `419a848` | 读操作不再抢发布锁（WAL 快照），busy 提示可读 |
+| `d85753f` | 单击卡片复制 Markdown + 指针旁提示、jsDelivr/Raw 选择说明 |
+| `38e8900` | 连接对话框内管理图库成员 |
+| `c71b9bf` | 中英双版 README（`README.md` / `README_en.md`） |
+
+**启动入口已修复并实测。** 根因是 `~/.local/share/applications/touko-desktop.desktop` 的 `Exec=touko-desktop` 是裸名，而会话 PATH 不含 `~/.local/bin`（`~/.cache/noctalia/noctalia.log` 记录 ENOENT）。现在 `Exec`/`TryExec` 都是绝对路径，二进制装在 `~/.local/bin`，7 档 hicolor 图标已装。`gtk-launch touko-desktop` 与真实 Super+Space 都能打开窗口。
+
+**剪贴板实测（真实截图）。** 用户 7.4 MB PNG 走 `DesktopClipboard.Read` → 能力 URL → `fetch().blob()`，`clipboard.png` 的字节数与 SHA-256 与源文件完全一致（`07d6989…d665cf`）。注意两个 MyGo 事实：绑定服务要通过 `window.mygo.call("DesktopClipboard.Read")` 访问，且窗口必须在 `PageOptions.TrustedOrigins` 列出自己的 origin，否则 IPC 静默不可用。
+
+**图床迁移已全部完成。** 193 张在用图片迁入内容寻址图库，按每仓 ≤30 MB 分到 `TOUKO-IMGBED-02/03/04`（01 保留为空的备用成员；其 jsDelivr 包名被旧的超限记录锁定，重建成单提交后仍 403，故由 04 接管）。博客、Obsidian、notes、profile、astro-paper 与 CS61A 的链接已全部替换、提交、推送并部署，线上页面已确认引用新图库。
+
+**jsDelivr 的实际限制是 50 MB/包，不是 150 MB。** 旧的 `MyIMGs` 在 2026-01-27（`b18f9be`，123 个文件）越过 50 MB，此后整包 403——这正是旧记忆里“jsDelivr GitHub-fetch 失败、改用 raw 直链”的真实原因。判定看内容总量而非历史长度，但包名一旦被缓存为超限，重建同内容也可能持续 403；此时换仓库名或改用 raw 直链。
+
+**备份与证据**（仓库外，0700）：`/home/eurekaimer/Documents/TOUKO-backups/touko-20261017T143943Z/`
+- `myimgs/MyIMGs-img.tar.gz`：源 HEAD `c9b0242` 的 `img/` 全量归档（204 文件，94,925,629 bytes，SHA-256 `b122fe1…`）
+- `myimgs/source-images.json`、`unused-images.json`、`unresolved-references.json`、`classification.json`
+- `myimgs/migration.json`、`retirement.json`（193/193 通过：CDN 200、哈希一致、消费仓库已发布、源 blob 未变）
+- `consumers/`：各仓替换前的原始字节与 tracked diff
+- `installation/install-user.sh`：可重复执行到用户目录的安装脚本
+
+**仍未完成**：Windows/macOS 剪贴板未实机验收；托盘单击在 Linux 上仍只弹菜单（MyGo 未暴露 SNI Activate）；512px 图标与 AUR 发布；按 hash 批量整理显示标题（本次不改对象路径）。
+
+**历史交接（2026-10-17，第二轮）。** 上一轮的六阶段提交（`3a99579`…`76ff6ce`）之后，本轮做的是**桌面壳 + 托盘 + 应用图标 + 本地打包**，同样分阶段提交（下表）。`logo/` 始终是用户文件，禁止擅自提交或清理。
 
 ### 本轮（桌面/打包）实测
 
