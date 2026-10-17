@@ -205,7 +205,7 @@ func (r *runtime) listCommand() *cobra.Command {
 }
 
 func (r *runtime) findCommand() *cobra.Command {
-	return &cobra.Command{Use: "find QUERY", Short: "Search titles, filenames, tags and collections", Args: arguments(cobra.ExactArgs(1)), RunE: func(cmd *cobra.Command, args []string) error {
+	return &cobra.Command{Use: "find QUERY", Short: "Search titles, filenames, tags, collections and content hashes", Args: arguments(cobra.ExactArgs(1)), RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(args[0]) == "" {
 			return usage("find requires a nonempty query")
 		}

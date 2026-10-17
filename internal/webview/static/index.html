@@ -117,6 +117,10 @@
             ><span class="count" id="nav-pending">0</span>
           </button>
         </nav>
+        <div class="sidebar-section-label">图库</div>
+        <nav id="library-nav" class="workspace-list" aria-label="统一图库">
+          <p class="sidebar-hint">连接多个仓库后，会在这里合并成一个图库。</p>
+        </nav>
         <div class="sidebar-section-label">分类</div>
         <nav
           id="collection-filters"
@@ -208,6 +212,24 @@
           </section>
           <div id="page-error" class="notice error" role="alert" hidden></div>
           <p id="local-read-status" class="field-help local-read-status" role="status"></p>
+          <div id="member-status" class="member-status" hidden></div>
+          <div id="operation-panel" class="operation-panel" hidden>
+            <div id="operation-results" class="member-results"></div>
+            <div class="operation-actions">
+              <button
+                type="button"
+                class="button secondary small-button"
+                id="retry-operation"
+                data-mutation
+                hidden
+              >
+                重试失败成员
+              </button>
+              <button type="button" class="text-button" id="dismiss-operation">
+                隐藏结果
+              </button>
+            </div>
+          </div>
           <section class="setup-banner" id="setup-banner" hidden>
             <div>
               <strong id="setup-title"></strong>
@@ -265,6 +287,11 @@
                   ><label class="sr-only" for="namespace-filter">命名空间</label
                   ><select id="namespace-filter">
                     <option value="">全部命名空间</option></select
+                  ></span
+                ><span class="select-field" id="source-filter-field" hidden
+                  ><label class="sr-only" for="source-filter">来源仓库</label
+                  ><select id="source-filter">
+                    <option value="">全部来源仓库</option></select
                   ></span
                 ><span class="select-field"
                   ><label class="sr-only" for="directory-filter">仓库路径目录</label
@@ -342,7 +369,7 @@
           <label class="drop-zone" id="drop-zone"
             ><svg class="icon large-icon"><use href="#i-upload" /></svg
             ><strong>拖入图片，或点击选择</strong
-            ><span
+            ><span id="upload-limit"
               >PNG、JPEG 或 GIF。每张不超过 100 MB，每批不超过 500 MB
               或 100 张。</span
             ><input
@@ -352,6 +379,19 @@
               multiple
               aria-label="选择要上传的图片"
           /></label>
+          <div class="upload-paste-row">
+            <button
+              type="button"
+              class="button secondary"
+              id="upload-paste"
+              aria-describedby="upload-paste-help"
+            >
+              <svg class="icon"><use href="#i-copy" /></svg>从剪贴板粘贴
+            </button>
+            <span id="upload-paste-help" class="field-help"
+              >桌面版可直接按 Ctrl / ⌘ + V。浏览器会索取一次性剪贴板图片权限；只支持 PNG、JPEG、GIF。</span
+            >
+          </div>
           <div class="upload-list" id="upload-list"></div>
           <div class="form-grid">
             <label
@@ -393,6 +433,7 @@
             <progress id="upload-progress" max="100" value="0"></progress
             ><span id="upload-progress-text">等待上传</span>
           </div>
+          <div id="upload-results" class="member-results" hidden></div>
           <div class="notice error" id="upload-error" role="alert" hidden></div>
         </div>
         <div class="dialog-footer">
@@ -420,6 +461,10 @@
         <div class="dialog-body">
           <p class="muted intro">扫描仓库固定 HEAD 中已有的 PNG、JPEG 和 GIF，保留原路径与旧链接；不会重新上传或移动图片。导入只暂存管理元数据，不会自动发布。</p>
           <p id="import-initialization" class="notice warning" hidden>此仓库尚未初始化。请关闭此窗口，先同步已有 TOUKO 图库，或明确点击「初始化 TOUKO」，再回来导入。初始化不会自动导入旧图片。</p>
+          <label id="import-member-field" hidden>来源成员<span class="select-field"
+              ><select id="import-member"></select></span>
+            <small>统一图库中的原路径导入按成员分别执行；只扫描所选仓库的固定 HEAD，不会把其中的图片分散到其他成员。</small>
+          </label>
           <label>扫描目录（可选）<input id="import-directory" placeholder="例如 img，留空扫描全仓库" />
             <small>相对仓库根目录，使用 / 分隔。</small>
           </label>
@@ -547,8 +592,9 @@
             这些修改只保存在本机。提交会把整批改变一起发布到仓库。
           </p>
           <div id="publication-warning" class="notice warning" hidden></div>
-          <div class="pending-base" id="pending-base"></div>
+          <div id="pending-base" class="pending-base"></div>
           <div id="pending-list" class="pending-list"></div>
+          <div id="pending-member-results" class="member-results" hidden></div>
           <label
             >提交说明<textarea
               id="commit-message"
@@ -565,6 +611,15 @@
           ></div>
         </div>
         <div class="dialog-footer">
+          <button
+            type="button"
+            class="text-button"
+            id="retry-pending"
+            data-mutation
+            hidden
+          >
+            重试失败成员
+          </button>
           <button
             type="button"
             class="button danger"
@@ -607,7 +662,7 @@
             只管理工作区，不接管你的凭据。
           </p>
           <section class="workspace-picker" aria-labelledby="workspace-heading">
-            <h3 id="workspace-heading">已连接工作区</h3>
+            <h3 id="workspace-heading">已连接工作区与图库</h3>
             <div id="workspace-links" class="workspace-links"></div>
           </section>
           <label
@@ -637,23 +692,49 @@
             /></label>
           </div>
           <div id="github-fields" hidden>
-            <label id="repo-choices-label" for="repo-choices">可访问的 GitHub 仓库</label>
-            <span class="select-field">
-              <select id="repo-choices" aria-describedby="repo-choice-help" required disabled>
-                <option value="">尚未读取仓库</option>
-              </select>
-            </span>
-            <p id="repo-choice-help" class="field-help" role="status">打开后自动读取全部仓库，显示公开 / 私有与写入权限。只读仓库可以浏览，但不能发布。</p>
-            <label for="repo-branches">GitHub 分支</label>
-            <span class="select-field">
-              <select id="repo-branches" aria-describedby="repo-branch-help" required disabled>
-                <option value="">请先选择仓库</option>
-              </select>
-            </span>
-            <p id="repo-branch-help" class="field-help" role="status">选择仓库后读取全部分支，优先选择默认分支；受保护分支仍可选择，但发布须遵守仓库规则。</p>
+            <label id="repo-mode-field">连接方式<span class="select-field"
+              ><select id="repo-mode">
+                <option value="single">打开单个仓库工作区</option>
+                <option value="library">新建统一图库</option>
+                <option value="add">连接到当前图库</option>
+              </select></span>
+              <small>统一图库把多个仓库合并成一个浏览与上传入口，但每个仓库仍使用自己的工作区、暂存和发布日志。</small>
+            </label>
+            <div id="library-fields" hidden>
+              <label id="library-name-field">图库名称<input
+                  id="library-name"
+                  placeholder="例如：我的图床"
+                  maxlength="120"
+                  autocomplete="off"
+                /><small>名称只保存在本机；创建后成员顺序固定，可继续手动连接更多仓库。</small></label>
+              <div
+                id="library-repos"
+                class="library-repos"
+                aria-label="选择图库成员仓库"
+              ></div>
+              <p class="field-help">
+                逐个勾选要加入的仓库，并为每个成员选择真实分支；默认使用仓库的默认分支。创建或连接不会自动初始化、提交，也不会新建远端仓库。已经连接的仓库不会重复添加。
+              </p>
+            </div>
+            <div id="single-repo-fields">
+              <label id="repo-choices-label" for="repo-choices">可访问的 GitHub 仓库</label>
+              <span class="select-field">
+                <select id="repo-choices" aria-describedby="repo-choice-help" required disabled>
+                  <option value="">尚未读取仓库</option>
+                </select>
+              </span>
+              <p id="repo-choice-help" class="field-help" role="status">打开后自动读取全部仓库，显示公开 / 私有与写入权限。只读仓库可以浏览，但不能发布。</p>
+              <label for="repo-branches">GitHub 分支</label>
+              <span class="select-field">
+                <select id="repo-branches" aria-describedby="repo-branch-help" required disabled>
+                  <option value="">请先选择仓库</option>
+                </select>
+              </span>
+              <p id="repo-branch-help" class="field-help" role="status">选择仓库后读取全部分支，优先选择默认分支；受保护分支仍可选择，但发布须遵守仓库规则。</p>
+            </div>
             <p class="field-help">
               请先在 GitHub 创建图片仓库，并勾选添加 README。不要使用 TOUKO
-              的代码仓库存图片。
+              的代码仓库存图片；统一图库成员应为公开仓库，才能作为 jsDelivr 图床。
             </p>
           </div>
           <div class="repo-security">

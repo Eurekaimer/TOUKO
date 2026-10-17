@@ -24,6 +24,9 @@ type workspaceSet struct {
 	mu      sync.Mutex
 	root    *Server
 	servers map[string]*Server
+	// libraryTokens holds this process's per-library CSRF tokens. Like the root
+	// token they are never persisted, so a restart invalidates stale pages.
+	libraryTokens map[string]string
 }
 
 type workspaceEntry struct {
@@ -116,41 +119,6 @@ func (m *workspaceSet) selectLocation(ctx context.Context, location repository.L
 		return nil, err
 	}
 	return server, nil
-}
-
-func (m *workspaceSet) remember(id string) error {
-	file, err := os.CreateTemp(m.root.service.Dir, "active-")
-	if err != nil {
-		return err
-	}
-	name := file.Name()
-	defer os.Remove(name)
-	_, writeErr := file.WriteString(id + "\n")
-	if writeErr == nil {
-		writeErr = file.Sync()
-	}
-	if err := errors.Join(writeErr, file.Close()); err != nil {
-		return err
-	}
-	return os.Rename(name, filepath.Join(m.root.service.Dir, "active-workspace"))
-}
-
-func (m *workspaceSet) activeURL() (string, error) {
-	data, err := os.ReadFile(filepath.Join(m.root.service.Dir, "active-workspace"))
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	id := strings.TrimSpace(string(data))
-	if !validWorkspaceID(id) {
-		return "", fmt.Errorf("invalid active workspace")
-	}
-	if _, err := os.Stat(filepath.Join(m.directory(id), "config.json")); err != nil {
-		return "", fmt.Errorf("active workspace configuration: %w", err)
-	}
-	return workspaceURL(id), nil
 }
 
 func (m *workspaceSet) list(ctx context.Context, current string) (any, error) {

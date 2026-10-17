@@ -294,6 +294,11 @@ func matches(v app.AssetView, query string) bool {
 	if strings.Contains(strings.ToLower(v.Asset.Title), query) || strings.Contains(strings.ToLower(v.Asset.OriginalName), query) {
 		return true
 	}
+	// Hashes are lowercase hex, so an upper-case query still matches through the
+	// lowered query the caller builds; the canonical path never proves identity.
+	if strings.Contains(v.Asset.Object.Hash.String(), query) {
+		return true
+	}
 	for _, values := range [][]string{v.Asset.Tags, v.Asset.Collections} {
 		for _, value := range values {
 			if strings.Contains(strings.ToLower(value), query) {

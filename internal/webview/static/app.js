@@ -1,6 +1,9 @@
 const $ = (id) => document.getElementById(id);
-const workspacePrefix = window.location.pathname.match(/^\/w\/[^/]+(?=\/|$)/)?.[0] || "";
-const apiURL = (path) => `${workspacePrefix}/api/${path}`;
+// A page is either one workspace (/w/<id>/) or one library (/l/<id>/). Both use
+// the same document; only the prefix and the shape of the state differ.
+const viewPrefix = window.location.pathname.match(/^\/(?:w|l)\/[^/]+(?=\/|$)/)?.[0] || "";
+const isLibraryURL = viewPrefix.startsWith("/l/");
+const apiURL = (path, prefix = viewPrefix) => `${prefix}/api/${path}`;
 // Vocabulary: 待发布 = still only on this machine, 新增/修改/移除 = what happened to one picture.
 const stateNames = {
   committed: "已提交",
@@ -14,18 +17,23 @@ const filters = {
   collection: "",
   tag: "",
   directory: "",
+  source: "",
   sort: "newest",
 };
+// Asset IDs are only unique inside one repository, so every identity in the UI
+// is the owning workspace plus the asset ID.
 const selected = new Set();
 const cards = new Map();
 const focusOrigins = new WeakMap();
-let workspace = null;
+let state = null;
+let view = null;
 let busy = false;
-let currentAsset = null;
+let currentKey = null;
 let uploadFiles = [];
 let confirmOperation = null;
 let toastTimer;
 let refreshSequence = 0;
+let uploadSequence = 0;
 let repositories = [];
 let branches = [];
 let repositoriesLoading = false;
@@ -33,6 +41,8 @@ let branchesLoading = false;
 let repositoryDialogSequence = 0;
 let githubRequestSequence = 0;
 let branchRequestSequence = 0;
+let clipboardBusy = false;
+let operationRetry = null;
 
 // Metadata is always text, never interpolated HTML. The only SVG references are
 // our own fixed symbols in index.html; uploaded bytes cannot introduce markup.
@@ -85,8 +95,9 @@ function showError(id, error) {
   target.hidden = false;
 }
 function clearError(id) {
-  $(id).hidden = true;
-  $(id).textContent = "";
+  const target = $(id);
+  target.hidden = true;
+  target.textContent = "";
 }
 function toast(message) {
   clearTimeout(toastTimer);
@@ -103,25 +114,49 @@ function responseError(data, status) {
     message +=
       "\n请查看待发布列表：保留修改，或明确丢弃后再同步。同步不会自动覆盖远端。";
   if (code === "busy") message += "\n当前工作区正在处理其他操作，请稍后刷新。";
+  if (code === "capacity_full")
+    message += "\n请手动连接新的仓库，或先提交/清理已有图片。";
   if (code === "unauthorized")
     message += "\n请在终端运行 touko auth login，或检查 GITHUB_TOKEN / GH_TOKEN 的仓库权限，再重新读取登录。";
   return new Error(message);
 }
-async function api(path, body) {
+async function api(path, body, prefix = viewPrefix) {
   const options = { headers: { Accept: "application/json" } };
   if (body !== undefined) {
     options.method = "POST";
     options.headers["Content-Type"] = "application/json";
-    options.headers["X-Touko-CSRF"] = workspace.csrf;
+    options.headers["X-Touko-CSRF"] = view.csrf;
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(apiURL(path), options);
+  const response = await fetch(apiURL(path, prefix), options);
   let data;
   try {
     data = await response.json();
   } catch {
     throw new Error(
       `本地服务返回了无效响应（HTTP ${response.status}）。请检查终端。`,
+    );
+  }
+  if (!response.ok) throw responseError(data, response.status);
+  return data;
+}
+// apiMember talks to one owner workspace using that member's own mutation token.
+async function apiMember(member, path, body) {
+  const prefix = `/w/${member.id}`;
+  const options = { headers: { Accept: "application/json" } };
+  if (body !== undefined) {
+    options.method = "POST";
+    options.headers["Content-Type"] = "application/json";
+    options.headers["X-Touko-CSRF"] = member.csrf;
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(apiURL(path, prefix), options);
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(
+      `成员 ${member.id.slice(0, 8)} 返回了无效响应（HTTP ${response.status}）。`,
     );
   }
   if (!response.ok) throw responseError(data, response.status);
@@ -138,6 +173,37 @@ function setBusy(value) {
     });
   updateActions();
   updateRepositoryControls();
+}
+function keyOf(view) {
+  return `${view.workspace}:${view.asset.id}`;
+}
+function keyOfID(workspaceID, assetID) {
+  return `${workspaceID}:${assetID}`;
+}
+function splitKey(key) {
+  const index = key.indexOf(":");
+  return { workspace: key.slice(0, index), assetID: key.slice(index + 1) };
+}
+function memberByID(id) {
+  return view?.members.find((member) => member.id === id) || null;
+}
+function memberName(id) {
+  const member = memberByID(id);
+  const location = member?.location;
+  if (!location) return member?.error ? `不可用成员 ${id.slice(0, 8)}` : id.slice(0, 8);
+  return location.backend === "github"
+    ? `${location.owner}/${location.name}`
+    : location.path.split("/").filter(Boolean).at(-1);
+}
+function memberForAsset(assetView) {
+  return memberByID(assetView.workspace);
+}
+function viewForKey(key) {
+  if (!view) return null;
+  const { workspace, assetID } = splitKey(key);
+  return view.assets.find(
+    (entry) => entry.workspace === workspace && entry.asset.id === assetID,
+  ) || null;
 }
 async function mutate(action, errorId, success) {
   if (busy) return null;
@@ -163,13 +229,53 @@ async function mutate(action, errorId, success) {
   if (success) toast(success);
   return result;
 }
+// normalize turns both server shapes into one view: a library returns members,
+// a single workspace is simply its own only member. Nothing invents a shared
+// head, location, or publication for a library.
+function normalize(raw) {
+  const members = raw.members || [
+    {
+      id: raw.workspace,
+      url: viewPrefix + "/",
+      csrf: raw.csrf,
+      location: raw.location,
+      initialized: raw.initialized,
+      head: raw.head,
+      base_head: raw.base_head,
+      assets: raw.assets,
+      changes: raw.changes,
+      publication: raw.publication,
+      local_read: raw.local_read,
+      capacity: null,
+      error: null,
+    },
+  ];
+  const assets = [];
+  for (const entry of raw.assets || []) {
+    assets.push({ workspace: entry.workspace || raw.workspace, state: entry.state, asset: entry.asset });
+  }
+  const changes = (raw.changes || []).map((entry) => {
+    if (entry && entry.change) return { workspace: entry.workspace, change: entry.change };
+    return { workspace: raw.workspace, change: entry };
+  });
+  return {
+    kind: raw.kind || "workspace",
+    library: raw.library || null,
+    csrf: raw.csrf,
+    members,
+    assets,
+    changes,
+    auth: raw.auth || { configured: false, source: "", login: "" },
+  };
+}
 async function refreshState() {
   const sequence = ++refreshSequence;
-  const next = await api("state");
+  const next = normalize(await api("state"));
   if (sequence !== refreshSequence) return;
-  workspace = next;
-  const available = new Set(next.assets.map((view) => view.asset.id));
-  for (const id of selected) if (!available.has(id)) selected.delete(id);
+  state = next;
+  view = next;
+  const available = new Set(next.assets.map(keyOf));
+  for (const key of selected) if (!available.has(key)) selected.delete(key);
   cards.clear();
   clearError("page-error");
   renderWorkspace();
@@ -189,70 +295,90 @@ function closeNavigation() {
   $("toggle-nav").setAttribute("aria-expanded", "false");
 }
 function resetFilters() {
-  filters.query = filters.namespace = filters.collection = filters.tag = filters.directory = "";
+  filters.query = filters.namespace = filters.collection = filters.tag = filters.directory = filters.source = "";
   $("search").value = "";
   $("namespace-filter").value = "";
   $("directory-filter").value = "";
+  if ($("source-filter")) $("source-filter").value = "";
   renderWorkspace();
 }
+function firstUsableMember() {
+  return view?.members.find((member) => member.location && member.initialized && !member.error)
+    || view?.members.find((member) => member.location)
+    || null;
+}
 function ready() {
-  if (!workspace) {
-    toast("请等待工作空间读取完成。");
+  if (!view) {
+    toast("请等待图库读取完成。");
     return false;
   }
-  if (!workspace.location) {
+  if (!firstUsableMember()) {
     openRepository();
-    return false;
-  }
-  if (!workspace.initialized) {
-    toast("请先同步已有图库，或显式初始化新的 TOUKO 仓库。");
     return false;
   }
   return true;
 }
 function updateActions() {
-  if (!workspace) return;
-  $("sync").disabled = busy || !workspace.location;
-  $("verify").disabled = busy || !workspace.initialized;
-  $("reindex").disabled = busy || !workspace.initialized;
+  if (!view) return;
+  const member = firstUsableMember();
+  const initialized = view.members.some((entry) => entry.initialized);
+  $("sync").disabled = busy || !member;
+  $("verify").disabled = busy || !initialized;
+  $("reindex").disabled = busy || !initialized;
   $("open-import").disabled = busy;
-  $("import-submit").disabled = busy || !workspace.initialized;
+  $("import-submit").disabled = busy || !initialized;
   $("open-upload").disabled = busy;
   $("setup-action").disabled = busy;
-  $("upload-submit").disabled =
-    busy || !uploadFiles.length || !workspace.initialized;
+  $("upload-submit").disabled = busy || !uploadFiles.length || !initialized;
+  $("upload-paste").disabled = busy || clipboardBusy;
   $("commit-submit").disabled =
-    busy || !(workspace.changes.length || workspace.publication);
+    busy || !(view.changes.length || view.members.some((entry) => entry.publication));
   $("reset-staged").disabled =
-    busy || !(workspace.changes.length || workspace.publication);
+    busy || !(view.changes.length || view.members.some((entry) => entry.publication));
+  $("retry-operation").hidden = !operationRetry || busy;
   $("remove-selected").disabled = busy || !selected.size;
 }
 function renderWorkspace() {
-  const { assets, changes, location, head } = workspace;
+  const { assets, changes, members } = view;
   $("nav-total").textContent = assets.length;
   $("nav-pending").textContent = changes.length;
-  $("repo-name").textContent = !location
-    ? "尚未连接"
-    : location.backend === "github"
-      ? `${location.owner}/${location.name}`
-      : location.path.split("/").filter(Boolean).at(-1);
-  $("repo-detail").textContent = !location
-    ? "连接仓库后，图片就归档在这里。"
-    : `${location.backend === "github" ? (location.private ? "GitHub 私有仓库" : "GitHub 公开仓库") : "本地 Git 仓库"}，分支 ${location.branch}`;
-  $("repo-detail").title = location?.path || "";
-  $("repo-dot").classList.toggle("connected", !!location);
-  $("head-indicator").textContent = head
-    ? `HEAD ${head.slice(0, 8)}，${changes.length ? "有修改待发布" : "没有待发布修改"}`
-    : "尚未连接仓库";
-  $("head-indicator").title = head;
-  $("auth-status").textContent = workspace.auth.configured
+  const library = view.kind === "library";
+  const primary = members.find((entry) => entry.location) || members[0];
+  $("repo-name").textContent = library
+    ? view.library?.name || "统一图库"
+    : !primary?.location
+      ? "尚未连接"
+      : memberName(primary.id);
+  $("repo-detail").textContent = library
+    ? `${members.length} 个仓库成员 · 每个仓库独立暂存与发布`
+    : !primary?.location
+      ? "连接仓库后，图片就归档在这里。"
+      : `${primary.location.backend === "github" ? (primary.location.private ? "GitHub 私有仓库" : "GitHub 公开仓库") : "本地 Git 仓库"}，分支 ${primary.location.branch}`;
+  $("repo-detail").title = primary?.location?.path || "";
+  $("repo-dot").classList.toggle("connected", members.some((entry) => entry.location));
+  if (library) {
+    const heads = members.filter((entry) => entry.head);
+    $("head-indicator").textContent = heads.length
+      ? `${heads.length} / ${members.length} 个成员已初始化，${changes.length ? "有修改待发布" : "没有待发布修改"}`
+      : "成员尚未初始化";
+    $("head-indicator").title = members
+      .map((entry) => `${memberName(entry.id)}: ${entry.head || "未初始化"}${entry.error ? ` (${entry.error})` : ""}`)
+      .join("\n");
+  } else {
+    $("head-indicator").textContent = primary?.head
+      ? `HEAD ${primary.head.slice(0, 8)}，${changes.length ? "有修改待发布" : "没有待发布修改"}`
+      : "尚未连接仓库";
+    $("head-indicator").title = primary?.head || "";
+  }
+  $("auth-status").textContent = view.auth.configured
     ? "服务端已有 GitHub 凭据，可读取登录与仓库列表"
     : "尚未读取 GitHub 登录；可使用 gh 登录或环境变量凭据";
-  const localRead = workspace.local_read;
-  $("local-read-status").textContent = localRead?.available
-    ? `本地读图副本可用：${localRead.path}`
+  const readable = members.find((entry) => entry.local_read?.available);
+  $("local-read-status").textContent = readable
+    ? `本地读图副本可用：${readable.local_read.path}`
     : "本地读图副本尚不可用。图片是否可读取决于仓库后端；同步后可再次检查。";
-  $("local-read-status").title = localRead?.path || "";
+  $("local-read-status").title = readable?.local_read?.path || "";
+  renderMemberStatus();
   const namespaces = [
     ...new Set(assets.map(({ asset }) => asset.namespace)),
   ].sort();
@@ -277,13 +403,24 @@ function renderWorkspace() {
   );
   if (!directories.has(filters.directory)) filters.directory = "";
   $("directory-filter").value = filters.directory;
-  $("setup-banner").hidden = !!location && workspace.initialized;
-  if (!location) {
+  // The source filter only exists when one page truly holds several repositories.
+  const sources = [...new Set(assets.map((entry) => entry.workspace))];
+  if ($("source-filter")) {
+    $("source-filter-field").hidden = sources.length < 2;
+    $("source-filter").replaceChildren(
+      new Option("全部来源仓库", ""),
+      ...sources.map((id) => new Option(memberName(id), id)),
+    );
+    if (!sources.includes(filters.source)) filters.source = "";
+    $("source-filter").value = filters.source;
+  }
+  $("setup-banner").hidden = members.some((entry) => entry.location && entry.initialized);
+  if (!members.some((entry) => entry.location)) {
     $("setup-title").textContent = "还没有连接仓库";
     $("setup-description").textContent =
       "连接本机已有的 Git 仓库，或连接一个专门存图片的 GitHub 仓库。图片与元数据始终由你掌握。";
     $("setup-action").textContent = "连接仓库";
-  } else if (!workspace.initialized) {
+  } else if (members.some((entry) => entry.location && !entry.initialized && !entry.error)) {
     $("setup-title").textContent = "仓库已连接，还没有初始化";
     $("setup-description").textContent =
       "已有 TOUKO 图库请先「同步」；PicGo 等旧图库请先显式初始化，再使用「导入旧图库 / PicGo」暂存原路径图片，提交后才写入管理元数据。初始化不会自动导入或搬动图片。GitHub 空仓库须先创建 README。";
@@ -294,9 +431,25 @@ function renderWorkspace() {
   renderPending();
   updateActions();
 }
+function renderMemberStatus() {
+  const target = $("member-status");
+  if (!target) return;
+  target.replaceChildren();
+  const problems = view.members.filter((member) => member.error);
+  target.hidden = view.kind !== "library" || !problems.length;
+  if (target.hidden) return;
+  for (const member of problems) {
+    const row = element("div", "member-status-row");
+    row.append(
+      element("strong", "", memberName(member.id)),
+      element("span", "muted", member.error || "该成员当前不可读"),
+    );
+    target.append(row);
+  }
+}
 function counts(field) {
   const result = new Map();
-  for (const { asset } of workspace.assets)
+  for (const { asset } of view.assets)
     for (const name of asset[field])
       result.set(name, (result.get(name) || 0) + 1);
   return [...result].sort(([a], [b]) => a.localeCompare(b, "zh-CN"));
@@ -358,11 +511,12 @@ function assetPath(asset) {
   return `objects/${asset.namespace}/sha256/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}.${asset.object.ext}`;
 }
 function visibleAssets() {
-  if (!workspace) return [];
+  if (!view) return [];
   const query = filters.query.trim().toLocaleLowerCase();
-  return workspace.assets
+  return view.assets
     .filter(
-      ({ asset }) =>
+      ({ asset, workspace }) =>
+        (!filters.source || workspace === filters.source) &&
         (!filters.namespace || asset.namespace === filters.namespace) &&
         (!filters.directory ||
           (filters.directory === "."
@@ -376,9 +530,12 @@ function visibleAssets() {
             asset.title,
             asset.original_name,
             assetPath(asset),
+            // Content hashes are searched explicitly, not only through the
+            // canonical path that happens to contain them.
+            asset.object.hash,
             ...asset.tags,
             ...asset.collections,
-          ].some((text) => text.toLocaleLowerCase().includes(query))),
+          ].some((text) => (text || "").toLocaleLowerCase().includes(query))),
     )
     .sort((a, b) => {
       let order;
@@ -389,24 +546,30 @@ function visibleAssets() {
       else if (filters.sort === "updated")
         order = b.asset.updated_at.localeCompare(a.asset.updated_at);
       else order = b.asset.created_at.localeCompare(a.asset.created_at);
-      return order || a.asset.id.localeCompare(b.asset.id);
+      return order || keyOf(a).localeCompare(keyOf(b));
     });
 }
-function imageURL(asset) {
-  return apiURL(`assets/${asset.id}/image?content=${asset.object.hash}&head=${workspace.head}`);
+function imageURL(entry) {
+  const member = memberForAsset(entry);
+  const head = member?.head || "";
+  return apiURL(
+    `assets/${entry.asset.id}/image?content=${entry.asset.object.hash}&head=${head}`,
+    `/w/${entry.workspace}`,
+  );
 }
-function card(view) {
-  const { asset } = view;
+function card(entry) {
+  const { asset } = entry;
+  const key = keyOf(entry);
   const node = element("article", "asset-card");
-  node.dataset.id = asset.id;
+  node.dataset.key = key;
   const media = element("div", "card-image-wrap");
-  const open = button("", "card-open", () => openPreview(asset.id));
+  const open = button("", "card-open", () => openPreview(key));
   open.setAttribute("aria-label", `查看 ${asset.title || asset.original_name}`);
   const img = element("img", "card-image");
   img.alt = asset.title || asset.original_name;
   img.loading = "lazy";
   img.decoding = "async";
-  img.src = imageURL(asset);
+  img.src = imageURL(entry);
   img.addEventListener(
     "error",
     () => {
@@ -428,27 +591,28 @@ function card(view) {
     `选择 ${asset.title || asset.original_name}`,
   );
   checkbox.addEventListener("change", () => {
-    if (checkbox.checked) selected.add(asset.id);
-    else selected.delete(asset.id);
+    if (checkbox.checked) selected.add(key);
+    else selected.delete(key);
     renderGallery();
   });
   select.append(checkbox);
-  // Only the selection control floats over the picture; the state slip is
-  // pinned to the mount itself, so it reads as a kraft label on the mat rather
-  // than as one more caption detail.
   media.append(open, select);
   const content = element("div", "card-content");
   const title = button(asset.title || asset.original_name, "card-title", () =>
-    openPreview(asset.id),
+    openPreview(key),
   );
   title.title = asset.title;
   const heading = element("h3", "card-heading");
   heading.append(title);
-  // Caption row: where the picture is filed, and whether it is staged. Tags stay
-  // in the rail, which already lists every one with a count. The namespace is
-  // only shown when the workspace holds more than one.
   const badges = element("div", "card-tags");
   badges.append(element("span", "namespace-chip", asset.namespace));
+  // A card says which repository it belongs to whenever the page can hold more
+  // than one, so identical titles from two members never look like one picture.
+  if (view.members.length > 1) {
+    const source = element("span", "card-tag source");
+    source.append(icon("branch"), document.createTextNode(memberName(entry.workspace)));
+    badges.append(source);
+  }
   asset.collections
     .slice(0, 2)
     .forEach((name) =>
@@ -468,11 +632,11 @@ function card(view) {
   // is already kraft paper, and the slip is what says in words which state it
   // is in. Colour alone never carries this.
   let stateSlip;
-  if (view.state !== "committed") {
+  if (entry.state !== "committed") {
     stateSlip = element(
       "span",
-      `state-chip ${view.state}`,
-      view.state === "added" ? "待发布" : "有修改",
+      `state-chip ${entry.state}`,
+      entry.state === "added" ? "待发布" : "有修改",
     );
   }
   const footer = element("div", "card-footer");
@@ -498,6 +662,11 @@ function renderTrail() {
   trail.replaceChildren();
   const parts = [];
   if (filters.query) parts.push({ label: `搜索“${filters.query}”`, clear: () => { filters.query = ""; $("search").value = ""; } });
+  if (filters.source)
+    parts.push({
+      label: `来源 ${memberName(filters.source)}`,
+      clear: () => { filters.source = ""; if ($("source-filter")) $("source-filter").value = ""; },
+    });
   if (filters.namespace)
     parts.push({
       label: `命名空间 ${filters.namespace}`,
@@ -528,25 +697,26 @@ function renderTrail() {
   });
 }
 function renderGallery() {
-  if (!workspace) return;
+  if (!view) return;
   const views = visibleAssets();
   const active = !!(
     filters.query ||
     filters.namespace ||
     filters.collection ||
     filters.tag ||
-    filters.directory
+    filters.directory ||
+    filters.source
   );
   $("clear-filters").hidden = !active;
   $("all-assets").classList.toggle("active", !active);
   $("result-count").textContent =
-    `${views.length} / ${workspace.assets.length} 张`;
+    `${views.length} / ${view.assets.length} 张`;
   renderTrail();
   $("gallery").setAttribute("aria-busy", "false");
   $("gallery").classList.toggle("has-selection", selected.size > 0);
   $("selection-bar").hidden = selected.size === 0;
   $("selected-count").textContent = `已选 ${selected.size} 张`;
-  const checked = views.filter(({ asset }) => selected.has(asset.id)).length;
+  const checked = views.filter((entry) => selected.has(keyOf(entry))).length;
   $("select-visible").checked = !!views.length && checked === views.length;
   $("select-visible").indeterminate = checked > 0 && checked < views.length;
   if (!views.length) {
@@ -564,52 +734,53 @@ function renderGallery() {
     );
     empty.append(
       button(
-        active ? "清除筛选" : workspace.location ? "上传图片" : "连接仓库",
+        active ? "清除筛选" : firstUsableMember() ? "上传图片" : "连接仓库",
         "button primary",
         active ? resetFilters : () => openUpload(),
       ),
     );
     $("gallery").replaceChildren(empty);
   } else {
-    const nodes = views.map((view) => {
-      let node = cards.get(view.asset.id);
+    const nodes = views.map((entry) => {
+      const key = keyOf(entry);
+      let node = cards.get(key);
       if (!node) {
-        node = card(view);
-        cards.set(view.asset.id, node);
+        node = card(entry);
+        cards.set(key, node);
       }
-      node.classList.toggle("is-selected", selected.has(view.asset.id));
-      node.classList.toggle("is-staged", view.state !== "committed");
-      node.querySelector("input[type=checkbox]").checked = selected.has(
-        view.asset.id,
-      );
+      node.classList.toggle("is-selected", selected.has(key));
+      node.classList.toggle("is-staged", entry.state !== "committed");
+      node.querySelector("input[type=checkbox]").checked = selected.has(key);
       return node;
     });
     $("gallery").replaceChildren(...nodes);
   }
   $("gallery-footer-note").textContent = active
     ? `筛选出 ${views.length} 张图片。`
-    : workspace.changes.length
-      ? `有 ${workspace.changes.length} 项修改只在待发布区，提交后才会写入仓库。`
+    : view.changes.length
+      ? `有 ${view.changes.length} 项修改只在待发布区，提交后才会写入仓库。`
       : "没有待发布的修改。";
   updateActions();
 }
-function openPreview(id) {
-  const view = workspace.assets.find(({ asset }) => asset.id === id);
-  if (!view) return;
-  currentAsset = id;
-  const { asset } = view;
+function openPreview(key) {
+  const entry = viewForKey(key);
+  if (!entry) return;
+  currentKey = key;
+  const { asset } = entry;
+  const member = memberForAsset(entry);
   $("preview-image-error").hidden = true;
   $("preview-image").hidden = false;
-  $("preview-image").src = imageURL(asset);
+  $("preview-image").src = imageURL(entry);
   $("preview-image").alt = asset.title || asset.original_name;
   $("asset-path").textContent = assetPath(asset);
   $("edit-title").value = asset.title;
   $("edit-tags").value = asset.tags.join(", ");
   $("edit-collections").value = asset.collections.join(", ");
-  $("preview-state").className = `asset-state ${view.state}`;
-  $("preview-state").textContent = stateNames[view.state];
+  $("preview-state").className = `asset-state ${entry.state}`;
+  $("preview-state").textContent = stateNames[entry.state];
   $("asset-metadata").replaceChildren();
   for (const [label, value] of [
+    ["来源仓库", view.members.length > 1 ? memberName(entry.workspace) : null],
     ["文件名", asset.original_name],
     ["命名空间", asset.namespace],
     ["格式", asset.object.mime],
@@ -620,35 +791,48 @@ function openPreview(id) {
     ["添加时间", new Date(asset.created_at).toLocaleString("zh-CN")],
     ["修改时间", new Date(asset.updated_at).toLocaleString("zh-CN")],
   ]) {
+    if (value === null) continue;
     $("asset-metadata").append(
       element("dt", "", label),
       element("dd", "", value),
     );
   }
   const publicGitHub =
-    workspace.location?.backend === "github" && !workspace.location.private;
+    member?.location?.backend === "github" && !member.location.private;
   $("delivery-controls").hidden = !publicGitHub;
   $("delivery-unavailable").hidden = publicGitHub;
   $("delivery-url").hidden = true;
   $("delivery-url").value = "";
   $("delivery-note").textContent =
-    view.state === "added"
+    entry.state === "added"
       ? "还没发布：这个地址要等提交之后才能访问。"
       : "链接跟随分支；jsDelivr 的缓存传播可能有延迟。";
   clearError("edit-error");
   showDialog("preview-dialog");
 }
+function pendingGroups() {
+  const groups = new Map();
+  for (const entry of view.changes) {
+    if (!groups.has(entry.workspace)) groups.set(entry.workspace, []);
+    groups.get(entry.workspace).push(entry.change);
+  }
+  return groups;
+}
 function renderPending() {
-  $("pending-count").textContent = workspace.changes.length;
-  $("pending-base").textContent = workspace.base_head
-    ? `基于 HEAD ${workspace.base_head}`
+  const pending = view.changes.length;
+  $("pending-count").textContent = pending;
+  const bases = view.members.filter((member) => member.base_head);
+  $("pending-base").textContent = bases.length
+    ? `基于 ${bases.map((member) => `${memberName(member.id)} HEAD ${member.base_head.slice(0, 8)}`).join("、")}`
     : "还没有提交过";
-  $("publication-warning").hidden = !workspace.publication;
-  if (workspace.publication)
-    $("publication-warning").textContent =
-      `上一次发布还没确认结果：${workspace.publication.candidate_head}\n请先同步确认远端状态。不要删除本地数据库，也不要重复上传。`;
+  const publications = view.members.filter((member) => member.publication);
+  $("publication-warning").hidden = !publications.length;
+  if (publications.length)
+    $("publication-warning").textContent = publications
+      .map((member) => `${memberName(member.id)}：发布结果未确认（${member.publication.candidate_head}），请先同步。`)
+      .join("\n");
   $("pending-list").replaceChildren();
-  for (const change of workspace.changes) {
+  for (const { workspace, change } of view.changes) {
     const row = element("div", "pending-row");
     const detail = element("div");
     detail.append(
@@ -659,7 +843,7 @@ function renderPending() {
           change.asset?.original_name ||
           `移除图片 ${change.asset_id.slice(0, 8)}`,
       ),
-      element("small", "", change.asset_id),
+      element("small", "", `${memberName(workspace)} · ${change.asset_id}`),
     );
     row.append(
       element("span", `change-label ${change.kind}`, changeNames[change.kind]),
@@ -667,19 +851,45 @@ function renderPending() {
     );
     $("pending-list").append(row);
   }
-  if (!workspace.changes.length)
+  if (!view.changes.length)
     $("pending-list").append(
       element(
         "p",
         "pending-empty",
-        workspace.publication
-          ? "发布日志还没恢复，请先同步。"
-          : "没有待发布的修改。",
+        publications.length ? "发布日志还没恢复，请先同步。" : "没有待发布的修改。",
       ),
     );
+  renderOperationResults();
+}
+function renderOperationResults() {
+  const panel = $("operation-panel");
+  if (!panel) return;
+  const target = $("operation-results");
+  target.replaceChildren();
+  if (!operationRetry) {
+    panel.hidden = true;
+    $("pending-member-results")?.replaceChildren();
+    return;
+  }
+  panel.hidden = false;
+  for (const row of operationRetry.results) {
+    const item = element("div", `member-result ${row.ok ? "ok" : "error"}`);
+    item.append(
+      element("strong", "", memberName(row.workspace)),
+      element(
+        "span",
+        "muted",
+        row.ok ? row.message || "完成" : row.error || "失败",
+      ),
+    );
+    target.append(item);
+    $("pending-member-results")?.append(item.cloneNode(true));
+  }
+  $("retry-operation").hidden = busy || !operationRetry.failed.length;
+  $("retry-operation").textContent = `重试失败成员（${operationRetry.failed.length}）`;
 }
 function openPending() {
-  if (!workspace) return;
+  if (!view) return;
   renderPending();
   clearError("pending-error");
   closeNavigation();
@@ -692,21 +902,41 @@ function confirm(title, description, action) {
   confirmOperation = action;
   showDialog("confirm-dialog", "confirm-action");
 }
-function removeAssets(ids) {
-  if (!ids.length) return;
+function removeAssets(keys) {
+  if (!keys.length) return;
+  const groups = new Map();
+  for (const key of keys) {
+    const { workspace, assetID } = splitKey(key);
+    if (!groups.has(workspace)) groups.set(workspace, []);
+    groups.get(workspace).push(assetID);
+  }
   confirm(
     "移除所选图片？",
-    `将 ${ids.length} 张图片移入待发布的移除列表；提交后它们才会从仓库的最新版本里消失。\n本机的原始文件不会被删除，Git 历史也不会被清除。`,
+    `将从 ${groups.size} 个仓库移除 ${keys.length} 张图片到待发布的移除列表；提交后它们才会从仓库的最新版本里消失。\n本机的原始文件不会被删除，Git 历史也不会被清除。`,
     async () => {
-      const result = await mutate(
-        () => api("remove", { selectors: ids }),
-        "confirm-error",
-        "已加入待发布的移除列表",
-      );
-      if (result) {
-        $("confirm-dialog").close();
-        if (ids.includes(currentAsset)) $("preview-dialog").close();
+      const results = [];
+      const failed = [];
+      for (const [workspace, selectors] of groups) {
+        const member = memberByID(workspace);
+        try {
+          if (!member) throw new Error("成员已不在当前图库中");
+          await apiMember(member, "remove", { selectors });
+          results.push({ workspace, ok: true, message: `移除 ${selectors.length} 张` });
+        } catch (error) {
+          failed.push(workspace);
+          results.push({ workspace, ok: false, error: error.message });
+        }
       }
+      operationRetry = { results, failed, action: "remove", selection: groups };
+      $("confirm-dialog").close();
+      if (keys.includes(currentKey)) $("preview-dialog").close();
+      try {
+        await refreshState();
+      } catch (error) {
+        showError("page-error", error);
+      }
+      if (failed.length) toast(`${failed.length} 个仓库移除失败，请查看结果`);
+      else toast("已加入待发布的移除列表");
     },
   );
 }
@@ -723,14 +953,17 @@ function setUploadFiles(files, append = false) {
     ...(append ? uploadFiles.map(({ file }) => file) : []),
     ...files,
   ];
+  const limit = view?.kind === "library" ? 20_000_000 : 100_000_000;
   if (
     combined.length > 100 ||
-    combined.some((file) => file.size > 100_000_000) ||
+    combined.some((file) => file.size > limit) ||
     combined.reduce((total, file) => total + file.size, 0) > 500_000_000
   ) {
     showError(
       "upload-error",
-      "一次最多上传 100 张、合计 500 MB，单张不超过 100 MB。请去掉一些文件再试。",
+      view?.kind === "library"
+        ? "统一图库一次最多上传 100 张、合计 500 MB，单张不超过 20 MB（jsDelivr 单文件限制）。"
+        : "一次最多上传 100 张、合计 500 MB，单张不超过 100 MB。请去掉一些文件再试。",
     );
     return;
   }
@@ -773,20 +1006,28 @@ function renderUploadFiles() {
   $("upload-summary").textContent = uploadFiles.length
     ? `${uploadFiles.length} 张图片，共 ${bytes(uploadFiles.reduce((total, { file }) => total + file.size, 0))}`
     : "尚未选择图片";
+  if ($("upload-limit"))
+    $("upload-limit").textContent = view?.kind === "library"
+      ? "统一图库：单张不超过 20 MB，一次合计不超过 500 MB。图片会按容量自动分配到成员仓库。"
+      : "单张不超过 100 MB，一次合计不超过 500 MB。";
   updateActions();
 }
 function openUpload(files) {
   if (busy || !ready()) return;
   clearError("upload-error");
   $("upload-progress-area").hidden = true;
+  if ($("upload-results")) {
+    $("upload-results").hidden = true;
+    $("upload-results").replaceChildren();
+  }
   closeNavigation();
-  showDialog("upload-dialog", "upload-namespace");
+  // A non-text control is focused so Ctrl+V pastes an image instead of text.
+  showDialog("upload-dialog", "upload-paste");
   if (files)
     setUploadFiles(files, $("upload-dialog").open && uploadFiles.length > 0);
 }
-function upload() {
+function uploadFields() {
   const data = new FormData();
-  uploadFiles.forEach(({ file }) => data.append("files", file, file.name));
   data.append("namespace", $("upload-namespace").value.trim());
   data.append("directory", $("upload-directory").value.trim());
   if ($("upload-title").value.trim())
@@ -796,38 +1037,161 @@ function upload() {
     "collections",
     JSON.stringify(list($("upload-collections").value)),
   );
+  return data;
+}
+function uploadRequest(data, files, sequence) {
   $("upload-progress-area").hidden = false;
   $("upload-progress").value = 0;
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
-    request.open("POST", apiURL("upload"));
-    request.setRequestHeader("X-Touko-CSRF", workspace.csrf);
+    request.open("POST", apiURL("upload", view.kind === "library" ? viewPrefix : `/w/${firstUsableMember().id}`));
+    request.setRequestHeader("X-Touko-CSRF", view.csrf);
     request.upload.onprogress = ({ lengthComputable, loaded, total }) => {
-      if (lengthComputable) {
-        $("upload-progress").value = Math.round((loaded / total) * 100);
-        $("upload-progress-text").textContent =
-          loaded === total
-            ? "正在校验并保存到本机…"
-            : `上传至本机 ${Math.round((loaded / total) * 100)}%`;
-      }
+      if (sequence !== uploadSequence || !lengthComputable) return;
+      $("upload-progress").value = Math.round((loaded / total) * 100);
+      $("upload-progress-text").textContent =
+        loaded === total
+          ? "正在校验并保存到本机…"
+          : `上传至本机 ${Math.round((loaded / total) * 100)}%`;
+      $("upload-progress-text").textContent += files.length ? "" : "";
     };
     request.onload = () => {
-      let data;
+      let body;
       try {
-        data = JSON.parse(request.responseText);
+        body = JSON.parse(request.responseText);
       } catch {
         reject(new Error("本地服务响应无效，请检查终端后刷新确认。"));
         return;
       }
-      if (request.status >= 200 && request.status < 300) resolve(data);
-      else reject(responseError(data, request.status));
+      if ((request.status >= 200 && request.status < 300) || request.status === 207) resolve(body);
+      else reject(responseError(body, request.status));
     };
     request.onerror = () =>
-      reject(new Error("连接中断，请刷新确认暂存状态后再继续。"));
+      reject(new Error("连接中断，请刷新确认暂存状态后再继续。请先刷新核对暂存，不要自动重发整批。"));
     request.onabort = () =>
       reject(new Error("上传已取消，请刷新确认当前状态。"));
     request.send(data);
   });
+}
+function upload() {
+  const files = uploadFiles.map(({ file }) => file);
+  const data = uploadFields();
+  files.forEach((file) => data.append("files", file, file.name));
+  const sequence = ++uploadSequence;
+  return uploadRequest(data, files, sequence).then((body) => {
+    if (sequence !== uploadSequence) return body;
+    if (view.kind !== "library") return body;
+    // A library answers per input index: keep only the inputs that failed, so a
+    // retry never re-sends images that are already staged.
+    const failedIndexes = new Set((body.failed || []).map((item) => item.index));
+    const failed = body.failed || [];
+    const results = body.results || [];
+    if ($("upload-results")) {
+      $("upload-results").hidden = !failed.length;
+      $("upload-results").replaceChildren();
+      for (const row of results) {
+        const item = element("div", "member-result ok");
+        item.append(
+          element("strong", "", `${files[row.index]?.name || row.index}`),
+          element("span", "muted", `→ ${memberName(row.workspace)}`),
+        );
+        $("upload-results").append(item);
+      }
+      for (const row of failed) {
+        const item = element("div", "member-result error");
+        item.append(
+          element("strong", "", `${files[row.index]?.name || row.index}`),
+          element("span", "muted", row.message || row.code),
+        );
+        $("upload-results").append(item);
+      }
+    }
+    if (failedIndexes.size) {
+      const kept = uploadFiles.filter((_, index) => failedIndexes.has(index));
+      uploadFiles.forEach(({ url }) => URL.revokeObjectURL(url));
+      uploadFiles = kept.map(({ file }) => ({ file, url: URL.createObjectURL(file) }));
+      renderUploadFiles();
+      $("upload-dialog").open;
+      return body;
+    }
+    return body;
+  });
+}
+function pasteErrorIsPermanent(error) {
+  return /no image|no local file|not supported|denied|permission/i.test(
+    error?.message || "",
+  );
+}
+function desktopBridge() {
+  return window.DesktopClipboard || null;
+}
+function supportedClipboardType(type) {
+  return ["image/png", "image/jpeg", "image/gif"].includes(type);
+}
+// pasteUpload appends successfully read clipboard images to the existing queue
+// and leaves every previously queued file untouched. The capability URLs are
+// released in `finally`, so a failed fetch cannot leave snapshots behind.
+async function pasteUpload() {
+  if (busy || clipboardBusy || !ready()) return;
+  const bridge = desktopBridge();
+  clearError("upload-error");
+  clipboardBusy = true;
+  updateActions();
+  const sequence = refreshSequence;
+  try {
+    if (bridge) {
+      const batch = await bridge.Read();
+      const files = [];
+      for (const entry of batch.files || []) {
+        const response = await fetch(entry.url);
+        if (!response.ok)
+          throw new Error(`剪贴板图片读取失败（HTTP ${response.status}）`);
+        const blob = await response.blob();
+        files.push(new File([blob], entry.name, { type: entry.type || blob.type }));
+      }
+      if (sequence !== refreshSequence) return;
+      if (!files.length) throw new Error("剪贴板里没有可用的图片或文件。");
+      setUploadFiles(files, true);
+      return;
+    }
+    if (!navigator.clipboard?.read)
+      throw new Error(
+        "此浏览器不支持读取剪贴板图片。请使用「选择文件」、拖放，或在桌面版中粘贴。",
+      );
+    const items = await navigator.clipboard.read();
+    const files = [];
+    for (const item of items) {
+      const type = item.types.find(supportedClipboardType);
+      if (!type) continue;
+      const blob = await item.getType(type);
+      const extension = type === "image/png" ? "png" : type === "image/jpeg" ? "jpg" : "gif";
+      files.push(new File([blob], `clipboard.${extension}`, { type }));
+    }
+    if (!files.length)
+      throw new Error(
+        "剪贴板里没有 PNG、JPEG 或 GIF 图片。浏览器无法读取本地文件路径，请改用「选择文件」或拖放。",
+      );
+    if (sequence !== refreshSequence) return;
+    setUploadFiles(files, true);
+  } catch (error) {
+    showError("upload-error", error);
+  } finally {
+    clipboardBusy = false;
+    updateActions();
+    const bridgeAfter = desktopBridge();
+    if (bridgeAfter)
+      try {
+        await bridgeAfter.Release("");
+      } catch {
+        // Releasing a batch that was already gone is not a user-facing failure.
+      }
+  }
+}
+async function importFiles(files) {
+  for (const file of files) {
+    if (!supportedClipboardType(file.type)) continue;
+    setUploadFiles([file], true);
+  }
 }
 function invalidateGitHubRequests() {
   githubRequestSequence++;
@@ -841,14 +1205,83 @@ function validGitHubSelection() {
     branches.some((branch) => branch.name === $("repo-branches").value);
 }
 function updateRepositoryControls() {
+  if (!$("repo-type")) return;
   const github = $("repo-type").value === "github";
+  const mode = $("repo-mode")?.value || "single";
+  const libraryMode = mode === "library" || mode === "add";
   $("repo-path").disabled = busy || github;
   $("repo-branch").disabled = busy || github;
   $("repo-choices").disabled = busy || !github || repositoriesLoading || !repositories.length;
   $("repo-branches").disabled = busy || !github || repositoriesLoading || branchesLoading || !branches.length;
   $("check-auth").disabled = busy || repositoriesLoading;
-  $("repo-connect").disabled = busy || (github && !validGitHubSelection());
+  if ($("library-fields")) $("library-fields").hidden = !libraryMode;
+  if ($("single-repo-fields")) $("single-repo-fields").hidden = libraryMode;
+  renderLibraryChoices();
+  $("repo-connect").disabled =
+    busy ||
+    (github && (libraryMode
+      ? ![...document.querySelectorAll("#library-repos input:checked")].length
+      : !validGitHubSelection()));
   $("github-fields").setAttribute("aria-busy", String(repositoriesLoading || branchesLoading));
+}
+// renderLibraryChoices keeps one row per accessible repository with its own
+// branch select. Rows are rebuilt only when the repository list changes, so a
+// branch choice made by the user survives an unrelated re-render.
+function renderLibraryChoices() {
+  const host = $("library-repos");
+  if (!host || !repositories.length) {
+    if (host) host.replaceChildren(element("p", "field-help", repositoriesLoading ? "正在读取仓库…" : "读取仓库后可以勾选成员。"));
+    return;
+  }
+  if (host.dataset.signature === `${repositories.length}:${repositories[0]?.full_name}`) return;
+  host.dataset.signature = `${repositories.length}:${repositories[0]?.full_name}`;
+  host.replaceChildren();
+  repositories.forEach((repo, index) => {
+    const row = element("div", "library-repo-row");
+    const checkbox = element("input");
+    checkbox.type = "checkbox";
+    checkbox.id = `library-repo-${index}`;
+    checkbox.value = repo.full_name;
+    const label = element("label", "", `${repo.full_name}${repo.private ? " · 私有" : ""}${repo.can_push ? "" : " · 只读"}`);
+    label.setAttribute("for", checkbox.id);
+    const select = element("select");
+    select.dataset.repository = repo.full_name;
+    select.disabled = true;
+    select.append(new Option("默认分支", ""));
+    select.addEventListener("focus", () => loadLibraryBranches(repo.full_name, select));
+    checkbox.addEventListener("change", () => {
+      select.disabled = !checkbox.checked || !!select.dataset.loaded;
+      if (checkbox.checked) void loadLibraryBranches(repo.full_name, select);
+      updateRepositoryControls();
+    });
+    row.append(checkbox, label, select);
+    host.append(row);
+  });
+}
+async function loadLibraryBranches(repository, select) {
+  if (select.dataset.loading === "true") return;
+  select.dataset.loading = "true";
+  try {
+    const value = await api(`branches?repository=${encodeURIComponent(repository)}`);
+    const repo = repositories.find((item) => item.full_name === repository);
+    select.replaceChildren(
+      ...value.branches.map((branch) => new Option(
+        `${branch.name}${branch.name === repo?.default_branch ? " · 默认" : ""}`,
+        branch.name,
+      )),
+    );
+    select.value = repo?.default_branch && value.branches.some((branch) => branch.name === repo.default_branch)
+      ? repo.default_branch
+      : value.branches[0]?.name || "";
+    select.dataset.loaded = "true";
+    select.disabled = !select.closest(".library-repo-row").querySelector("input").checked;
+  } catch (error) {
+    select.replaceChildren(new Option("分支读取失败", ""));
+    select.dataset.loaded = "error";
+    showError("repo-error", error);
+  } finally {
+    select.dataset.loading = "false";
+  }
 }
 function resetBranchChoices(message) {
   branchRequestSequence++;
@@ -887,10 +1320,7 @@ async function loadRepositoryBranches(preferredBranch = "") {
       `${branch.name}${branch.name === repo.default_branch ? " · 默认" : ""}${branch.protected ? " · 受保护" : ""}`,
       branch.name,
     )));
-    const location = workspace?.location;
-    const connectedBranch = location?.backend === "github" &&
-      `${location.owner}/${location.name}` === repository ? location.branch : "";
-    $("repo-branches").value = [preferredBranch, connectedBranch, repo.default_branch, branches[0].name]
+    $("repo-branches").value = [preferredBranch, repo.default_branch, branches[0].name]
       .find((name) => branches.some((branch) => branch.name === name));
     $("repo-branch-help").textContent = `已读取全部 ${branches.length} 个分支。受保护分支仍可选择，发布须遵守仓库规则。${repo.can_push ? "" : " 当前仓库只读，连接后不能发布。"}`;
   } catch (error) {
@@ -919,6 +1349,8 @@ async function loadGitHubRepositories() {
   $("repo-choices").replaceChildren(new Option("正在读取全部仓库…", ""));
   $("repo-choice-help").textContent = "正在检查 GitHub 登录并读取全部可访问仓库…";
   $("auth-status").textContent = "正在读取 GitHub 登录…";
+  $("library-repos").replaceChildren(element("p", "field-help", "正在读取仓库…"));
+  $("library-repos").dataset.signature = "";
   resetBranchChoices("请等待仓库列表加载");
   clearError("repo-error");
   updateRepositoryControls();
@@ -949,7 +1381,9 @@ async function loadGitHubRepositories() {
     $("repo-choice-help").textContent = repositories.length
       ? `已读取全部 ${repositories.length} 个仓库，包含公开 / 私有与写入权限。只读仓库可以浏览，但不能发布。`
       : "当前账号没有可访问仓库。请在 GitHub 创建仓库或授予仓库 / 组织访问权限，然后重新读取。";
-    const location = workspace?.location;
+    $("library-repos").dataset.signature = "";
+    updateRepositoryControls();
+    const location = firstUsableMember()?.location;
     const connectedRepository = location?.backend === "github" ? `${location.owner}/${location.name}` : "";
     const selectedRepository = [preferredRepository, connectedRepository]
       .find((name) => repositories.some((repo) => repo.full_name === name));
@@ -981,8 +1415,11 @@ async function openRepository() {
   invalidateGitHubRequests();
   repositories = [];
   $("repo-choices").replaceChildren(new Option("尚未读取仓库", ""));
+  $("library-repos").replaceChildren(element("p", "field-help", "读取仓库后可以勾选成员。"));
+  $("library-repos").dataset.signature = "";
   resetBranchChoices("请先选择仓库");
-  const location = workspace?.location;
+  if ($("repo-mode")) $("repo-mode").value = view?.kind === "library" ? "add" : "single";
+  const location = firstUsableMember()?.location;
   if (location) {
     $("repo-type").value = location.backend === "github" ? "github" : "local-use";
     if (location.backend !== "github") {
@@ -1000,6 +1437,7 @@ async function openRepository() {
     const value = await api("workspaces");
     if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
     $("workspace-links").replaceChildren();
+    $("library-nav").replaceChildren();
     for (const item of value.workspaces) {
       const location = item.location;
       const name = location
@@ -1024,20 +1462,52 @@ async function openRepository() {
     if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
     $("workspace-links").replaceChildren(element("p", "field-help", `工作区列表读取失败，可重新打开重试；下方仍可连接仓库。\n${error.message}`));
   }
+  try {
+    const value = await api("libraries");
+    if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
+    $("library-nav").replaceChildren();
+    for (const library of value.libraries) {
+      const link = element("a", "workspace-link", library.name);
+      link.href = `/l/${library.id}/`;
+      if (view?.kind === "library" && view.library?.id === library.id) {
+        link.setAttribute("aria-current", "page");
+        link.append(element("span", "muted", "当前图库"));
+      }
+      $("library-nav").append(link);
+    }
+    if (!value.libraries.length)
+      $("library-nav").append(element("p", "sidebar-hint", "连接多个仓库后，会在这里合并成一个图库。"));
+  } catch (error) {
+    if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
+    $("library-nav").replaceChildren(element("p", "sidebar-hint", `图库列表读取失败：${error.message}`));
+  }
 }
 function updateRepositoryFields() {
   const type = $("repo-type").value;
   const github = type === "github";
+  const mode = $("repo-mode")?.value || "single";
+  const libraryMode = github && (mode === "library" || mode === "add");
   $("local-fields").hidden = github;
   $("github-fields").hidden = !github;
+  $("library-fields").hidden = !libraryMode;
+  $("single-repo-fields").hidden = libraryMode;
   $("repo-path").required = !github;
-  $("repo-choices").required = github;
-  $("repo-branches").required = github;
+  $("repo-choices").required = github && !libraryMode;
+  $("repo-branches").required = github && !libraryMode;
+  $("library-name").required = github && mode === "library";
+  if (mode === "add" && view?.kind === "library")
+    $("library-name").value = view.library?.name || "";
   $("local-path-help").textContent =
     type === "local-create"
       ? "填写一个尚不存在或为空的目录，将创建 bare Git 仓库。"
       : "填写已有 Git 仓库的绝对路径，不会覆盖原内容。";
   updateRepositoryControls();
+}
+function librarySelection() {
+  return [...document.querySelectorAll("#library-repos input:checked")].map((checkbox) => {
+    const select = checkbox.closest(".library-repo-row").querySelector("select");
+    return { repository: checkbox.value, branch: select.value };
+  });
 }
 function result(title, fields, explanation) {
   $("result-heading").textContent = title;
@@ -1051,49 +1521,145 @@ function result(title, fields, explanation) {
   showDialog("result-dialog");
 }
 function openImport() {
-  if (busy || !workspace) return;
-  if (!workspace.location) {
+  if (busy || !view) return;
+  if (!firstUsableMember()) {
     void openRepository();
     return;
   }
-  $("import-initialization").hidden = workspace.initialized;
+  const initialized = view.members.filter((member) => member.location && member.initialized);
+  $("import-initialization").hidden = initialized.length > 0;
   $("import-result").hidden = true;
   clearError("import-error");
+  // Repository-level import always names its member: scanning never spreads one
+  // repository's files across the library automatically.
+  $("import-member-field").hidden = initialized.length < 2;
+  $("import-member").replaceChildren(
+    ...initialized.map((member) => new Option(memberName(member.id), member.id)),
+  );
   closeNavigation();
   showDialog("import-dialog", "import-directory");
+}
+function selectedImportMember() {
+  const id = $("import-member").value;
+  return memberByID(id) || view.members.find((member) => member.initialized) || null;
+}
+// deliveryText resolves the delivery URL once and returns the exact text plus
+// whether it is committed, so every copy path shares the same escaping rules.
+async function deliveryText(markdown) {
+  const entry = viewForKey(currentKey);
+  if (!entry) throw new Error("图片已不在当前图库，请刷新后重试。");
+  const member = memberForAsset(entry);
+  if (!member) throw new Error("找不到图片所属的仓库成员。");
+  const provider = $("url-provider").value;
+  const value = await apiMember(member, `assets/${entry.asset.id}/url?provider=${provider}`);
+  const alt = (entry.asset.title || entry.asset.original_name)
+    .replace(/[\r\n\u2028\u2029]+/g, " ")
+    .replace(/[\\[\]`*_<>]/g, "\\$&");
+  const target = value.url.replace(/</g, "%3C").replace(/>/g, "%3E").replace(/[\r\n]/g, "");
+  return {
+    text: markdown ? `![${alt}](<${target}>)` : value.url,
+    committed: value.committed,
+  };
 }
 async function copyDelivery(markdown) {
   clearError("edit-error");
   try {
-    const value = await api(`assets/${currentAsset}/url?provider=${$("url-provider").value}`);
-    const asset = workspace.assets.find(({ asset }) => asset.id === currentAsset)?.asset;
-    if (!asset) throw new Error("图片已不在当前工作区，请刷新后重试。");
-    const alt = (asset.title || asset.original_name)
-      .replace(/[\r\n\u2028\u2029]+/g, " ")
-      .replace(/[\\[\]`*_<>]/g, "\\$&");
-    const target = value.url.replace(/</g, "%3C").replace(/>/g, "%3E").replace(/[\r\n]/g, "");
-    const text = markdown ? `![${alt}](<${target}>)` : value.url;
+    const bridge = desktopBridge();
+    let delivered = null;
+    if (bridge) {
+      // The desktop has no user-gesture clipboard requirement, so the request
+      // completes first and only a real clipboard error is reported.
+      delivered = await deliveryText(markdown);
+      await bridge.WriteText(delivered.text);
+    } else if (window.ClipboardItem && navigator.clipboard?.write) {
+      // The ClipboardItem is created synchronously with a promise payload, so
+      // the browser still sees a user gesture while the URL request runs.
+      const pending = deliveryText(markdown).then((value) => {
+        delivered = value;
+        return new Blob([value.text], { type: "text/plain" });
+      });
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": pending })]);
+      delivered = await pending.then(() => delivered);
+    } else {
+      delivered = await deliveryText(markdown);
+      await navigator.clipboard.writeText(delivered.text);
+    }
     $("delivery-url").hidden = false;
-    $("delivery-url").value = text;
+    $("delivery-url").value = delivered.text;
     $("delivery-url").setAttribute("aria-label", markdown ? "图片 Markdown" : "图片公开链接");
-    $("delivery-note").textContent = value.committed
+    $("delivery-note").textContent = delivered.committed
       ? "图片已提交。链接跟随分支，CDN 传播可能有延迟。"
       : "还没发布：这个地址要等提交之后才能访问。";
+    toast(delivered.committed
+      ? `已复制${markdown ? " Markdown" : "图片链接"}`
+      : "已复制，但图片还没发布，提交后才能访问。");
+  } catch (error) {
+    // A failed request or a rejected clipboard write must never claim success.
     try {
-      await navigator.clipboard.writeText(text);
-      toast(value.committed
-        ? `已复制${markdown ? " Markdown" : "图片链接"}`
-        : "已复制，但图片还没发布，提交后才能访问。");
-    } catch {
+      const delivered = await deliveryText(markdown);
+      $("delivery-url").hidden = false;
+      $("delivery-url").value = delivered.text;
       $("delivery-url").focus();
       $("delivery-url").select();
-      toast("请从链接框手动复制");
+    } catch {
+      // Keep the original error: it explains why nothing could be copied.
     }
-  } catch (error) {
     showError("edit-error", error);
   }
 }
-
+// memberOperation runs one action per member in order and reports each result.
+// A failing member keeps its own staging and error; successful members stay done.
+async function memberOperation(action, members, options = {}) {
+  const results = [];
+  const failed = [];
+  for (const member of members) {
+    try {
+      if (member.error) throw new Error(member.error);
+      if (options.skipUninitialized && !member.initialized)
+        throw new Error("尚未初始化");
+      const value = await options.run(member);
+      results.push({ workspace: member.id, ok: true, message: options.describe?.(value) || "完成", value });
+    } catch (error) {
+      failed.push(member.id);
+      results.push({ workspace: member.id, ok: false, error: error.message });
+    }
+  }
+  operationRetry = { results, failed, action: options.action || action };
+  return { results, failed };
+}
+async function runMemberOperation(action, options = {}) {
+  const members = options.members || view.members.filter((member) => member.location);
+  if (!members.length) {
+    toast("还没有可操作的仓库成员。");
+    return null;
+  }
+  clearError("page-error");
+  clearError("pending-error");
+  setBusy(true);
+  let value;
+  try {
+    value = await memberOperation(action, members, options);
+  } finally {
+    try {
+      await refreshState();
+    } catch (error) {
+      showError("page-error", `操作已执行，但刷新失败。请刷新确认状态。\n${error.message}`);
+    }
+    setBusy(false);
+  }
+  if (!value) return null;
+  if (value.failed.length) {
+    showError(
+      "page-error",
+      new Error(
+        `${value.failed.length} 个仓库成员未完成，已在结果中列出；它们的暂存内容仍保留。请修复后只重试失败成员。`,
+      ),
+    );
+    return value;
+  }
+  if (options.success) toast(options.success);
+  return value;
+}
 function bindEvents() {
   document
     .querySelectorAll("[data-close]")
@@ -1105,7 +1671,10 @@ function bindEvents() {
       if (busy) event.preventDefault();
     });
     dialog.addEventListener("close", () => {
-      if (dialog.id === "upload-dialog") releaseUploadFiles();
+      if (dialog.id === "upload-dialog") {
+        uploadSequence++;
+        releaseUploadFiles();
+      }
       if (dialog.id === "repo-dialog" && !dialog.open) {
         repositoryDialogSequence++;
         invalidateGitHubRequests();
@@ -1127,6 +1696,7 @@ function bindEvents() {
   $("open-repo").addEventListener("click", openRepository);
   $("open-upload").addEventListener("click", () => openUpload());
   $("open-import").addEventListener("click", openImport);
+  $("upload-paste").addEventListener("click", () => void pasteUpload());
   $("search").addEventListener("input", () => {
     filters.query = $("search").value;
     renderGallery();
@@ -1139,6 +1709,10 @@ function bindEvents() {
     filters.directory = $("directory-filter").value;
     renderGallery();
   });
+  $("source-filter")?.addEventListener("change", () => {
+    filters.source = $("source-filter").value;
+    renderGallery();
+  });
   $("sort").addEventListener("change", () => {
     filters.sort = $("sort").value;
     renderGallery();
@@ -1148,66 +1722,91 @@ function bindEvents() {
     renderGallery();
   });
   $("select-visible").addEventListener("change", () => {
-    for (const { asset } of visibleAssets())
-      if ($("select-visible").checked) selected.add(asset.id);
-      else selected.delete(asset.id);
+    for (const entry of visibleAssets()) {
+      const key = keyOf(entry);
+      if ($("select-visible").checked) selected.add(key);
+      else selected.delete(key);
+    }
     renderGallery();
   });
   $("remove-selected").addEventListener("click", () =>
     removeAssets([...selected]),
   );
   $("remove-current").addEventListener("click", () =>
-    removeAssets([currentAsset]),
+    removeAssets([currentKey]),
   );
   $("refresh-state").addEventListener("click", async () => {
     if (busy) return;
     try {
       await refreshState();
-      toast("工作空间已刷新");
+      toast("图库已刷新");
     } catch (error) {
       showError("page-error", error);
     }
   });
-  $("sync").addEventListener("click", async () => {
-    await mutate(() => api("sync", {}), "page-error", "已同步远端图库");
-  });
-  $("reindex").addEventListener("click", async () => {
-    await mutate(() => api("reindex", {}), "page-error", "已从仓库固定快照重建索引，未发布修改保留");
-  });
+  $("sync").addEventListener("click", () =>
+    runMemberOperation("sync", {
+      run: (member) => apiMember(member, "sync", {}),
+      success: "已同步全部成员",
+      describe: (value) => `HEAD ${String(value.head || "").slice(0, 8) || "已更新"}`,
+    }),
+  );
+  $("reindex").addEventListener("click", () =>
+    runMemberOperation("reindex", {
+      run: (member) => apiMember(member, "reindex", {}),
+      success: "已从各仓库固定快照重建索引，未发布修改保留",
+      skipUninitialized: true,
+    }),
+  );
   $("import-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!workspace.initialized) return;
+    const member = selectedImportMember();
+    if (!member) return;
     $("import-result").hidden = true;
-    const value = await mutate(
-      () => api("import", {
+    clearError("import-error");
+    setBusy(true);
+    try {
+      const value = await apiMember(member, "import", {
         directory: $("import-directory").value.trim(),
         namespace: $("import-namespace").value.trim(),
         tags: list($("import-tags").value),
         collections: list($("import-collections").value),
-      }),
-      "import-error",
-    );
-    if (value) {
-      $("import-result").textContent = `${value.imported} 张已暂存，${value.skipped} 张已跳过。图片保留原仓库路径；尚未发布，必须在「待发布」中提交才会写入管理元数据。`;
+      });
+      $("import-result").textContent = `${memberName(member.id)}：${value.imported} 张已暂存，${value.skipped} 张已跳过。图片保留原仓库路径；尚未发布，必须在「待发布」中提交才会写入管理元数据。`;
       $("import-result").hidden = false;
+      await refreshState();
+    } catch (error) {
+      showError("import-error", error);
+    } finally {
+      setBusy(false);
     }
   });
   $("setup-action").addEventListener("click", async () => {
-    if (!workspace?.location) openRepository();
-    else await mutate(() => api("init", {}), "page-error", "TOUKO 仓库已就绪");
+    if (!view?.members.some((member) => member.location)) {
+      openRepository();
+      return;
+    }
+    await runMemberOperation("init", {
+      members: view.members.filter((member) => member.location && !member.initialized),
+      run: (member) => apiMember(member, "init", {}),
+      success: "TOUKO 仓库已就绪",
+    });
   });
   $("verify").addEventListener("click", async () => {
-    const value = await mutate(() => api("verify", {}), "page-error");
-    if (value)
-      result(
-        "仓库校验通过",
-        [
-          ["图片", `${value.assets} 张`],
-          ["内容对象", `${value.objects} 个`],
-          ["HEAD", value.head],
-        ],
-        "校验的是仓库后端固定 HEAD 上的完整元数据与图片文件，不包含还没发布的修改；不会自动获取远端更新，请先按需同步。",
-      );
+    const value = await runMemberOperation("verify", {
+      run: (member) => apiMember(member, "verify", {}),
+      skipUninitialized: true,
+    });
+    if (!value) return;
+    const rows = value.results.map((row) => [
+      memberName(row.workspace),
+      row.ok ? `${row.value.assets} 张图 · ${row.value.objects} 个对象 · HEAD ${String(row.value.head || "").slice(0, 8)}` : row.error,
+    ]);
+    result(
+      value.failed.length ? "部分成员校验失败" : "全部成员校验通过",
+      rows.length ? rows : [["结果", "没有可校验的成员"]],
+      "校验的是每个仓库后端固定 HEAD 上的完整元数据与图片文件，不包含还没发布的修改；不会自动获取远端更新，请先按需同步。",
+    );
   });
   $("preview-image").addEventListener("error", () => {
     $("preview-image").hidden = true;
@@ -1215,9 +1814,13 @@ function bindEvents() {
   });
   $("edit-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const entry = viewForKey(currentKey);
+    const member = entry ? memberForAsset(entry) : null;
+    if (!member) return;
+    const key = currentKey;
     const value = await mutate(
       () =>
-        api(`assets/${currentAsset}/edit`, {
+        apiMember(member, `assets/${entry.asset.id}/edit`, {
           title: $("edit-title").value,
           tags: list($("edit-tags").value),
           collections: list($("edit-collections").value),
@@ -1225,22 +1828,31 @@ function bindEvents() {
       "edit-error",
       "修改已保存到待发布区",
     );
-    if (value) openPreview(currentAsset);
+    if (value) openPreview(key);
   });
   $("copy-url").addEventListener("click", () => copyDelivery(false));
   $("copy-markdown").addEventListener("click", () => copyDelivery(true));
-  $("upload-files").addEventListener("change", () =>
-    setUploadFiles([...$("upload-files").files]),
-  );
+  $("upload-files").addEventListener("change", () => {
+    // Appending keeps files pasted earlier; clearing value allows picking the
+    // same file again after it has been removed.
+    setUploadFiles([...$("upload-files").files], true);
+    $("upload-files").value = "";
+  });
   $("upload-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!uploadFiles.length) return;
     const value = await mutate(
       upload,
       "upload-error",
-      "图片已加入待发布区，还没有写入仓库",
+      view.kind === "library" ? "图片已加入对应成员的待发布区" : "图片已加入待发布区，还没有写入仓库",
     );
-    if (value) $("upload-dialog").close();
+    if (value) {
+      if (value.failed?.length) {
+        toast(`${value.failed.length} 张未能加入待发布区，已保留在队列中`);
+      } else {
+        $("upload-dialog").close();
+      }
+    }
   });
   document.addEventListener("dragover", (event) => {
     if ([...event.dataTransfer.types].includes("Files")) {
@@ -1262,29 +1874,113 @@ function bindEvents() {
     }
     openUpload([...event.dataTransfer.files]);
   });
+  document.addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.files || [])];
+    const fromItems = [...(event.clipboardData?.items || [])]
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    const candidates = files.length ? files : fromItems;
+    if (!candidates.length) {
+      // A URI-only clipboard has no file bytes; never request an arbitrary path.
+      if ($("upload-dialog").open && event.clipboardData?.getData("text/uri-list"))
+        showError(
+          "upload-error",
+          "剪贴板里只有本地文件路径，浏览器无法读取。请使用「选择文件」或拖放，或改用桌面版粘贴。",
+        );
+      return;
+    }
+    if (!$("upload-dialog").open) {
+      openUpload(candidates.filter((file) => supportedClipboardType(file.type)));
+      return;
+    }
+    event.preventDefault();
+    void importFiles(candidates);
+  });
+  document.addEventListener("keydown", (event) => {
+    const pasteRequest =
+      (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
+    if (pasteRequest && $("upload-dialog").open && !busy && !clipboardBusy) {
+      const active = document.activeElement;
+      const typing =
+        ["INPUT", "TEXTAREA", "SELECT"].includes(active?.tagName) ||
+        active?.isContentEditable;
+      if (!typing) {
+        event.preventDefault();
+        void pasteUpload();
+        return;
+      }
+    }
+    if (
+      event.key === "/" &&
+      !document.querySelector("dialog[open]") &&
+      !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)
+    ) {
+      event.preventDefault();
+      $("search").focus();
+    }
+    if (event.key === "Escape" && !document.querySelector("dialog[open]"))
+      closeNavigation();
+  });
   $("commit-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const value = await mutate(
-      () => api("commit", { message: $("commit-message").value.trim() }),
-      "pending-error",
-      "整批修改已提交到仓库",
+    const message = $("commit-message").value.trim();
+    if (!message) return;
+    const pending = view.members.filter((member) =>
+      view.changes.some((entry) => entry.workspace === member.id) || member.publication,
     );
-    if (value) {
+    const value = await runMemberOperation("commit", {
+      members: pending,
+      run: (member) => apiMember(member, "commit", { message }),
+      success: "有待发布修改的成员已提交",
+      describe: (result) => `HEAD ${String(result.head || "").slice(0, 8)}`,
+    });
+    if (!value) return;
+    if (!value.failed.length) {
       $("commit-message").value = "";
       $("pending-dialog").close();
     }
   });
+  $("retry-operation").addEventListener("click", async () => {
+    if (!operationRetry || busy) return;
+    const action = operationRetry.action;
+    if (action === "remove") {
+      const groups = operationRetry.selection;
+      const failed = operationRetry.failed;
+      const value = await runMemberOperation("remove", {
+        members: failed.map(memberByID).filter(Boolean),
+        run: async (member) => apiMember(member, "remove", { selectors: groups.get(member.id) }),
+      });
+      if (value && !value.failed.length) operationRetry = null;
+      renderOperationResults();
+      return;
+    }
+    const members = operationRetry.failed.map(memberByID).filter(Boolean);
+    const message = $("commit-message").value.trim();
+    const value = await runMemberOperation(action, {
+      members,
+      run: (member) =>
+        action === "commit"
+          ? apiMember(member, "commit", { message })
+          : apiMember(member, action, {}),
+    });
+    if (value && !value.failed.length) operationRetry = null;
+    renderOperationResults();
+  });
+  $("dismiss-operation")?.addEventListener("click", () => {
+    operationRetry = null;
+    renderOperationResults();
+  });
   $("reset-staged").addEventListener("click", () =>
     confirm(
       "丢弃全部未发布修改？",
-      "待发布区里的新增、编辑和移除都会丢弃，而且不能撤销。仓库里已经发布过的历史不会改变。\n如果有还没确认的发布，服务会先核实远端结果。",
+      `待发布区里的新增、编辑和移除都会从 ${view.members.length} 个成员中丢弃，而且不能撤销。仓库里已经发布过的历史不会改变。\n如果有还没确认的发布，服务会先核实远端结果。`,
       async () => {
-        const value = await mutate(
-          () => api("reset", { confirm: true }),
-          "confirm-error",
-          "待发布修改已清空",
-        );
-        if (value) {
+        const value = await runMemberOperation("reset", {
+          run: (member) => apiMember(member, "reset", { confirm: true }),
+          success: "待发布修改已清空",
+        });
+        if (value && !value.failed.length) {
           $("confirm-dialog").close();
           $("pending-dialog").close();
         }
@@ -1300,10 +1996,56 @@ function bindEvents() {
     clearError("repo-error");
     if ($("repo-type").value === "github") void loadGitHubRepositories();
   });
+  $("repo-mode").addEventListener("change", () => {
+    clearError("repo-error");
+    updateRepositoryFields();
+  });
   $("repo-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const type = $("repo-type").value;
-    if (busy || (type === "github" && !validGitHubSelection())) return;
+    const mode = $("repo-mode")?.value || "single";
+    if (busy) return;
+    if (type === "github" && (mode === "library" || mode === "add")) {
+      const repositoriesChosen = librarySelection();
+      if (!repositoriesChosen.length) {
+        showError("repo-error", new Error("请至少勾选一个仓库成员。"));
+        return;
+      }
+      if (repositoriesChosen.some((choice) => !choice.branch)) {
+        showError("repo-error", new Error("请为每个勾选的仓库选择分支。"));
+        return;
+      }
+      const name = $("library-name").value.trim();
+      if (mode === "library" && !name) {
+        showError("repo-error", new Error("请填写图库名称。"));
+        return;
+      }
+      clearError("repo-error");
+      setBusy(true);
+      try {
+        const value =
+          mode === "library"
+            ? await api("libraries", { name, repositories: repositoriesChosen })
+            : await apiMember(
+                { id: view.library?.id || "", csrf: view.csrf },
+                "members",
+                { repositories: repositoriesChosen },
+              );
+        if (mode === "library") {
+          window.location.assign(value.url);
+          return;
+        }
+        await refreshState();
+        $("repo-dialog").close();
+        toast(`已连接 ${value.added?.length || 0} 个新成员`);
+        setBusy(false);
+      } catch (error) {
+        showError("repo-error", error);
+        setBusy(false);
+      }
+      return;
+    }
+    if (type === "github" && !validGitHubSelection()) return;
     const input =
       type === "github"
         ? {
@@ -1337,28 +2079,16 @@ function bindEvents() {
     if (!busy) void loadRepositoryBranches();
   });
   $("repo-branches").addEventListener("change", updateRepositoryControls);
-  document.addEventListener("keydown", (event) => {
-    if (
-      event.key === "/" &&
-      !document.querySelector("dialog[open]") &&
-      !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)
-    ) {
-      event.preventDefault();
-      $("search").focus();
-    }
-    if (event.key === "Escape" && !document.querySelector("dialog[open]"))
-      closeNavigation();
-  });
 }
 
 bindEvents();
-document.querySelector(".brand").href = `${workspacePrefix}/`;
+document.querySelector(".brand").href = `${viewPrefix}/`;
 try {
   await refreshState();
 } catch (error) {
   showError("page-error", error);
   $("gallery").replaceChildren(
-    element("div", "empty-state", "工作空间未能读取，请检查终端并点击刷新。"),
+    element("div", "empty-state", "图库未能读取，请检查终端并点击刷新。"),
   );
   $("gallery").setAttribute("aria-busy", "false");
 }

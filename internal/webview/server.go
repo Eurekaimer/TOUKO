@@ -87,7 +87,7 @@ func newServer(service *app.Service, token, origin string) (*Server, error) {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
-	h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+	h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob: data:; connect-src 'self' touko-clipboard: http://touko-clipboard.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
@@ -107,13 +107,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.respondError(w, err)
 		return
 	}
-	if s.spaces != nil && r.Context().Value(workspaceRequest{}) == nil {
+	if s.spaces != nil && r.Context().Value(workspaceRequest{}) == nil && r.Context().Value(libraryRequest{}) == nil {
 		if strings.HasPrefix(r.URL.Path, "/w/") {
 			s.spaces.serve(w, r)
 			return
 		}
+		// Library URLs are dispatched before the root CSRF check, exactly like
+		// workspaces. The library handler performs its own exact Origin plus
+		// that library's CSRF comparison before any write reaches business code.
+		if strings.HasPrefix(r.URL.Path, "/l/") {
+			s.spaces.serveLibrary(w, r)
+			return
+		}
 		if r.URL.Path == "/" && (r.Method == "GET" || r.Method == "HEAD") {
-			target, err := s.spaces.activeURL()
+			target, err := s.spaces.activeURL(r.Context())
 			if err != nil {
 				s.respondError(w, err)
 				return
@@ -143,7 +150,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) json(w http.ResponseWriter, value any) {
+	s.jsonStatus(w, http.StatusOK, value)
+}
+func (s *Server) jsonStatus(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
 func (s *Server) fail(w http.ResponseWriter, status int, code, message string) {
@@ -168,38 +179,45 @@ type requestError struct {
 func (e *requestError) Error() string        { return e.message }
 func usage(format string, args ...any) error { return &requestError{400, fmt.Sprintf(format, args...)} }
 func tooLarge(message string) error          { return &requestError{413, message} }
-func (s *Server) respondError(w http.ResponseWriter, err error) {
+
+// errorDetail classifies an error once, so HTTP responses and per-member
+// library failures always report the same code for the same cause.
+func errorDetail(err error) (int, string, string) {
 	var input *requestError
 	var limit *http.MaxBytesError
 	var api *github.APIError
 	switch {
 	case errors.As(err, &input):
-		s.fail(w, input.status, "usage", input.message)
+		return input.status, "usage", input.message
 	case errors.As(err, &limit):
-		s.fail(w, 413, "usage", "request body exceeds the size limit")
+		return 413, "usage", "request body exceeds the size limit"
 	case errors.Is(err, domain.ErrAssetNotFound):
-		s.fail(w, 404, "asset_not_found", err.Error())
+		return 404, "asset_not_found", err.Error()
 	case errors.Is(err, domain.ErrAmbiguousSelector):
-		s.fail(w, 400, "ambiguous_selector", err.Error())
+		return 400, "ambiguous_selector", err.Error()
 	case errors.Is(err, domain.ErrConflict):
-		s.fail(w, 409, "conflict", err.Error())
+		return 409, "conflict", err.Error()
 	case errors.Is(err, domain.ErrBusy):
-		s.fail(w, 409, "busy", err.Error())
+		return 409, "busy", err.Error()
 	case errors.Is(err, domain.ErrUnauthorized):
-		s.fail(w, 401, "unauthorized", err.Error())
+		return 401, "unauthorized", err.Error()
 	case errors.Is(err, domain.ErrRepositoryCorrupt):
-		s.fail(w, 422, "repository_corrupt", err.Error())
+		return 422, "repository_corrupt", err.Error()
 	case errors.Is(err, domain.ErrHashMismatch):
-		s.fail(w, 422, "hash_mismatch", err.Error())
+		return 422, "hash_mismatch", err.Error()
 	case errors.Is(err, domain.ErrRepositoryUninitialized):
-		s.fail(w, 409, "repository_uninitialized", err.Error())
+		return 409, "repository_uninitialized", err.Error()
 	case errors.Is(err, domain.ErrDeliveryUnavailable):
-		s.fail(w, 400, "delivery_unavailable", err.Error())
+		return 400, "delivery_unavailable", err.Error()
 	case errors.As(err, &api):
-		s.fail(w, 502, "api_error", err.Error())
+		return 502, "api_error", err.Error()
 	default:
-		s.fail(w, 500, "io_error", err.Error())
+		return 500, "io_error", err.Error()
 	}
+}
+func (s *Server) respondError(w http.ResponseWriter, err error) {
+	status, code, message := errorDetail(err)
+	s.fail(w, status, code, message)
 }
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) error {
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))

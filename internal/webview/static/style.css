@@ -2289,3 +2289,89 @@ progress {
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Unified library and clipboard paste ──────────────────────────────────
+ * These controls reuse the existing ledger vocabulary: hairlines instead of
+ * boxes, the kraft slip for unpublished state, and the cobalt accent only for
+ * the one action that continues a flow. */
+.library-repos {
+  display: grid;
+  gap: 2px;
+  max-height: 240px;
+  margin: var(--space-3) 0;
+  padding: var(--space-2) 0;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.library-repo-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(120px, 40%);
+  align-items: center;
+  gap: var(--space-3);
+  padding: 6px 0;
+  font-size: var(--fs-sm);
+}
+.library-repo-row label {
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.library-repo-row select {
+  width: 100%;
+  min-width: 0;
+}
+.upload-paste-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.upload-paste-row .field-help {
+  flex: 1 1 16em;
+  margin: 0;
+}
+.member-status,
+.operation-panel {
+  display: grid;
+  gap: 6px;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sheet);
+  background: var(--kraft-tint);
+  font-size: var(--fs-sm);
+}
+.member-status-row,
+.member-result {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px var(--space-3);
+}
+.member-result.error strong {
+  color: var(--sakura-strong);
+}
+.member-results {
+  display: grid;
+  gap: 4px;
+  margin-top: var(--space-3);
+  font-size: var(--fs-xs);
+}
+.operation-panel .member-results {
+  margin: 0 0 var(--space-3);
+}
+.card-tag.source {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+.card-tag.source .icon {
+  width: 11px;
+  height: 11px;
+}

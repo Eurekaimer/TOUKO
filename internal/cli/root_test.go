@@ -139,6 +139,46 @@ func TestRunStagedAssetLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunFindMatchesContentHash(t *testing.T) {
+	dir, _ := setupCLI(t)
+	encode := func(colorValue color.NRGBA) []byte {
+		im := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+		im.SetNRGBA(0, 0, colorValue)
+		var b bytes.Buffer
+		if err := png.Encode(&b, im); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	files := filepath.Join(t.TempDir(), "hash-search")
+	if err := os.MkdirAll(files, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var added []app.AssetView
+	for i, data := range [][]byte{encode(color.NRGBA{R: 10, G: 200, B: 30, A: 255}), encode(color.NRGBA{R: 200, G: 20, B: 90, A: 255})} {
+		path := filepath.Join(files, string(rune('a'+i))+".png")
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		added = append(added, assetList(t, invoke(dir, nil, "add", path, "--json"))...)
+	}
+	if len(added) != 2 || added[0].Asset.Object.Hash == added[1].Asset.Object.Hash {
+		t.Fatalf("added=%+v", added)
+	}
+	hash := added[0].Asset.Object.Hash.String()
+	if strings.Contains(strings.ToLower(added[0].Asset.Title+added[0].Asset.OriginalName+added[1].Asset.Title+added[1].Asset.OriginalName), hash) {
+		t.Fatal("titles and names must not contain the hash")
+	}
+	found := assetList(t, invoke(dir, nil, "find", hash, "--json"))
+	if len(found) != 1 || found[0].Asset.ID != added[0].Asset.ID {
+		t.Fatalf("full hash=%+v", found)
+	}
+	prefix := assetList(t, invoke(dir, nil, "find", strings.ToUpper(hash[:12]), "--json"))
+	if len(prefix) != 1 || prefix[0].Asset.ID != added[0].Asset.ID {
+		t.Fatalf("upper prefix=%+v", prefix)
+	}
+}
+
 func TestRunInputValidationPrecedesMutation(t *testing.T) {
 	dir, _ := setupCLI(t)
 	pngData := picture(t)

@@ -2,11 +2,10 @@ package webview
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	stdimage "image"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,7 +24,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	method := "POST"
 	switch path {
-	case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces":
+	case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries":
 		method = "GET"
 	}
 	var selector, action string
@@ -50,11 +49,14 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		switch path {
-		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify":
+		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify":
 		default:
 			s.fail(w, 404, "usage", "unknown API endpoint")
 			return
 		}
+	}
+	if path == "/api/libraries" && r.Method == "POST" {
+		method = "POST"
 	}
 	if r.Method != method {
 		w.Header().Set("Allow", method)
@@ -98,6 +100,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 	case path == "/api/workspaces":
 		result, err = s.spaces.list(r.Context(), s.workspaceID)
+	case path == "/api/libraries":
+		result, err = s.spaces.handleLibraries(w, r, s.workspaceID)
 	case path == "/api/repo":
 		result, err = s.selectRepository(w, r)
 	case path == "/api/upload":
@@ -377,125 +381,39 @@ func (r contextReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
+// upload stages one repository's images through the same parser and prepared
+// metadata path the library uses. A single repository keeps its documented
+// contract: no publication waterline is applied here, only the 100 MB per-image
+// and 500 MB batch limits.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) (any, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	if r.ContentLength > maxUploadBytes {
-		return nil, tooLarge("upload request exceeds 500 MB")
-	}
-	reader, err := r.MultipartReader()
-	if err != nil {
-		return nil, usage("multipart/form-data is required: %v", err)
-	}
-	dir, err := os.MkdirTemp(s.service.Dir, "upload-")
+	batch, err := parseUploadBatch(w, r, s.service.Dir, maxImageBytes)
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
-	var files []*os.File
-	defer func() {
-		for _, file := range files {
-			_ = file.Close()
-		}
-	}()
-	inputs := make([]app.Input, 0)
-	fields := make(map[string]string)
-	for {
-		if err = r.Context().Err(); err != nil {
+	defer batch.discard()
+	options, err := batch.options()
+	if err != nil {
+		return nil, err
+	}
+	inputs := make([]app.PreparedInput, 0, len(batch.files))
+	for _, file := range batch.files {
+		item, err := app.PrepareInput(file.result, file.name, options)
+		if err != nil {
+			for _, done := range inputs {
+				os.Remove(done.Payload.TempPath)
+			}
 			return nil, err
 		}
-		part, e := reader.NextPart()
-		if e == io.EOF {
-			break
-		}
-		if e != nil {
-			return nil, bodyError(e)
-		}
-		name := part.FormName()
-		if part.FileName() != "" {
-			if name != "files" {
-				return nil, usage("file field must be named files")
-			}
-			if len(inputs) >= maxUploadFiles {
-				return nil, tooLarge("at most 100 files may be uploaded together")
-			}
-			file, e := os.CreateTemp(dir, "image-")
-			if e != nil {
-				return nil, e
-			}
-			files = append(files, file)
-			n, e := io.Copy(file, io.LimitReader(contextReader{r.Context(), part}, maxImageBytes+1))
-			if e != nil {
-				return nil, bodyError(e)
-			}
-			if n > maxImageBytes {
-				return nil, tooLarge("each image must be at most 100 MB")
-			}
-			if _, e = file.Seek(0, io.SeekStart); e != nil {
-				return nil, e
-			}
-			if n == 0 {
-				return nil, usage("image is empty")
-			}
-			// Classify malformed image input before entering the application, whose
-			// ingestion errors also include filesystem failures. Only headers are read.
-			_, format, decodeErr := stdimage.DecodeConfig(contextReader{r.Context(), file})
-			if err = r.Context().Err(); err != nil {
-				return nil, err
-			}
-			if decodeErr != nil {
-				return nil, usage("invalid image header: %v", decodeErr)
-			}
-			if format != "png" && format != "jpeg" && format != "gif" {
-				return nil, usage("only PNG, JPEG and GIF images are supported")
-			}
-			if _, e = file.Seek(0, io.SeekStart); e != nil {
-				return nil, e
-			}
-			inputs = append(inputs, app.Input{Reader: contextReader{r.Context(), file}, Name: part.FileName()})
-		} else {
-			switch name {
-			case "namespace", "directory", "title", "tags", "collections":
-			default:
-				return nil, usage("unknown multipart field %q", name)
-			}
-			if _, exists := fields[name]; exists {
-				return nil, usage("duplicate multipart field %q", name)
-			}
-			value, e := io.ReadAll(io.LimitReader(contextReader{r.Context(), part}, maxJSONBytes+1))
-			if e != nil {
-				return nil, bodyError(e)
-			}
-			if len(value) > maxJSONBytes {
-				return nil, tooLarge("multipart metadata exceeds 1 MiB")
-			}
-			fields[name] = string(value)
-		}
-		if e = part.Close(); e != nil {
-			return nil, bodyError(e)
-		}
+		inputs = append(inputs, item)
 	}
-	if len(inputs) == 0 {
-		return nil, usage("select at least one image")
-	}
-	namespace, err := domain.ParseNamespace(fields["namespace"])
+	reader, err := s.reader(r.Context())
 	if err != nil {
-		return nil, usage("%v", err)
-	}
-	options := app.AddOptions{Namespace: namespace, Directory: fields["directory"]}
-	if title, ok := fields["title"]; ok {
-		options.Title = &title
-	}
-	for _, field := range []struct {
-		name   string
-		target *[]string
-	}{{"tags", &options.Tags}, {"collections", &options.Collections}} {
-		if value, ok := fields[field.name]; ok {
-			if e := json.Unmarshal([]byte(value), field.target); e != nil || *field.target == nil {
-				return nil, usage("%s must be a JSON array of strings", field.name)
-			}
+		for _, done := range inputs {
+			os.Remove(done.Payload.TempPath)
 		}
+		return nil, err
 	}
-	assets, err := s.service.Add(r.Context(), inputs, options)
+	assets, err := s.service.AddPrepared(r.Context(), inputs, app.PreparedOptions{Reader: reader, MaxBytes: math.MaxInt64})
 	if err != nil {
 		return nil, err
 	}
