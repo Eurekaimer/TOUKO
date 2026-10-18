@@ -215,7 +215,7 @@ LEGACY_STATE="$HOME/.local/share/touko-legacy"
 
 **旧 schema1 例外：** 旧版本把 stage/journal 存在 `index.db` 中，必须先用当前版本打开健康旧索引完成自动迁移，才有独立耐久工作区。迁移失败保留旧源；若迁移前旧 DB 已删除/损坏且无备份，远端不能恢复唯一未发布数据，`reindex` 会拒绝猜空。即使迁移后，也不要删除 `workspace.json`、暂存文件或整个 state-dir，不要在服务运行中手动删除 DB/WAL/SHM；备份应保留整个 state。
 
-GitHub 接入按 [专用指南](github.md) 执行。local/private repo 的 URL/Markdown 不可用是正确行为，不输出假公网链接。已有专用公开仓库的真实远端记录见 [MEMORY](../MEMORY.md#已知限制与未执行项)，不代表私有仓库等尚未实测分支也通过。
+GitHub 接入与历史公开仓库验收记录见 [专用指南](github.md)。local/private repo 的 URL/Markdown 不可用是正确行为，不输出假公网链接；公开仓库验收不代表私有仓库等尚未实测分支也通过。
 
 ## 9. JSON 与退出码
 
@@ -246,4 +246,4 @@ go test ./internal/repository -run '^$' -fuzz '^FuzzDecodeAsset$' -fuzztime=10s
 bash examples/demo.sh
 ```
 
-先根据 [逐函数导航](function-reference.md) 找调用链，再阅读相关行为测试。优先修改已有模块，不另建通用 Storage/Plugin 层。新增用户可见行为要验证真实 CLI/Git/SQLite 状态，不写只验证调用转发或函数不 panic 的测试。提交后同步 MEMORY.md；当前实现提交和验证证据在那里记录。
+先根据 [逐函数导航](function-reference.md) 找调用链，再阅读相关行为测试。优先修改已有模块，不另建通用 Storage/Plugin 层。新增用户可见行为要验证真实 CLI/Git/SQLite 状态，不写只验证调用转发或函数不 panic 的测试。稳定的设计决策与使用说明维护在 `docs/`；Agent 上下文、临时图库、性能输出与打包产物不进入源码提交。测试使用新建的独立图库和 state，不操作日常使用的图库。

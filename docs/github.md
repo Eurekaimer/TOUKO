@@ -116,7 +116,7 @@ export TOUKO_ACCEPT_INCLUDE_LOGO=1
 
 脚本只从 `GITHUB_TOKEN` 读取凭据，不接受 token 参数、不打印 token、不写入凭据到磁盘（已用假 token 实测：失败时报 GitHub 的真实 401，输出中不含 token 字符串）；拒绝 `eurekaimer/touko`（源码仓库）作为 gallery。它依次断言：`auth status` 已认证、`repo use` 选中期望仓库与分支、`repo init` 幂等、批量 `add` 不移动远端 HEAD、暂存态 `url` 报 `committed:false`、`commit` 发布全部变更并清空暂存、两个 provider 的 URL 与 canonical object path 一致（private 仓库改为断言 `delivery_unavailable`）、`verify` 的 assets/objects 与 HEAD 一致、公开仓库 raw bytes 的 SHA-256 等于记录的 object hash、第二设备 `sync` 后完整 metadata 逐字段相等、最后一条引用的删除在第三台全新设备上不可见。真实远端不可达或断言失败时脚本非零退出并保留工作目录现场。
 
-脚本的公开仓库真实验收已有实测记录，见下文与 [MEMORY](../MEMORY.md#已知限制与未执行项)；不能把这份记录扩大为私有仓库或本轮所有新增场景都已运行。脚本如何工作与此次是否运行是两件事，本轮增量浏览器验收使用独立测试分支，详见记录，不宣称重新跑过本脚本。
+脚本的公开仓库验收记录见下文“协议与限制”；不能扩大为私有仓库或所有新增场景都已验证。脚本如何工作与某次是否运行是两件事。
 
 ## 第二设备与删除验收
 
@@ -145,7 +145,7 @@ Tree 写入包含 `base_tree`，删除显式 `sha:null`；recursive tree `trunca
 
 **GitHub `force:false` 只保证 fast-forward，不提供 expected-old-SHA CAS。** TOUKO 固定唯一 parent 为 staging base，发布前复查 HEAD，正常 non-force 并发由 non-fast-forward 拒绝保护；无法保证外部管理员任意 force/reset 与 PATCH 之间的严格 CAS。Local Git 的 update-ref 则有 expected-old CAS。
 
-此前真实 GitHub live 验收**已执行**（专用公开仓库 `Eurekaimer/touko-gallery-test`，2026-10-16；[MEMORY 记录](../MEMORY.md#已知限制与未执行项)）。脚本 13 项断言全部通过，包括：`auth status` 只显示登录名、`repo use` 选中 main 分支、`repo init` 幂等、批量 `add` 不移动远端 HEAD、`commit` 发布 3 项变更、两个 provider 的 URL 与 canonical object path 一致、`verify` assets=3 objects=3、**raw GitHub 字节的 SHA-256 等于记录的 object hash**、第二设备 `sync` 后逐字段 metadata 相等、末引用删除在第三台设备不可见。这是已有记录，不是本轮重跑脚本的声明。
+此前真实 GitHub live 验收已执行（专用公开仓库，2026-10-16）。脚本 13 项断言通过，包括：`auth status` 只显示登录名、`repo use` 选中 main 分支、`repo init` 幂等、批量 `add` 不移动远端 HEAD、`commit` 发布 3 项变更、两个 provider 的 URL 与 canonical object path 一致、`verify` assets=3 objects=3、raw GitHub 字节的 SHA-256 等于记录的 object hash、第二设备 `sync` 后逐字段 metadata 相等、末引用删除在第三台设备不可见。这是历史记录，不是当前 checkout 已重新执行 live 验收的声明。
 
 该次验收的独立复核（不是当前所有分支格式的声明）：以 raw CDN 直取远端，`.touko/repository.json` 返回 200 且 `format_version:1`、`repository_id: dc117605-…`、`hash_algorithm: sha256`；原 `README.md` 仍为 200（`repo init` 只增加 manifest，不重写既有文件）；伪造路径与不存在的文件返回 404。本轮包含显式 path 的测试分支则升级为 v2。
 

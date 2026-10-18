@@ -154,7 +154,7 @@ CLI `reindex` 对 GitHub 先更新 clone，完整验证源快照与 hash 后恢�
 - 凭据只在 Go server 内部；已有 GitHub clone 时从本地读图（包括 private），不会把 token/授权链接发给浏览器。界面会显示本地副本是否可用，不应把网络 fallback 当作本地读图。首次 clone、同步和认证需要网络，已有副本的预览/校验不自动 fetch。
 - GitHub `force:false` 是 fast-forward保护，不是针对任意外部管理员force/reset的严格expected-old-SHA CAS。禁止force-push是测试前提之一。
 - GitHub header版本固定2026-03-10；错误、限流、branch protection和truncated tree不会被伪装成部分成功。
-- 专用公开仓库 `Eurekaimer/touko-gallery-test` 的真实 live 验收已有 [MEMORY 记录](../MEMORY.md#已知限制与未执行项)。本轮另在独立分支验证旧路径导入并发布，未改 main；`Eurekaimer/MyIMGs` 仅只读克隆到本地副本验证，未写原仓库。私有仓库、分支保护拒绝和组织审批不因此算已实测；浏览器剪贴板权限受限，目前仅确认 Markdown 生成与手动复制框，不声称自动复制成功。
+- 历史公开仓库验收及尚未验证的权限场景见 [GitHub 接入](github.md#协议与限制)。公开仓库成功不能证明私有仓库、分支保护拒绝或组织审批已实测。浏览器剪贴板受宿主权限约束，生成 Markdown 或出现手动复制框不等于已自动写入剪贴板。
 
 ## 7. 视觉资源与设计
 
@@ -198,6 +198,8 @@ CLI `reindex` 对 GitHub 先更新 clone，完整验证源快照与 hash 后恢�
 
 仍未做：完整进程树的内存量测（含 renderer）、桌面壳的剪贴板权限实测（当前权限处理器仍一律拒绝 camera/microphone/geolocation/notifications）、AUR 发布准备。64 位以上面板用的 512px 图标也还没加。
 
-### C. 当前交接边界
+### C. 桌面桥接的设计约束
 
-上一轮增量代码与文档已按“format v2 → index 恢复 → credential/分支列表 → CLI → Webview → 文档”六个阶段提交；本轮桌面壳/托盘/图标与本地打包另按阶段提交，hash 见 [MEMORY](../MEMORY.md)。未完成的组合验收（Web 端冲突现场、删除/重启/多筛选组合、剪贴板自动复制、真实多页翻页、桌面内存量测）不等于已通过。用户正在操作的页面、待上传表单和原 7799 服务应保留；自动化使用隔离 state、端口和窗口，更新 UI 时不要强制刷新用户的未提交表单。
+- MyGo 0.5.5 通过弱引用查找托盘菜单项；Go 侧必须在应用生命周期内持有 `Tray` 和 `Menu`，否则可见菜单可能失去点击处理。
+- 关闭窗口默认隐藏，但退出过程中必须允许窗口真正关闭；无条件 `PreventDefault` 会阻止 `App.Quit()` 完成。
+- 原生桥接只信任本次 loopback origin。窗口的 `PageOptions.TrustedOrigins` 必须包含它，网页通过 `window.mygo.call` 调用绑定服务；剪贴板图片经能力 URL 读取，不暴露任意本地文件路径。

@@ -1,0 +1,42 @@
+# Agent context and local scratch; project docs/examples/fixtures stay tracked.
+/MEMORY.md
+/HANDOFF*.md
+/SCRATCH*.md
+/.agents/
+/.claude/
+/.codex/
+/.omp/
+/handoff/
+/scratch/
+/tmp/
+
+# Local builds, release bundles and benchmark/profile output.
+/touko
+/touko-desktop
+/bin/
+/dist/
+/build/
+/benchmark-results/
+/benchmark-data/
+*.test
+*.prof
+/coverage.out
+/coverage.html
+
+# Local workspaces only; do not hide database fixtures elsewhere in the tree.
+/.touko/
+/.cache/
+/state/
+/cache/
+/index.db*
+/workspace.json
+
+# IDE/editor state and temporary files.
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+__pycache__/
+*.pyc
