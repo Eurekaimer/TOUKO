@@ -35,7 +35,7 @@ cd packaging && makepkg -si     # 需要 fakeroot；会要求 sudo 安装
 touko-desktop
 ```
 
-任务栏/应用菜单的图标靠 freedesktop 规则：窗口的 app_id 是**可执行文件基名**，所以包里装的桌面条目叫 `touko-desktop.desktop`，图标放在 `hicolor/<尺寸>/apps/touko.png`。把二进制改名会让图标查不到。图标由 `packaging/make-icons.py`（需要 Pillow）从本机 `logo/TOUKO.png` 裁出方形后生成；原 logo 不进入仓库与包，重新生成只影响 `internal/desktop/assets/` 下已提交的派生 PNG。
+任务栏/应用菜单的图标靠 freedesktop 规则：窗口的 app_id 是**可执行文件基名**，所以包里装的桌面条目叫 `touko-desktop.desktop`，图标放在 `hicolor/<尺寸>/apps/touko.png`。把二进制改名会让图标查不到。图标由 `packaging/make-icons.py`（需要 Pillow）从本机 `logo/touko-logo.png` 裁出方形后生成；原 logo 不进入仓库与包，重新生成只影响 `internal/desktop/assets/` 下已提交的派生 PNG。
 
 ## 2. 先运行自动验收 demo
 
@@ -59,10 +59,10 @@ ROOT=/tmp/脚本实际输出的目录
 
 ## 3. 亲自导入你的 logo
 
-用户提供的 `logo/TOUKO.png` 保持原文件不动。可继续使用 demo 的 binary/state，也可按下一节另建 gallery。
+用户提供的 `logo/touko-logo.png` 保持原文件不动。可继续使用 demo 的 binary/state，也可按下一节另建 gallery。
 
 ```bash
-ID=$("$ROOT/touko" --state-dir "$ROOT/device-a" add logo/TOUKO.png \
+ID=$("$ROOT/touko" --state-dir "$ROOT/device-a" add logo/touko-logo.png \
   --namespace blog --title '我的 TOUKO logo' --tag demo --tag logo \
   --collection '项目素材' --output id)
 printf 'Asset ID: %s\n' "$ID"
@@ -80,7 +80,7 @@ printf 'Asset ID: %s\n' "$ID"
 # 以下目录应由你选择；gallery 目标不能是已有非空目录。
 export TOUKO_HOME="$HOME/.local/share/touko-my-gallery"
 /tmp/touko repo init --local "$HOME/Pictures/my-gallery.git"
-ID=$(/tmp/touko add logo/TOUKO.png --namespace blog --title '我的 logo' --tag demo --output id)
+ID=$(/tmp/touko add logo/touko-logo.png --namespace blog --title '我的 logo' --tag demo --output id)
 /tmp/touko status
 /tmp/touko commit -m 'images: initial import'
 /tmp/touko ls --json
@@ -128,7 +128,7 @@ State 目录优先级为 `--state-dir` → `TOUKO_HOME` → `$XDG_DATA_HOME/touk
 ## 6. stdin 与批量导入
 
 ```bash
-cat logo/TOUKO.png | /tmp/touko add - --name '剪贴板.png' --namespace notes --output id
+cat logo/touko-logo.png | /tmp/touko add - --name '剪贴板.png' --namespace notes --output id
 /tmp/touko add examples/images/red.png examples/images/green.png examples/images/blue.png --tag demo
 /tmp/touko status --json
 /tmp/touko commit -m 'images: batch import'

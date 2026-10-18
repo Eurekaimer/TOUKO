@@ -70,7 +70,7 @@ from pathlib import Path
 
 repository, branch, binary, root = sys.argv[1], sys.argv[2], sys.argv[3], Path(sys.argv[4])
 images = Path('examples/images')
-logo = Path('logo/TOUKO.png')
+logo = Path('logo/touko-logo.png')
 a, b, c = (root / name for name in ('device-a', 'device-b', 'device-c'))
 
 
@@ -169,7 +169,7 @@ if logo.exists() and os.environ.get('TOUKO_ACCEPT_INCLUDE_LOGO') == '1':
                       '--tag', 'demo', '--collection', '项目素材', '--output', 'id').stdout.decode().strip())
     print(f'note: publishing the local artwork {logo} because TOUKO_ACCEPT_INCLUDE_LOGO=1', flush=True)
 elif logo.exists():
-    print('note: leaving logo/TOUKO.png out of the upload; set TOUKO_ACCEPT_INCLUDE_LOGO=1 to include it', flush=True)
+    print('note: leaving logo/touko-logo.png out of the upload; set TOUKO_ACCEPT_INCLUDE_LOGO=1 to include it', flush=True)
 pending = document(a, 'status', '--json')
 require(pending['changes'] and all(change['kind'] == 'add' for change in pending['changes']),
         f'expected only staged additions, got {pending["changes"]}')

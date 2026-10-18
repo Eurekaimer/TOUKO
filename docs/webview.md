@@ -24,7 +24,7 @@ ROOT=/tmp/脚本实际输出的目录
 /tmp/touko-web --state-dir "$ROOT/device-a" serve --port 7788
 ```
 
-该 state 已有可用 local Git gallery；可直接在网页查看图片、继续导入 `logo/TOUKO.png`。本地 backend 不生成公网 URL，这是正常限制。
+该 state 已有可用 local Git gallery；可直接在网页查看图片、继续导入 `logo/touko-logo.png`。本地 backend 不生成公网 URL，这是正常限制。
 
 也可使用空 state 在界面连接本地仓库：新建 bare gallery 必须指定不存在或完全为空的目录；选择已有仓库不会覆盖它。**同一服务可管理多个仓库/分支**：“连接 / 切换仓库”中可打开已连接工作区，也可连接新仓库。每个工作区拥有独立 URL（新工作区为 `/w/<key>/`）、clone、index、暂存和发布日志，切换只是导航，原工作区未发布修改保留，不必停止服务或重启新 state。旧根 state 仍作为默认工作区保留，新工作区在 `<state-root>/workspaces/<key>/`。不要手动修改 key 或把某个工作区的 index/stage 搬到另一个仓库。
 
@@ -65,7 +65,7 @@ printf '请保存这个 state 路径：%s\n' "$TOUKO_GALLERY_STATE"
 
 ### A. 上传与预览
 
-1. 使用上传按钮或拖入 `logo/TOUKO.png`、`examples/images/red.png` 和 `blue.png`。上传接受 PNG、JPEG、GIF、WebP。
+1. 使用上传按钮或拖入 `logo/touko-logo.png`、`examples/images/red.png` 和 `blue.png`。上传接受 PNG、JPEG、GIF、WebP。
 2. Namespace 设为 `blog`，标签填 `demo, 灯子`，分类填 `测试图库`；可设置标题。目标目录可留空使用 canonical `objects/...`，或填 `images/blog`，文件以内容 hash 命名，不是照搬本机文件名。勾选“把 PNG / JPEG 转为 WebP”可设置质量；只有编码结果更小时才替换原图，GIF 与已有 WebP 不重新编码。转换在服务端进入 staging 前完成。
 3. 确认上传。应看到真实图片预览、尺寸/体积及“待发布”的新增状态。
 4. 打开详情，检查原文件名、实际仓库路径、UUID、hash、尺寸与 MIME。
@@ -166,7 +166,7 @@ CLI `reindex` 对 GitHub 先更新 clone，完整验证源快照与 hash 后恢�
 
 色板来自用户指定方向：奶油米色（纸 #f7f3ea）与深藏蓝（墨 #1b2a3d）呼应校服，珊瑚橙作「已暂存/当前」强调色，暗樱红只用于破坏性操作与「已修改」，卡纸色（#e5dcc9）作侧栏与照片衬底。整套设计由 Anthropic 公开的 `frontend-design` skill 逐条审查后重建：页面只有一种材质（纸），状态靠**材质**而非阴影区分——已提交的照片坐在卡纸衬底上，暂存中的坐在牛皮纸色衬底上并把压边线变成珊瑚色；圆角分四级承担层级；全页 `text-transform` 为 0、无渐变、无 `rgba(0,0,0,…)` 页面阴影。中文用 LXGW 文楷（楷体笔画更细，故正文 16px/行高 1.85，对比度 5.64:1，相对旧设定实测墨量 +7.6%），拉丁与数字用 Monaspace Radon，hero 标题用 Playfair Display 斜体（`--font-hero`，仅此一处使用）；刻意避开带光学尺寸轴的字面，否则字号越大笔画越细、观感发虚。
 
-英数与拉丁文本使用自托管的 Monaspace Radon（oblique 走 slnt 轴），中文使用 LXGW 文楷（霞鹜文楷，楷体正文面），左上角 TOUKO 字标另有子集化的圆几何字体（Quicksand，仅 T/O/U/K 四字形，1.3KB，并按字对做光学字距）。五者均为 SIL OFL，许可证随字体内嵌；LXGW 的附加许可明确允许为 web 交付子集化为 WOFF2。原图 `logo/TOUKO.png` 保持不变，页面内只使用从它派生的 favicon（`favicon.png`），不再放角色图条带；不主张角色或原图版权，分发衍生图片前应自行确认授权。界面无需外部 CDN 即可显示字体、图标与 favicon。
+英数与拉丁文本使用自托管的 Monaspace Radon（oblique 走 slnt 轴），中文使用 LXGW 文楷（霞鹜文楷，楷体正文面），左上角 TOUKO 字标另有子集化的圆几何字体（Quicksand，仅 T/O/U/K 四字形，1.3KB，并按字对做光学字距）。五者均为 SIL OFL，许可证随字体内嵌；LXGW 的附加许可明确允许为 web 交付子集化为 WOFF2。原图 `logo/touko-logo.png` 保持不变，页面内只使用从它派生的 favicon（`favicon.png`），不再放角色图条带；不主张角色或原图版权，分发衍生图片前应自行确认授权。界面无需外部 CDN 即可显示字体、图标与 favicon。
 
 ## 8. 已实现的连接交互与桌面计划
 

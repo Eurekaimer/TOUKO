@@ -18,7 +18,7 @@ export TOUKO_HOME="$(mktemp -d)"
 /tmp/touko repo list
 /tmp/touko repo use OWNER/touko-demo
 /tmp/touko repo init
-ID=$(/tmp/touko add logo/TOUKO.png --namespace blog --tag demo --output id)
+ID=$(/tmp/touko add logo/touko-logo.png --namespace blog --tag demo --output id)
 /tmp/touko status --json
 /tmp/touko commit -m "demo: publish logo"
 /tmp/touko url "$ID" --provider github
@@ -102,7 +102,7 @@ bash examples/github-acceptance.sh "$TOUKO_ACCEPT_REPO"
 unset GITHUB_TOKEN TOUKO_ACCEPT_REPO
 ```
 
-默认只上传 `examples/images/` 里三张自生成样例。若你**希望**把你本机的 `logo/TOUKO.png` 也一起发布到该仓库（公开仓库即对所有人可见），在运行前加上：
+默认只上传 `examples/images/` 里三张自生成样例。若你**希望**把你本机的 `logo/touko-logo.png` 也一起发布到该仓库（公开仓库即对所有人可见），在运行前加上：
 
 ```bash
 export TOUKO_ACCEPT_INCLUDE_LOGO=1
@@ -132,7 +132,7 @@ unset GITHUB_TOKEN
 
 - `url ID --provider github|jsdelivr` 根据当前 location 的 **branch** 派生 URL，不把 URL 存入 Asset。
 - `url ID --json` 输出 `{"url":"...","committed":false}` 表示新 Asset 尚未发布。metadata-only modified Asset 的 binary 已提交，因此 committed 为 true。
-- `cat logo/TOUKO.png | /tmp/touko add - --name '剪贴板.png' --namespace blog --output markdown` 输出图片 Markdown，并在 stderr 提示 staged/not published。必须 commit 后才可作为已发布链接使用。
+- `cat logo/touko-logo.png | /tmp/touko add - --name '剪贴板.png' --namespace blog --output markdown` 输出图片 Markdown，并在 stderr 提示 staged/not published。必须 commit 后才可作为已发布链接使用。
 - `--output id|markdown` 均不能和 `--json` 同用；冲突在 mutation 前拒绝。
 - localgit 与 private GitHub repository 不提供公网 delivery；Markdown 请求也在 staging mutation 前拒绝。private repo 仍支持存储、恢复和 verify。
 - 显式路径（PicGo 原路径或目标目录）的 URL 使用实际 path，不假定 canonical `objects/...`，Unicode/空格等由 provider 正确编码。Web 可选择 provider 后“复制 Markdown”；权限失败时显示并选中文本框供手动复制。当前浏览器验收仅确认 Markdown 正确生成及手动复制框，不声称自动写入剪贴板成功。

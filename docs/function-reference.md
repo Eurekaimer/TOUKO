@@ -546,7 +546,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `filesystem_state` | 记录 scratch 树条目、mode、size、mtime，证明非空目标拒绝没有写入。 |
 | `main` | 按四图单批提交→fresh device→stale edit conflict→末引用删除→scratch SQLite 重建→Unicode stdin→delivery preflight→拒绝重跑的顺序完成验收。保留结果并打印可继续操作的命令；不接触 token、不清历史。 |
 
-`examples/images/` 三张 64×48 RGB PNG 为自生成红/绿/蓝图案，hash 不同；重复 add red 证明同内容去重，不额外复制 fixture。用户 `logo/TOUKO.png` 不属于脚本生成物，只有用户执行打印的 add 命令时才被读取。
+`examples/images/` 三张 64×48 RGB PNG 为自生成红/绿/蓝图案，hash 不同；重复 add red 证明同内容去重，不额外复制 fixture。用户 `logo/touko-logo.png` 不属于脚本生成物，只有用户执行打印的 add 命令时才被读取。
 
 ## 14. `internal/webview`：本地图库边界与浏览器控制器
 
