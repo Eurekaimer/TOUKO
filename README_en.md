@@ -133,7 +133,7 @@ cd packaging && makepkg -si
 
 ```sh
 # Connect an existing repository, or run repo init first
-./touko --state-dir ~/.local/share/touko repo use Eurekaimer/TOUKO-IMGBED-01
+./touko --state-dir ~/.local/share/touko repo use Eurekaimer/TOUKO-WEBP-01
 ./touko --state-dir ~/.local/share/touko sync
 
 # Add a picture, organise its metadata, publish

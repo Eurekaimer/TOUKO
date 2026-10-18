@@ -135,7 +135,7 @@ cd packaging && makepkg -si
 
 ```sh
 # 连接已有仓库，或先 repo init 初始化
-./touko --state-dir ~/.local/share/touko repo use Eurekaimer/TOUKO-IMGBED-01
+./touko --state-dir ~/.local/share/touko repo use Eurekaimer/TOUKO-WEBP-01
 ./touko --state-dir ~/.local/share/touko sync
 
 # 加图、整理元数据、发布
