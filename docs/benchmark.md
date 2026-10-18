@@ -208,6 +208,24 @@ Observed values below come from local smoke runs, not CI performance thresholds.
 Keep the retained `benchmark.json` with any comparison; the source checkout's
 revision may differ from an explicitly supplied `--binary`, whose hash is recorded.
 
+### Charts
+
+`scripts/plot-benchmark.py` renders retained measurements as dependency-free SVG.
+It reads `benchmark.json` and optional RSS JSONL files:
+
+```bash
+python3 scripts/plot-benchmark.py \
+  --benchmark "$ROOT/benchmark.json" \
+  --rss "0=$ROOT/profiles/0.jsonl" \
+  --rss "1000=$ROOT/profiles/1000.jsonl" \
+  --out-dir docs/images
+```
+
+The script writes `benchmark-cli.svg` and, when RSS inputs are supplied,
+`benchmark-memory.svg`. It omits a metric with no measurement instead of
+inventing a point, and the memory chart uses the per-process RSS values directly.
+Keep the source JSON with any published chart.
+
 ### Observed local CLI/HTTP baseline
 
 One machine only: Intel 20-logical-CPU host, 32 GB RAM, Linux 7.2.9, Go 1.27.1,

@@ -1,0 +1,85 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='860' height='450' viewBox='0 0 860 450' role='img' aria-label='TOUKO local CLI/HTTP baseline'>
+<title>TOUKO local CLI/HTTP baseline</title>
+<desc>Median of 3 repetitions; local Git; x86_64; batch 10. Lower is better; scales are logarithmic.</desc>
+<rect width='860' height='450' fill='#fbfaf7'/>
+<text x='70' y='28' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='18' font-weight='600' fill='#1b2a3d'>TOUKO local CLI/HTTP baseline</text>
+<text x='70' y='48' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>Median of 3 repetitions; local Git; x86_64; batch 10. Lower is better; scales are logarithmic.</text>
+<text x='70' y='93' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='12' font-weight='600' fill='#1b2a3d'>Read paths</text>
+<rect x='70' y='105' width='355.0' height='290' fill='none' stroke='#d9d1c2'/>
+<line x1='70' y1='358.2' x2='425.0' y2='358.2' stroke='#d9d1c2' stroke-dasharray='3 4'/>
+<text x='62' y='362.2' text-anchor='end' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>1</text>
+<line x1='70' y1='287.9' x2='425.0' y2='287.9' stroke='#d9d1c2' stroke-dasharray='3 4'/>
+<text x='62' y='291.9' text-anchor='end' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>10</text>
+<line x1='70' y1='217.6' x2='425.0' y2='217.6' stroke='#d9d1c2' stroke-dasharray='3 4'/>
+<text x='62' y='221.6' text-anchor='end' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>100</text>
+<line x1='70' y1='147.3' x2='425.0' y2='147.3' stroke='#d9d1c2' stroke-dasharray='3 4'/>
+<text x='62' y='151.3' text-anchor='end' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>1000</text>
+<text x='129.2' y='413' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>0</text>
+<text x='247.5' y='413' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>100</text>
+<text x='365.8' y='413' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>1000</text>
+<text x='247.5' y='433' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>committed assets</text>
+<polyline fill='none' stroke='#1b2a3d' stroke-width='2' points='129.2,320.0 247.5,311.6 365.8,283.0'/>
+<circle cx='129.2' cy='320.0' r='3.5' fill='#1b2a3d'/>
+<circle cx='247.5' cy='311.6' r='3.5' fill='#1b2a3d'/>
+<circle cx='365.8' cy='283.0' r='3.5' fill='#1b2a3d'/>
+<text x='372.8' y='276.0' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#1b2a3d'>11.8 ms</text>
+<rect x='70.0' y='65' width='9' height='9' fill='#1b2a3d'/>
+<text x='84.0' y='73' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>startup_state</text>
+<polyline fill='none' stroke='#c2563a' stroke-width='2' points='129.2,382.3 247.5,347.5 365.8,294.6'/>
+<circle cx='129.2' cy='382.3' r='3.5' fill='#c2563a'/>
+<circle cx='247.5' cy='347.5' r='3.5' fill='#c2563a'/>
+<circle cx='365.8' cy='294.6' r='3.5' fill='#c2563a'/>
+<text x='372.8' y='287.6' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#c2563a'>8.0 ms</text>
+<rect x='158.8' y='65' width='9' height='9' fill='#c2563a'/>
+<text x='172.8' y='73' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>http_state</text>
+<polyline fill='none' stroke='#3e7c59' stroke-width='2' points='247.5,296.7 365.8,263.2'/>
+<circle cx='247.5' cy='296.7' r='3.5' fill='#3e7c59'/>
+<circle cx='365.8' cy='263.2' r='3.5' fill='#3e7c59'/>
+<text x='372.8' y='256.2' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#3e7c59'>22.5 ms</text>
+<rect x='247.5' y='65' width='9' height='9' fill='#3e7c59'/>
+<text x='261.5' y='73' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>image_bytes</text>
+<polyline fill='none' stroke='#8a6a3b' stroke-width='2' points='129.2,328.1 247.5,312.7 365.8,282.1'/>
+<circle cx='129.2' cy='328.1' r='3.5' fill='#8a6a3b'/>
+<circle cx='247.5' cy='312.7' r='3.5' fill='#8a6a3b'/>
+<circle cx='365.8' cy='282.1' r='3.5' fill='#8a6a3b'/>
+<text x='372.8' y='275.1' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#8a6a3b'>12.1 ms</text>
+<rect x='336.2' y='65' width='9' height='9' fill='#8a6a3b'/>
+<text x='350.2' y='73' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>find</text>
+<text x='25' y='250.0' transform='rotate(-90 25 250.0)' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>median milliseconds (log scale)</text>
+<text x='480.0' y='93' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='12' font-weight='600' fill='#1b2a3d'>Mutating paths</text>
+<rect x='480.0' y='105' width='355.0' height='290' fill='none' stroke='#d9d1c2'/>
+<line x1='480.0' y1='395.0' x2='835.0' y2='395.0' stroke='#d9d1c2' stroke-dasharray='3 4'/>
+<text x='472.0' y='399.0' text-anchor='end' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>1</text>
+<line x1='480.0' y1='314.5' x2='835.0' y2='314.5' stroke='#d9d1c2' stroke-dasharray='3 4'/>
+<text x='472.0' y='318.5' text-anchor='end' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>10</text>
+<line x1='480.0' y1='234.0' x2='835.0' y2='234.0' stroke='#d9d1c2' stroke-dasharray='3 4'/>
+<text x='472.0' y='238.0' text-anchor='end' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>100</text>
+<line x1='480.0' y1='153.5' x2='835.0' y2='153.5' stroke='#d9d1c2' stroke-dasharray='3 4'/>
+<text x='472.0' y='157.5' text-anchor='end' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>1000</text>
+<text x='539.2' y='413' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>0</text>
+<text x='657.5' y='413' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>100</text>
+<text x='775.8' y='413' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>1000</text>
+<text x='657.5' y='433' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>committed assets</text>
+<polyline fill='none' stroke='#1b2a3d' stroke-width='2' points='539.2,346.7 657.5,331.6 775.8,297.5'/>
+<circle cx='539.2' cy='346.7' r='3.5' fill='#1b2a3d'/>
+<circle cx='657.5' cy='331.6' r='3.5' fill='#1b2a3d'/>
+<circle cx='775.8' cy='297.5' r='3.5' fill='#1b2a3d'/>
+<text x='782.8' y='290.5' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#1b2a3d'>16.3 ms</text>
+<rect x='480.0' y='65' width='9' height='9' fill='#1b2a3d'/>
+<text x='494.0' y='73' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>batch_add</text>
+<polyline fill='none' stroke='#c2563a' stroke-width='2' points='539.2,315.8 657.5,211.6 775.8,133.1'/>
+<circle cx='539.2' cy='315.8' r='3.5' fill='#c2563a'/>
+<circle cx='657.5' cy='211.6' r='3.5' fill='#c2563a'/>
+<circle cx='775.8' cy='133.1' r='3.5' fill='#c2563a'/>
+<text x='782.8' y='126.1' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#c2563a'>1,791.6 ms</text>
+<rect x='598.3' y='65' width='9' height='9' fill='#c2563a'/>
+<text x='612.3' y='73' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>reindex</text>
+<polyline fill='none' stroke='#3e7c59' stroke-width='2' points='539.2,237.2 657.5,188.1 775.8,116.9'/>
+<circle cx='539.2' cy='237.2' r='3.5' fill='#3e7c59'/>
+<circle cx='657.5' cy='188.1' r='3.5' fill='#3e7c59'/>
+<circle cx='775.8' cy='116.9' r='3.5' fill='#3e7c59'/>
+<text x='782.8' y='109.9' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#3e7c59'>2,844.9 ms</text>
+<rect x='716.7' y='65' width='9' height='9' fill='#3e7c59'/>
+<text x='730.7' y='73' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='10' fill='#6b6257'>commit</text>
+<text x='435.0' y='250.0' transform='rotate(-90 435.0 250.0)' text-anchor='middle' font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' font-size='11' fill='#6b6257'>median milliseconds (log scale)</text>
+</svg>

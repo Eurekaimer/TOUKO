@@ -4,14 +4,14 @@
 
 # TOUKO
 
-**Keep your pictures in your own Git repository.**
+Keep your pictures in your own Git repository.
 
 Content-addressed · Git-style staging · Local-first reads · Multi-repository libraries
 
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-9c5238)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-1b2a3d)](#install)
-[![Docs](https://img.shields.io/badge/docs-7%20guides-7f3f59)](docs/webview.md)
+[![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%C2%B7%20others%20experimental-1b2a3d)](#install)
+[![Docs](https://img.shields.io/badge/docs-8%20guides-7f3f59)](docs/webview.md)
 
 [English](README_en.md) · [简体中文](README.md)
 
@@ -19,11 +19,11 @@ Content-addressed · Git-style staging · Local-first reads · Multi-repository 
 
 ---
 
-TOUKO is an image library that uses a Git repository as its database. Instead of handing your pictures to a hosting service, it writes every image and every piece of metadata into **a repository you own** — GitHub is the single source of truth, and jsDelivr is only an optional delivery layer.
+TOUKO is an image library that uses a Git repository as its database. Instead of handing your pictures to a hosting service, it writes every image and every piece of metadata into a repository you own. GitHub is the single source of truth, and jsDelivr is only an optional delivery layer.
 
 ## The name
 
-TOUKO is named after **Nanami Touko** from *Bloom Into You* (やがて君になる).
+TOUKO is named after Nanami Touko from Bloom Into You (やがて君になる).
 
 > 好きって、なんだろう。
 > 好きって、なに？
@@ -45,17 +45,20 @@ PicGo and PicList solve "upload, then copy the link". TOUKO solves "in a year, c
 | Deletion | Delete a file | Defined deletion, history still auditable |
 | Scale | One repository | One logical library across repositories, spread by capacity |
 
-## Features
+## How it works
 
-- **The repository is the database.** Assets, objects, titles, tags, collections, MIME types, dimensions and content hashes live remotely. Local SQLite is only a rebuildable cache.
-- **Content addressing.** A file is named by the SHA-256 of its bytes. Identical pictures deduplicate naturally, and a link can never point at an overwritten image.
-- **Stage, then publish.** Uploads, edits and removals enter a staging area; only `commit` writes a Git commit. A failure never leaves half a gallery behind.
-- **Local-first reads.** Once a local shallow clone exists, previews do not contact the remote. Creating the first GitHub clone still needs a network connection; `sync` explicitly refreshes it.
-- **Unified libraries.** Merge several repositories into one browsing and upload surface. Each repository keeps its own staging, commits and recovery, and uploads are assigned by remaining capacity.
-- **Real deletion.** Removing a picture takes it out of the latest tree and verifies the result; Git history remains, which is a feature rather than an oversight.
-- **CLI + native desktop.** Written in Go with no Node build step or runtime CDN. `touko` CLI/Web and the MyGo `touko-desktop` window share the HTTP surface and business logic; a release bundle contains both executables.
-- **Formats and space.** Accepts PNG, JPEG, GIF and WebP. Uploads can opt into PNG/JPEG → WebP conversion, which replaces the original only when the encoded bytes are smaller. GIF and existing WebP inputs are never re-encoded.
-- **Large galleries stay interactive.** Cards mount in bounded batches and offscreen layout is skipped; filtering, scrolling and selecting remain responsive with 1000 images (method in the [benchmark guide](docs/benchmark.md)).
+- The repository is the database. Assets, objects, titles, tags, collections, MIME types, dimensions and content hashes live remotely; local SQLite is only a rebuildable cache.
+- A file is named by the SHA-256 of its bytes. Identical pictures deduplicate naturally, and a link cannot point at an overwritten image.
+- Uploads, edits and removals enter a staging area. Only `commit` writes a Git commit, so a failure never leaves half a gallery behind.
+- Once a local shallow clone exists, previews do not contact the remote. Creating the first clone still needs a network connection; `sync` explicitly refreshes it.
+- Several repositories can appear as one browsing and upload surface. Each repository keeps its own staging, commits and recovery, and uploads are assigned by remaining capacity.
+- `rm` removes a picture from the latest tree and verifies the result. Git history remains; truly erasing it requires rewriting history, which TOUKO does not offer.
+
+## Formats and space
+
+TOUKO accepts PNG, JPEG, GIF and WebP. PNG/JPEG uploads can opt into WebP conversion, but the original is replaced only when the encoded bytes are smaller. GIF and existing WebP inputs keep their original bytes, so animation and already-compressed data are never silently degraded.
+
+Conversion happens before staging. The object hash, size, extension and repository metadata therefore describe the bytes that were actually stored. Each image is limited to 100 MB; conversion is limited to 50 megapixels.
 
 ## Interface
 
@@ -63,7 +66,9 @@ PicGo and PicList solve "upload, then copy the link". TOUKO solves "in a year, c
   <img src="docs/images/webview-gallery.png" alt="TOUKO gallery interface" width="820" />
 </div>
 
-Cream paper and deep navy, LXGW WenKai and Monaspace Radon. A single click on a card copies its Markdown and reports the result beside the pointer. Drag and drop, clipboard paste, filtering by collection, tag, directory or content hash, and per-repository source filtering are all supported.
+Cream paper and deep navy, LXGW WenKai for Chinese and Monaspace Radon for Latin text. A single click on a card copies its Markdown and reports the result beside the pointer. Drag and drop, clipboard paste, filtering by collection, tag, directory or content hash, and per-repository source filtering are supported.
+
+The gallery mounts 60 cards first and appends more as the sentinel approaches the viewport. Offscreen cards skip layout and paint. Filtering, scrolling and selecting remain responsive with 1000 images; see [Performance baseline](#performance-baseline).
 
 ## Install
 
@@ -150,6 +155,32 @@ https://raw.githubusercontent.com/OWNER/REPO/BRANCH/objects/<ns>/sha256/<aa>/<bb
 ```
 
 jsDelivr enforces a size limit on GitHub packages and answers 403 for the whole package once it is exceeded. Fall back to the raw URL, which serves the same bytes; TOUKO spreads pictures across repositories by capacity and records which repository actually holds each asset.
+
+Previews return an ETag derived from the content hash and an immutable cache policy. Reopening the same image reuses the cached bytes or receives a 304 without reading the Git object again.
+
+## Performance baseline
+
+The following numbers come from one reproducible local run: Linux x86_64, 20 logical CPUs, 32 GB RAM, Go 1.27.1, local Git backend, median of three repetitions. Absolute times depend on the machine and cache state; they are not fixed promises.
+
+![CLI and HTTP baseline at 0, 100 and 1000 images](docs/images/benchmark-cli.svg)
+
+Read paths remain in the millisecond range at 1000 images. `reindex` and `commit` walk or rewrite repository metadata, so they are visibly slower. The vertical axis is logarithmic, otherwise startup would be flattened by commit time.
+
+![Desktop RSS for an empty gallery and four phases at 1000 images](docs/images/benchmark-memory.svg)
+
+RSS is the resident set of the Linux process tree, taken from the highest of five snapshots. Shared pages appear in more than one process, so the tree total is not additional physical memory. An empty gallery starts around 717 MiB; a 1000-image gallery reaches about 918 MiB after browsing. The WebKit renderer is the main consumer, and it comes from the system WebView rather than the Go business process.
+
+Reproduce it with:
+
+```sh
+ROOT=$(mktemp -d /tmp/touko-bench.XXXXXXXX)
+python3 scripts/benchmark.py --root "$ROOT"
+python3 scripts/plot-benchmark.py \
+  --benchmark "$ROOT/benchmark.json" \
+  --rss "0=$ROOT/profiles/0.jsonl" \
+  --rss "1000=$ROOT/profiles/1000.jsonl" \
+  --out-dir docs/images
+```
 
 ## Documentation
 
