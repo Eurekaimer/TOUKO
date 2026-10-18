@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2FEurekaimer%2FTOUKO-IMGBED-03%2Fmain%2Fobjects%2Fdefault%2Fsha256%2Fa6%2Fe0%2Fa6e002cde06d25d106a9e80bafcc7762003491f4a2bf4f5bc2a8332d5411c6b0.png&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
+<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2FEurekaimer%2FTOUKO-WEBP-01%2Fmain%2Fobjects%2Fdefault%2Fsha256%2F43%2F90%2F4390bd30513eae3eb6199e2f43ed7ccfcc300e024febf784ebb06f2f1ef9403a.webp&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
 
 # TOUKO
 
@@ -59,6 +59,18 @@ PicGo and PicList solve "upload, then copy the link". TOUKO solves "in a year, c
 TOUKO accepts PNG, JPEG, GIF and WebP. PNG/JPEG uploads can opt into WebP conversion, but the original is replaced only when the encoded bytes are smaller. GIF and existing WebP inputs keep their original bytes, so animation and already-compressed data are never silently degraded.
 
 Conversion happens before staging. The object hash, size, extension and repository metadata therefore describe the bytes that were actually stored. Each image is limited to 100 MB; conversion is limited to 50 megapixels.
+
+Migrating the 194 images actually referenced by the blog and notes to a new gallery at quality 85 produced:
+
+| Item | Result |
+| --- | ---: |
+| Original files | 78.24 MiB |
+| Stored objects | 16.87 MiB |
+| Saved | 61.37 MiB (78.4%) |
+| Converted to WebP | 171 |
+| Kept in the original format | 23 |
+
+This is one migration of an existing corpus, not a fixed promise for every gallery. The 23 unchanged images stayed in their original format because WebP encoding made them larger; conversion replaces bytes only when the result is smaller. Smaller objects also reduce CDN transfer and browser cache usage.
 
 ## Interface
 

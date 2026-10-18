@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2FEurekaimer%2FTOUKO-IMGBED-03%2Fmain%2Fobjects%2Fdefault%2Fsha256%2Fa6%2Fe0%2Fa6e002cde06d25d106a9e80bafcc7762003491f4a2bf4f5bc2a8332d5411c6b0.png&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
+<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2FEurekaimer%2FTOUKO-WEBP-01%2Fmain%2Fobjects%2Fdefault%2Fsha256%2F43%2F90%2F4390bd30513eae3eb6199e2f43ed7ccfcc300e024febf784ebb06f2f1ef9403a.webp&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
 
 # TOUKO
 
@@ -61,6 +61,18 @@ TOUKO 把远端 Git 仓库当作数据库，本地 SQLite 只是可重建的缓�
 TOUKO 接受 PNG、JPEG、GIF 和 WebP。上传 PNG/JPEG 时可以选择转换为 WebP；只有编码后的字节更小时才替换原图，因此不会为了“统一格式”反而增大文件。GIF 和已有 WebP 保持原字节，避免丢失动画或二次有损压缩。
 
 转换在服务端进入暂存区之前完成，对象哈希、大小、扩展名和仓库元数据都描述实际保存的字节。单张图片最大 100 MB，转换上限为 5000 万像素。
+
+博客和笔记中实际引用的 194 张图片迁移到新图库时，质量 85 的结果如下：
+
+| 项目 | 数据 |
+| --- | ---: |
+| 原始文件 | 78.24 MiB |
+| 新图库对象 | 16.87 MiB |
+| 节省 | 61.37 MiB（78.4%） |
+| 转为 WebP | 171 张 |
+| 保持原格式 | 23 张 |
+
+这是针对一批已经存在的图片的一次迁移结果，不是对任意图库的固定承诺。23 张保持原格式，是因为 WebP 编码后反而更大；转换只在字节更少时替换。更小的对象也减少了 CDN 传输和浏览器缓存占用。
 
 ## 界面
 
