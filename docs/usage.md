@@ -247,3 +247,5 @@ bash examples/demo.sh
 ```
 
 先根据 [逐函数导航](function-reference.md) 找调用链，再阅读相关行为测试。优先修改已有模块，不另建通用 Storage/Plugin 层。新增用户可见行为要验证真实 CLI/Git/SQLite 状态，不写只验证调用转发或函数不 panic 的测试。稳定的设计决策与使用说明维护在 `docs/`；Agent 上下文、临时图库、性能输出与打包产物不进入源码提交。测试使用新建的独立图库和 state，不操作日常使用的图库。
+
+`.github/workflows/ci.yml` 在 `main` push 与所有 pull request 上执行 `go test ./...`、`go test -race ./...`、`go vet ./...` 和隔离的 CLI demo；使用 `go.mod` 指定的工具链及 Go module cache。Linux runner 启用 CGO 供 race detector 使用，任何一步失败都会使 job 失败。该 workflow 也可由 release workflow 调用。

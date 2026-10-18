@@ -141,6 +141,8 @@ unset GITHUB_TOKEN
 
 固定生产 endpoint 为 `https://api.github.com`，API header `2026-03-10`。blob GET 使用 raw bytes，POST 使用流式 base64，不把图片/base64 整体装入内存。每次只有一个 blob worker。取消/timeout 独立关闭 pipe/source 并等待 encoder 退出，防止 HTTP transport 等待 request-body writer 造成死锁。阻塞型自定义 Reader 必须支持取消或 io.Closer；CLI 的本地文件符合此要求。
 
+上传取消时会关闭源和管道并等待编码器退出；即使 HTTP transport 先观察到管道关闭，返回错误仍保留 `context.Canceled` / `context.DeadlineExceeded` 的分类，同时保留原 transport 错误。`TestUploadCancellationClosesBlockedSourceAndJoinsWriter` 覆盖取消后的源释放与调用返回。
+
 Tree 写入包含 `base_tree`，删除显式 `sha:null`；recursive tree `truncated:true` 拒绝构建部分 cache。401/权限403 映射 unauthorized；限流403/429/5xx/timeout 不隐藏重试，保留 stage。journal 决定发布恢复行为，见 [publication](publication.md)。
 
 **GitHub `force:false` 只保证 fast-forward，不提供 expected-old-SHA CAS。** TOUKO 固定唯一 parent 为 staging base，发布前复查 HEAD，正常 non-force 并发由 non-fast-forward 拒绝保护；无法保证外部管理员任意 force/reset 与 PATCH 之间的严格 CAS。Local Git 的 update-ref 则有 expected-old CAS。

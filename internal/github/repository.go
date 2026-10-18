@@ -232,6 +232,12 @@ func (r *Repository) CreateBlob(ctx context.Context, source io.Reader, size int6
 	}
 	streamErr := <-done
 	if requestErr != nil {
+		// Aborting both pipe ends can make the transport observe ErrClosedPipe
+		// before it observes cancellation. Preserve both the transport failure
+		// and the context cause so callers can still classify cancellation.
+		if cause := uploadCtx.Err(); cause != nil {
+			return "", errors.Join(requestErr, cause)
+		}
 		return "", requestErr
 	}
 	defer response.Body.Close()
