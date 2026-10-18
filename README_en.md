@@ -28,9 +28,9 @@ TOUKO is named after Nanami Touko from Bloom Into You (やがて君になる).
 > 好きって、なんだろう。
 > 好きって、なに？
 >
-> — Nanami Touko
+> Nanami Touko
 
-She spends the whole story asking what "liking" something means, and who she is. An image library asks the same kind of question: who owns a picture, where does it live, who may fetch it, and does deleting it mean it never existed? TOUKO hands those answers to Git — every change is recorded, and every file is named after its own content.
+She spends the whole story asking what "liking" something means, and who she is. A picture raises similar questions: who owns it, where it lives, who can fetch it, and what deletion means. TOUKO records those answers in Git. Every change has history, and every file is named after its content.
 
 ## Why not another PicGo
 

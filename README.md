@@ -4,9 +4,7 @@
 
 # TOUKO
 
-把图片存进你自己的 Git 仓库。
-
-内容寻址 · Git 暂存语义 · 本地优先读取 · 多仓库统一图库
+把图片存进自己的 Git 仓库。
 
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-9c5238)](LICENSE)
@@ -17,52 +15,34 @@
 
 </div>
 
----
-
-TOUKO 是一个以 Git 仓库为数据库的图片库。它不把图片交给第三方网盘，而是把图片和元数据写进你自己拥有的仓库。GitHub 仓库是唯一数据源，jsDelivr 只是可选的分发层。
+TOUKO 是一个以 Git 仓库为数据源的图片库。图片和元数据都存在仓库里，GitHub 是数据源，jsDelivr 只负责可选的公开分发。本地 SQLite 用来加速读取，删掉后可以从仓库重建。
 
 ## 名字
 
-TOUKO 取自《终将成为你》（やがて君になる）的七海灯子（Nanami Touko）。
+名字来自《终将成为你》（やがて君になる）的七海灯子（Nanami Touko）。
 
 > 好きって、なんだろう。
 > 好きって、なに？
 >
-> —— 七海灯子
+> 七海灯子
 
-她用整个故事追问“喜欢”是什么，也追问自己是谁。图片库面对的是同类问题：一张图属于谁、存在哪里、谁能访问、删掉后还算不算存在。TOUKO 把答案交给 Git：每次改动都有记录，每个文件都以内容命名。
+一张图片也面对类似的问题：它属于谁，存在哪里，删除后还能不能找回。TOUKO 用 Git 记录这些变化。每次提交都有历史，每个文件名来自内容。
 
-## 为什么不是另一个 PicGo
+## 和 PicGo 的区别
 
-PicGo 和 PicList 解决的是“上传完就拿到链接”。TOUKO 解决的是“一年后我还能不能找回这张图，并确定它就是我当初上传的那一张”。
+PicGo 和 PicList 主要解决上传后拿到链接。TOUKO 还要回答一年后能不能找回原图，以及找回来的字节是否和当初一致。
 
-| | 传统图床客户端 | TOUKO |
-| --- | --- | --- |
-| 状态存放 | 远端目录 + 本地配置 | Git 仓库本身，可完整重建 |
-| 去重 | 通常无 | 内容寻址，相同字节共用对象 |
-| 发布 | 逐张即时上传 | 暂存后一次提交，失败保留现场 |
-| 换机 | 重新配置 | `repo use` + `sync` 完整恢复 |
-| 删除 | 删文件 | 有定义的删除，历史仍可追溯 |
-| 规模 | 单仓库 | 多仓库统一图库，按容量分配 |
+为此，Asset 的标题、标签、分类、MIME、尺寸和 SHA-256 都保存在仓库里。相同字节共用一个对象，换机器时执行 `repo use` 和 `sync` 就能恢复完整图库。上传、编辑和删除先进入暂存区，`commit` 才写成一次 Git 提交。多个仓库可以放进同一个图库，每个仓库仍有独立的暂存、提交和恢复流程。
 
-## 工作方式
-
-TOUKO 把远端 Git 仓库当作数据库，本地 SQLite 只是可重建的缓存。
-
-- 仓库保存 Asset、对象、标题、标签、分类、MIME、尺寸和内容哈希。
-- 文件名由内容的 SHA-256 决定。相同字节天然去重，链接不会指向被覆盖的旧图。
-- 上传、编辑和删除先进入暂存区；`commit` 才写成一个 Git 提交。中途失败不会留下半个图库。
-- 已存在本地副本时，预览读取本地浅克隆，不联网；需要最新状态时显式执行 `sync`。
-- 多个仓库可以合并成一个浏览与上传入口。每个仓库仍保留自己的暂存、提交和恢复语义，上传按剩余容量分配。
-- `rm` 从最新树移除图片，但 Git 历史保留；要真正清除需要重写历史，TOUKO 不提供这一功能。
+`rm` 只从最新树移除图片，Git 历史仍然保留。要彻底清除需要重写历史，TOUKO 不提供这个功能。
 
 ## 格式与空间
 
-TOUKO 接受 PNG、JPEG、GIF 和 WebP。上传 PNG/JPEG 时可以选择转换为 WebP；只有编码后的字节更小时才替换原图，因此不会为了“统一格式”反而增大文件。GIF 和已有 WebP 保持原字节，避免丢失动画或二次有损压缩。
+TOUKO 接受 PNG、JPEG、GIF 和 WebP。上传 PNG 或 JPEG 时可以选择转换为 WebP。只有编码后的字节更少时才替换原文件，因此不会为了统一格式反而把文件变大。GIF 和已有 WebP 保持原样，避免丢失动画或再次有损压缩。
 
-转换在服务端进入暂存区之前完成，对象哈希、大小、扩展名和仓库元数据都描述实际保存的字节。单张图片最大 100 MB，转换上限为 5000 万像素。
+转换在进入暂存区之前完成。对象哈希、大小、扩展名和仓库元数据描述的都是最终保存的字节。单张图片最大 100 MB，转换上限为 5000 万像素。
 
-博客和笔记中实际引用的 194 张图片迁移到新图库时，质量 85 的结果如下：
+博客和笔记中实际引用的 194 张图片迁移到新图库时，质量为 85 的转换结果如下：
 
 | 项目 | 数据 |
 | --- | ---: |
@@ -72,7 +52,7 @@ TOUKO 接受 PNG、JPEG、GIF 和 WebP。上传 PNG/JPEG 时可以选择转换�
 | 转为 WebP | 171 张 |
 | 保持原格式 | 23 张 |
 
-这是针对一批已经存在的图片的一次迁移结果，不是对任意图库的固定承诺。23 张保持原格式，是因为 WebP 编码后反而更大；转换只在字节更少时替换。更小的对象也减少了 CDN 传输和浏览器缓存占用。
+这是这批图片的实际结果，不代表所有图库都能达到同样比例。23 张保持原格式，是因为 WebP 编码后反而更大。转换只在更小时替换，更小的对象也会减少 CDN 传输和浏览器缓存占用。
 
 ## 界面
 
@@ -80,25 +60,23 @@ TOUKO 接受 PNG、JPEG、GIF 和 WebP。上传 PNG/JPEG 时可以选择转换�
   <img src="docs/images/webview-gallery.png" alt="TOUKO 图库界面" width="820" />
 </div>
 
-界面使用奶油米色与深藏蓝，中文为霞鹜文楷，拉丁文本为 Monaspace Radon。单击卡片复制 Markdown，并在指针旁显示结果。支持拖放、剪贴板粘贴，以及按分类、标签、目录和内容哈希筛选。
+界面使用奶油米色和深藏蓝，中文为霞鹜文楷，拉丁文本为 Monaspace Radon。单击卡片会复制 Markdown，并在指针旁显示结果。可以拖放、粘贴剪贴板图片，也可以按分类、标签、目录或内容哈希筛选。
 
-图库不会一次性挂载所有卡片。首屏显示 60 张，滚动接近底部时继续加载；离屏卡片跳过布局和绘制。1000 张图库的筛选、滚动与勾选仍然可交互，实测数据见[性能基线](#性能基线)。
+图库不会一次挂载所有卡片。首屏显示 60 张，滚动接近底部时继续加载，离屏卡片跳过布局和绘制。1000 张图库的筛选、滚动和勾选仍然可以正常操作，数据见[性能基线](#性能基线)。
 
 ## 安装
 
-### 平台与运行依赖
-
 | 平台 | v0.1.0 状态 |
 | --- | --- |
-| Linux amd64 | 已验证；release pipeline 构建 CLI 与桌面版 |
-| macOS | Experimental / unverified；不提供本轮 release artifact |
-| Windows | Experimental / unverified；不提供本轮 release artifact |
+| Linux amd64 | 已验证，release pipeline 会构建 CLI 和桌面版 |
+| macOS | Experimental / unverified，本轮没有 release artifact |
+| Windows | Experimental / unverified，本轮没有 release artifact |
 
-Linux 桌面已在 Wayland、GTK3 和 WebKitGTK 4.1 上验证。这不代表所有发行版、桌面环境或其他架构都已兼容。CLI 与桌面都需要 Git 支持 SHA-1 仓库和 `show-ref --exists`，建议使用 Git 2.46 或更高版本。桌面版还需要 GTK3、WebKitGTK 4.1；托盘需要 Ayatana AppIndicator 和托盘宿主。GitHub 登录推荐使用 `gh`。
+Linux 桌面在 Wayland、GTK3 和 WebKitGTK 4.1 上验证过。其他发行版、桌面环境或架构尚未验证。CLI 和桌面都需要 Git 支持 SHA-1 仓库与 `show-ref --exists`，建议使用 Git 2.46 或更高版本。桌面版还需要 GTK3、WebKitGTK 4.1；托盘需要 Ayatana AppIndicator 和托盘宿主。GitHub 登录推荐安装 `gh`。
 
-### Release 安装
+### 安装 release
 
-当前准备的是 v0.1.0 发布基础设施，不表示 tag 或 Release 已创建。正式发布后，从 [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases) 下载 `touko_0.1.0_linux_amd64.tar.gz` 和同名 `.sha256` 文件，在下载目录执行：
+当前只准备了 v0.1.0 的发布流程，tag 和 Release 还没有创建。正式发布后，从 [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases) 下载 `touko_0.1.0_linux_amd64.tar.gz` 和同名 `.sha256` 文件，在下载目录执行：
 
 ```sh
 sha256sum -c touko_0.1.0_linux_amd64.sha256
@@ -109,7 +87,7 @@ touko version
 touko-desktop --version
 ```
 
-预编译包不需要 Go。也可以直接运行解压后的 `bin/touko` 或 `bin/touko-desktop`；桌面条目和图标需要安装到 XDG 路径后才会出现在系统菜单中。缺少系统 WebView 时桌面版会明确失败，CLI 仍可单独使用。
+预编译包不需要 Go。也可以直接运行解压后的 `bin/touko` 或 `bin/touko-desktop`。桌面条目和图标需要安装到 XDG 路径，之后才会出现在系统菜单里。缺少系统 WebView 时桌面版会报错退出，CLI 仍可单独使用。
 
 ### 从源码构建
 
@@ -123,9 +101,9 @@ go build -o touko-desktop ./cmd/touko-desktop
 ./touko version --json
 ```
 
-普通开发构建显示 `dev / unknown`，不会冒充正式版本。版本注入和发布步骤见[版本与发布](docs/usage.md#11-版本与发布)，性能测量方法见 [benchmark](docs/benchmark.md)。
+开发构建显示 `dev / unknown`，不会被误认为正式版本。版本注入和发布步骤见[版本与发布](docs/usage.md#11-版本与发布)，测量方法见 [benchmark](docs/benchmark.md)。
 
-Arch 用户可以从当前 checkout 构建本地包。这不是已发布的 AUR 包，会同时安装两个程序、桌面条目和图标：
+Arch 用户可以从当前 checkout 构建本地包。这不是已经发布的 AUR 包，会安装两个程序、桌面条目和图标：
 
 ```sh
 cd packaging && makepkg -si
@@ -134,20 +112,17 @@ cd packaging && makepkg -si
 ## 快速开始
 
 ```sh
-# 连接已有仓库，或先 repo init 初始化
 ./touko --state-dir ~/.local/share/touko repo use Eurekaimer/TOUKO-WEBP-01
 ./touko --state-dir ~/.local/share/touko sync
 
-# 加图、整理元数据、发布
 ./touko --state-dir ~/.local/share/touko add photo.png --tag 旅行 --collection 示例
 ./touko --state-dir ~/.local/share/touko commit -m "images: add a photo"
 
-# 按标题、文件名、标签、分类或内容哈希找回
 ./touko --state-dir ~/.local/share/touko find 旅行
 ./touko --state-dir ~/.local/share/touko find 4aff401b
 ```
 
-常用命令包括 `status`、`ls`、`find`、`show`、`edit`、`rm`、`verify`、`reindex` 和 `import`，全部支持 `--json`。
+常用命令有 `status`、`ls`、`find`、`show`、`edit`、`rm`、`verify`、`reindex` 和 `import`，全部支持 `--json`。
 
 ## 图形界面
 
@@ -155,34 +130,34 @@ cd packaging && makepkg -si
 ./touko --state-dir ~/.local/share/touko serve --port 7788
 ```
 
-默认打开浏览器，`--no-open` 只启动服务。也可以运行 `touko-desktop` 打开原生窗口。窗口没有地址栏，但仍使用系统 WebView 渲染。
+默认会打开浏览器，加 `--no-open` 只启动服务。也可以运行 `touko-desktop` 打开原生窗口。窗口没有地址栏，但页面仍由系统 WebView 渲染。
 
-服务只监听本机回环地址，并校验 Host、Origin 和 CSRF。GitHub 凭据留在服务端进程内，不进入网页。
+服务只监听本机回环地址，并校验 Host、Origin 和 CSRF。GitHub 凭据留在服务端进程内，不会进入网页。
 
 ## 图床与 CDN
 
-GitHub 仓库是源，jsDelivr 是可选分发层：
+GitHub 仓库保存图片，jsDelivr 提供可选分发：
 
 ```text
 https://cdn.jsdelivr.net/gh/OWNER/REPO@BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
 https://raw.githubusercontent.com/OWNER/REPO/BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
 ```
 
-jsDelivr 对 GitHub 包有体积上限，超过后整包返回 403；此时改用 raw 直链即可，内容相同。TOUKO 按容量把图片分配到多个仓库，并为每个 Asset 记录实际所在仓库。
+jsDelivr 对 GitHub 包有体积上限，超过后整个包返回 403。此时可以改用 raw 直链，内容相同。TOUKO 按容量把图片分配到多个仓库，并记录每个 Asset 实际所在的仓库。
 
-预览按内容哈希返回 ETag 和 immutable 缓存。重复查看同一张图片时，浏览器可以直接复用缓存或得到 304，不需要再次读取 Git 对象。
+预览会根据内容哈希返回 ETag 和 immutable 缓存。再次查看同一张图片时，浏览器可以复用缓存或收到 304，不必重新读取 Git 对象。
 
 ## 性能基线
 
-以下数据来自本机一次可重复测量：Linux x86_64、20 逻辑 CPU、32 GB 内存、Go 1.27.1、本地 Git 后端，3 次重复取中位数。绝对时间会随机器和缓存状态变化，不能当成固定承诺。
+以下数据来自本机一次可重复测量：Linux x86_64、20 逻辑 CPU、32 GB 内存、Go 1.27.1、本地 Git 后端，3 次重复取中位数。实际时间会随机器和缓存状态变化。
 
 ![CLI 与 HTTP 基线：0、100、1000 张图](docs/images/benchmark-cli.svg)
 
-读取路径在 1000 张图时仍是毫秒级；`reindex` 和 `commit` 需要遍历或重写仓库元数据，因此明显更慢。图表的纵轴为对数刻度，避免启动耗时被提交耗时压成一条平线。
+1000 张图时，读取路径仍在毫秒级。`reindex` 和 `commit` 需要遍历或重写仓库元数据，所以明显更慢。图表纵轴使用对数刻度，避免启动耗时被提交耗时压成一条平线。
 
 ![桌面 RSS：空图库与 1000 张图的四个阶段](docs/images/benchmark-memory.svg)
 
-RSS 是 Linux 进程树的常驻集，按快照中的最高值选取。共享页会在多个进程中重复计算，所以整树数字不是实际新增的物理内存。空图库启动约 717 MiB，1000 张图浏览后约 918 MiB；WebKit 渲染进程是主要占用者，这部分来自系统 WebView，而不是 Go 业务进程。
+RSS 是 Linux 进程树的常驻集，这里取五次快照中的最高值。共享页会在多个进程中重复计算，整树数字不能当作新增的物理内存。空图库启动约 717 MiB，1000 张图浏览后约 918 MiB。主要占用来自 WebKit 渲染进程，属于系统 WebView 的成本。
 
 复现命令：
 
