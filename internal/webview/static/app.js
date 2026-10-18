@@ -140,6 +140,7 @@ function networkError(error) {
   }
   return error;
 }
+const apiRoot = (path, body) => api(path, body, "");
 async function api(path, body, prefix = viewPrefix) {
   const options = { headers: { Accept: "application/json" } };
   if (body !== undefined) {
@@ -1452,7 +1453,7 @@ async function loadLibraryBranches(repository, select) {
   if (select.dataset.loading === "true") return;
   select.dataset.loading = "true";
   try {
-    const value = await api(`branches?repository=${encodeURIComponent(repository)}`);
+    const value = await apiRoot(`branches?repository=${encodeURIComponent(repository)}`);
     const repo = repositories.find((item) => item.full_name === repository);
     select.replaceChildren(
       ...value.branches.map((branch) => new Option(
@@ -1502,7 +1503,7 @@ async function loadRepositoryBranches(preferredBranch = "") {
   clearError("repo-error");
   updateRepositoryControls();
   try {
-    const value = await api(`branches?repository=${encodeURIComponent(repository)}`);
+    const value = await apiRoot(`branches?repository=${encodeURIComponent(repository)}`);
     if (!current()) return;
     branches = value.branches;
     if (!branches.length) {
@@ -1549,7 +1550,7 @@ async function loadGitHubRepositories() {
   clearError("repo-error");
   updateRepositoryControls();
   try {
-    const auth = await api("auth");
+    const auth = await apiRoot("auth");
     if (!current()) return;
     $("auth-status").textContent = auth.configured
       ? `GitHub 身份：${auth.login}（来源：${auth.source}）`
@@ -1561,7 +1562,7 @@ async function loadGitHubRepositories() {
       return;
     }
     $("auth-status").textContent += " · 正在加载仓库…";
-    const value = await api("repos");
+    const value = await apiRoot("repos");
     if (!current()) return;
     repositories = value.repositories;
     $("auth-status").textContent = `GitHub 身份：${auth.login}（来源：${auth.source}）`;
@@ -1628,7 +1629,7 @@ async function openRepository() {
   if ($("repo-type").value === "github") void loadGitHubRepositories();
   $("workspace-links").replaceChildren(element("p", "field-help", "正在读取已连接工作区…"));
   try {
-    const value = await api("workspaces");
+    const value = await apiRoot("workspaces");
     if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
     $("workspace-links").replaceChildren();
     $("library-nav").replaceChildren();
@@ -1657,7 +1658,7 @@ async function openRepository() {
     $("workspace-links").replaceChildren(element("p", "field-help", `工作区列表读取失败，可重新打开重试；下方仍可连接仓库。\n${error.message}`));
   }
   try {
-    const value = await api("libraries");
+    const value = await apiRoot("libraries");
     if (session !== repositoryDialogSequence || !$("repo-dialog").open) return;
     $("library-nav").replaceChildren();
     for (const library of value.libraries) {
@@ -2281,12 +2282,8 @@ function bindEvents() {
       try {
         const value =
           mode === "library"
-            ? await api("libraries", { name, repositories: repositoriesChosen })
-            : await apiMember(
-                { id: view.library?.id || "", csrf: view.csrf },
-                "members",
-                { repositories: repositoriesChosen },
-              );
+            ? await apiRoot("libraries", { name, repositories: repositoriesChosen })
+            : await api("members", { repositories: repositoriesChosen }, `/l/${view.library?.id}`);
         if (mode === "library") {
           window.location.assign(value.url);
           return;
@@ -2318,7 +2315,7 @@ function bindEvents() {
     clearError("repo-error");
     setBusy(true);
     try {
-      const value = await api("repo", input);
+      const value = await apiRoot("repo", input);
       window.location.assign(value.url);
     } catch (error) {
       showError("repo-error", error);

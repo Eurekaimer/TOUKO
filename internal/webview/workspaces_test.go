@@ -91,6 +91,45 @@ func TestWorkspaceSwitchPreservesUnpublishedChanges(t *testing.T) {
 	f.request("GET", "/w/../../config.json", nil, http.StatusNotFound)
 }
 
+func TestWorkspaceListAcceptsOpaqueLegacyID(t *testing.T) {
+	f := newFixture(t)
+	f.setup()
+	location, err := f.service.Location(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dir := filepath.Join(f.service.Dir, "workspaces", id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if workspaceKey(location) == id {
+		t.Fatal("test ID accidentally matches the current hash")
+	}
+	var value struct {
+		Workspaces []workspaceEntry `json:"workspaces"`
+	}
+	if err := json.Unmarshal(f.request("GET", "/api/workspaces", nil, http.StatusOK).Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range value.Workspaces {
+		if entry.ID == id && entry.Location == location {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("legacy workspace missing from list: %+v", value.Workspaces)
+	}
+}
+
 func TestImportedPreviewUsesImmutableLocalGit(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()

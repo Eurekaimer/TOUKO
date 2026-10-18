@@ -153,9 +153,11 @@ func (m *workspaceSet) list(ctx context.Context, current string) (any, error) {
 		if err := location.Validate(); err != nil {
 			return nil, fmt.Errorf("workspace %s configuration: %w", id, err)
 		}
-		if workspaceKey(location) != id {
-			return nil, fmt.Errorf("workspace %s repository identity differs from its directory", id)
-		}
+		// Directory IDs are opaque identities created when a workspace is first
+		// selected. Older releases and repository-private flag updates can leave
+		// the directory name different from a freshly hashed location; the config
+		// file is the authoritative binding. Requiring a fresh hash here made the
+		// entire library dialog fail on otherwise healthy workspaces.
 		entries = append(entries, workspaceEntry{ID: id, URL: workspaceURL(id), Location: location})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
