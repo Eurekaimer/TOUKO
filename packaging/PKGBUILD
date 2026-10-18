@@ -16,7 +16,7 @@ pkgdesc='Local-first image gallery that keeps every picture in your own Git repo
 arch=('x86_64' 'aarch64')
 url='https://github.com/Eurekaimer/TOUKO'
 license=('MIT')
-depends=('glibc')
+depends=('glibc' 'git')
 optdepends=(
   'gtk3: MyGo desktop window'
   'webkit2gtk-4.1: MyGo desktop window (WebKitGTK renderer)'
@@ -39,8 +39,11 @@ build() {
   cd "$startdir/.."
   export GOTOOLCHAIN=local
   export CGO_ENABLED=0
-  go build -trimpath -buildvcs=true -ldflags '-s -w' -o "$srcdir/touko" ./cmd/touko
-  go build -trimpath -buildvcs=true -ldflags '-s -w' -o "$srcdir/touko-desktop" ./cmd/touko-desktop
+  local commit ldflags
+  commit=$(git rev-parse HEAD)
+  ldflags="-s -w -X github.com/Eurekaimer/TOUKO/internal/buildinfo.Version=dev-$pkgver -X github.com/Eurekaimer/TOUKO/internal/buildinfo.Commit=$commit"
+  go build -trimpath -buildvcs=true -ldflags "$ldflags" -o "$srcdir/touko" ./cmd/touko
+  go build -trimpath -buildvcs=true -ldflags "$ldflags" -o "$srcdir/touko-desktop" ./cmd/touko-desktop
 }
 
 package() {

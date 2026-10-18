@@ -50,10 +50,12 @@ PicGo and PicList solve "upload, then copy the link". TOUKO solves "in a year, c
 - **The repository is the database.** Assets, objects, titles, tags, collections, MIME types, dimensions and content hashes live remotely. Local SQLite is only a rebuildable cache.
 - **Content addressing.** A file is named by the SHA-256 of its bytes. Identical pictures deduplicate naturally, and a link can never point at an overwritten image.
 - **Stage, then publish.** Uploads, edits and removals enter a staging area; only `commit` writes a Git commit. A failure never leaves half a gallery behind.
-- **Local-first reads.** Previews read a local shallow clone: no network, no disturbance to the remote. `sync` is the explicit "talk to the remote" action.
+- **Local-first reads.** Once a local shallow clone exists, previews do not contact the remote. Creating the first GitHub clone still needs a network connection; `sync` explicitly refreshes it.
 - **Unified libraries.** Merge several repositories into one browsing and upload surface. Each repository keeps its own staging, commits and recovery, and uploads are assigned by remaining capacity.
 - **Real deletion.** Removing a picture takes it out of the latest tree and verifies the result; Git history remains, which is a feature rather than an oversight.
-- **One binary.** Written in Go with no Node build step and no runtime CDN. The CLI, the web interface and the MyGo desktop window share the same HTTP surface and business logic.
+- **CLI + native desktop.** Written in Go with no Node build step or runtime CDN. `touko` CLI/Web and the MyGo `touko-desktop` window share the HTTP surface and business logic; a release bundle contains both executables.
+- **Formats and space.** Accepts PNG, JPEG, GIF and WebP. Uploads can opt into PNG/JPEG → WebP conversion, which replaces the original only when the encoded bytes are smaller. GIF and existing WebP inputs are never re-encoded.
+- **Large galleries stay interactive.** Cards mount in bounded batches and offscreen layout is skipped; filtering, scrolling and selecting remain responsive with 1000 images (method in the [benchmark guide](docs/benchmark.md)).
 
 ## Interface
 
@@ -65,22 +67,50 @@ Cream paper and deep navy, LXGW WenKai and Monaspace Radon. A single click on a 
 
 ## Install
 
-Go 1.27.1 or later and a supported Git are required.
+### Platforms and runtime dependencies
+
+| Platform | v0.1.0 status |
+| --- | --- |
+| Linux amd64 | Verified; the release pipeline builds both CLI and desktop |
+| macOS | Experimental / unverified; no artifact in this release matrix |
+| Windows | Experimental / unverified; no artifact in this release matrix |
+
+The Linux desktop has been exercised on Wayland with GTK3 and WebKitGTK 4.1. This does not claim compatibility with every distribution, desktop environment or architecture. Both executables require Git with SHA-1 repository and `show-ref --exists` support (Git 2.46+ recommended). The desktop also needs GTK3 and WebKitGTK 4.1; the tray needs Ayatana AppIndicator and a tray host. Install `gh` for the recommended GitHub login flow.
+
+### Release installation (after publication)
+
+This checkout prepares v0.1.0 infrastructure; it does not mean a tag or Release has been published. Once available, download `touko_0.1.0_linux_amd64.tar.gz` and its `.sha256` file from [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases), then run in the download directory:
+
+```sh
+sha256sum -c touko_0.1.0_linux_amd64.sha256
+tar -xzf touko_0.1.0_linux_amd64.tar.gz
+sudo install -m755 touko_0.1.0_linux_amd64/bin/touko touko_0.1.0_linux_amd64/bin/touko-desktop /usr/local/bin/
+sudo cp -R touko_0.1.0_linux_amd64/share/. /usr/local/share/
+touko version
+touko-desktop --version
+```
+
+Prebuilt artifacts do not require Go. You can also run the extracted `bin/touko` or `bin/touko-desktop` directly; desktop entries and icons need installation into XDG locations for system menu discovery. A missing system WebView makes the desktop fail explicitly; the CLI remains independently usable.
+
+### Build from source
+
+Use the Go version specified by `go.mod` (currently 1.27.1) and the runtime dependencies above:
 
 ```sh
 git clone https://github.com/Eurekaimer/TOUKO.git
 cd TOUKO
 go build -o touko ./cmd/touko
-go build -o touko-desktop ./cmd/touko-desktop   # optional desktop window
+go build -o touko-desktop ./cmd/touko-desktop
+./touko version --json
 ```
 
-Arch users can build the local package, which compiles the current checkout and installs the CLI, desktop entry and icons together:
+Ordinary development builds report `dev / unknown`, not a release version. See [versioning and releases](docs/usage.md#11-版本与发布) for metadata injection and publication, and the [benchmark guide](docs/benchmark.md) for reproducible measurements.
+
+Arch users can build the local package from their current checkout (not a published AUR package); it installs both programs, the desktop entry and icons:
 
 ```sh
 cd packaging && makepkg -si
 ```
-
-If the desktop entry fails to launch, `Exec=` usually points at a bare command name that the session `PATH` does not contain; use the binary's absolute path.
 
 ## Quick start
 
@@ -132,6 +162,7 @@ jsDelivr enforces a size limit on GitHub packages and answers 403 for the whole 
 | [Repository format](docs/repository-format.md) | Remote layout and versioning |
 | [Local state](docs/local-state.md) | SQLite cache, durable staging and rebuilds |
 | [Publication](docs/publication.md) | Commit, recovery and deletion semantics |
+| [Benchmark](docs/benchmark.md) | Reproducible CLI/HTTP baseline and desktop RSS method |
 
 ## Boundaries
 

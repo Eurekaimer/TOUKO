@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
+	"github.com/Eurekaimer/TOUKO/internal/buildinfo"
 	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/github"
@@ -190,16 +191,28 @@ func (r *runtime) encode(v any) error { return json.NewEncoder(r.stdout).Encode(
 func (r *runtime) command() *cobra.Command {
 	root := &cobra.Command{
 		Use: "touko", Short: "Content-addressed image repositories",
+		Version:      buildinfo.String(),
 		SilenceUsage: true, SilenceErrors: true,
 		Args:             arguments(cobra.NoArgs),
 		PersistentPreRun: func(cmd *cobra.Command, args []string) { r.started = true },
 		RunE:             func(cmd *cobra.Command, args []string) error { return cmd.Help() },
 	}
+	root.SetVersionTemplate("touko {{.Version}}\n")
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error { return &usageError{err} })
 	root.PersistentFlags().StringVar(&r.stateDir, "state-dir", "", "Local state directory")
 	root.PersistentFlags().BoolVar(&r.json, "json", false, "Write JSON output")
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.AddCommand(r.repoCommand(), r.syncCommand(), r.reindexCommand(), r.importCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand(), r.authCommand(), r.urlCommand(), r.serveCommand())
+	root.AddCommand(&cobra.Command{Use: "version", Short: "Show version and source commit", Args: arguments(cobra.NoArgs), RunE: func(cmd *cobra.Command, args []string) error {
+		if r.json {
+			return r.encode(struct {
+				Version string `json:"version"`
+				Commit  string `json:"commit"`
+			}{buildinfo.Version, buildinfo.Commit})
+		}
+		_, err := fmt.Fprintln(r.stdout, "touko", buildinfo.String())
+		return err
+	}})
 	return root
 }
 

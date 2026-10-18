@@ -134,7 +134,19 @@ cat logo/TOUKO.png | /tmp/touko add - --name '剪贴板.png' --namespace notes -
 /tmp/touko commit -m 'images: batch import'
 ```
 
-一次 batch 的任一输入失败，该批不会留下部分 stage rows。stdin `-` 只能单独使用，不能混其他文件；`--name` 仅对 stdin 有效。未指定 stdin name 则按实际格式命名为 stdin.png/jpg/gif。图片格式由 header 决定，不信文件扩展名。当前支持 PNG/JPEG/GIF，单个最大 100,000,000 bytes，不整张图片加载到内存。
+一次 batch 的任一输入失败，该批不会留下部分 stage rows。stdin `-` 只能单独使用，不能混其他文件；`--name` 仅对 stdin 有效。未指定 stdin name 则按实际格式命名为 stdin.png/jpg/gif/webp。图片格式由 header 决定，不信文件扩展名。当前支持 PNG/JPEG/GIF/WebP，单个最大 100,000,000 bytes，不整张图片加载到内存。
+
+### WebP 上传与可选转换
+
+```bash
+# 原样上传 WebP
+/tmp/touko add photo.webp --namespace blog
+
+# 允许把本批 PNG/JPEG 转成 WebP；默认质量 85
+/tmp/touko add photo.png --webp --webp-quality 85
+```
+
+转换是逐文件的：只有编码后的 WebP 比原字节更小时才替换，否则保留原文件。GIF 与已有 WebP 始终原样保存（不丢动画、不做二次有损压缩）。转换在进入 staging 前完成，因此对象 hash、大小、扩展名和 manifest 都描述实际保存的 WebP 字节；`original_name` 仍记录用户传入的文件名。转换需要解码完整图片，超过 50,000,000 像素的图片会明确拒绝转换，可去掉 `--webp` 原样上传。`--webp-quality` 必须配合 `--webp`，范围 1–100。
 
 ### 指定仓库上传目录
 
@@ -249,3 +261,41 @@ bash examples/demo.sh
 先根据 [逐函数导航](function-reference.md) 找调用链，再阅读相关行为测试。优先修改已有模块，不另建通用 Storage/Plugin 层。新增用户可见行为要验证真实 CLI/Git/SQLite 状态，不写只验证调用转发或函数不 panic 的测试。稳定的设计决策与使用说明维护在 `docs/`；Agent 上下文、临时图库、性能输出与打包产物不进入源码提交。测试使用新建的独立图库和 state，不操作日常使用的图库。
 
 `.github/workflows/ci.yml` 在 `main` push 与所有 pull request 上执行 `go test ./...`、`go test -race ./...`、`go vet ./...` 和隔离的 CLI demo；使用 `go.mod` 指定的工具链及 Go module cache。Linux runner 启用 CGO 供 race detector 使用，任何一步失败都会使 job 失败。该 workflow 也可由 release workflow 调用。
+
+## 11. 版本与发布
+
+`touko version`、`touko --version` 和 `touko-desktop --version` 显示版本与完整源码 commit；`touko version --json` 输出 `{"version":"…","commit":"…"}`。这些路径不打开工作区或数据库，桌面版本查询也不需要显示会话。普通 `go build` 默认为 `dev` / `unknown`，不从目录名猜版本。
+
+两个程序共用 `internal/buildinfo`；可直接注入：
+
+```bash
+COMMIT=$(git rev-parse HEAD)
+go build -trimpath \
+  -ldflags "-X github.com/Eurekaimer/TOUKO/internal/buildinfo.Version=v0.1.0 -X github.com/Eurekaimer/TOUKO/internal/buildinfo.Commit=$COMMIT" \
+  -o /tmp/touko ./cmd/touko
+/tmp/touko version --json
+```
+
+### 本地构建 release bundle
+
+```bash
+# 从已审核的 checkout 构建；脚本只打包，不创建 tag 或发布。
+bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
+cd dist
+sha256sum -c touko_0.1.0_linux_amd64.sha256
+```
+
+脚本要求 Bash、Go（以 `go.mod` 为准）及 GNU coreutils/tar；只构建 Linux amd64，使用 `CGO_ENABLED=0`。第三个参数可指定输出目录，默认 `dist/`；同名归档或校验文件已存在时拒绝覆盖。压缩包包含 `bin/touko`、`bin/touko-desktop`、桌面条目、16–256px 图标、README、docs 和 LICENSE。桌面仍依赖系统 GTK3 / WebKitGTK 4.1，禁用 CGO 不等于不需要这些运行库。安装步骤见 [README](../README.md#安装)。
+
+本地 Arch 包继续从当前 checkout 构建，注入 `dev-r…` 版本及源码 commit；`Git` 是运行依赖。它不是 AUR 正式发布包。
+
+### GitHub Release
+
+`.github/workflows/release.yml` 由 `v*` tag push 触发；打包脚本只接受稳定的 `vMAJOR.MINOR.PATCH`。发布顺序：
+
+1. 调用 `ci.yml`，通过 test、race、vet 与隔离 CLI demo。
+2. 在 Linux runner 上按 `go.mod` 安装 Go 并复用 module cache，注入 tag 和 `GITHUB_SHA`，构建双程序归档及 SHA-256 文件。
+3. 校验归档、运行两个程序的版本命令，在新建的本地图库运行 CLI init/verify；成功才上传 artifacts。
+4. 独立 publish job 使用最小 `contents: write` 权限创建该已有 tag 的 GitHub Release，并附加归档和校验文件；`--verify-tag` 禁止隐式创建 tag。
+
+维护者确认准备发布后才手动创建并推送 `v0.1.0` tag。本轮不执行这一步；push `main` 或提交 PR 只触发 CI，不发布 Release。当前只验证 Linux amd64；macOS / Windows 为 experimental / unverified，其他 Linux 架构也不在发布矩阵。workflow 配置可本地静态检查，实际 GitHub 托管执行和发布结果必须等远端触发后确认，不能以本地构建冒充线上发布成功。

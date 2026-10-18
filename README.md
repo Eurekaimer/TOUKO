@@ -50,10 +50,12 @@ PicGo 和 PicList 解决的是「上传完就拿到链接」。TOUKO 解决的�
 - **仓库即数据库**——远端保存 Asset、对象、标题、标签、分类、MIME、尺寸与内容哈希。本地 SQLite 只是可重建的缓存。
 - **内容寻址**——文件名是内容的 SHA-256。同样的字节天然去重，链接永远不会指向被覆盖的旧图。
 - **暂存 → 提交**——上传、编辑、删除先进入暂存区；`commit` 才写成一个 Git 提交，中途失败不会留下半个图库。
-- **本地优先读取**——预览读本地浅克隆，不联网、不打扰远端。需要最新状态时才 `sync`。
+- **本地优先读取**——副本已存在时预览读本地浅克隆，不联网、不打扰远端；首次建立 GitHub 副本仍需网络。需要最新状态时显式 `sync`。
 - **统一图库**——把多个仓库合并成一个浏览与上传入口，每个仓库仍保有自己的暂存、提交与恢复语义，上传按剩余容量自动分配。
 - **真的删除**——从最新树移除，并可校验结果；Git 历史仍然保留，这是特性而非遗漏。
-- **一个二进制**——Go 编写，无 Node 构建、无运行时 CDN；CLI、Web 界面与 MyGo 原生窗口共用同一套 HTTP 与业务逻辑。
+- **CLI + 原生桌面**——Go 编写，无 Node 构建、无运行时 CDN；`touko` CLI/Web 与 `touko-desktop` MyGo 窗口共用 HTTP 与业务逻辑，发布包包含两个可执行文件。
+- **格式与空间**——接受 PNG、JPEG、GIF、WebP；上传时可选择把 PNG/JPEG 转成 WebP，仅在转换后字节更少时替换原图。GIF 和已有 WebP 不会被重新编码。
+- **大图库保持可交互**——卡片分批挂载并跳过离屏布局；1000 张图的筛选、滚动与勾选不会一次性构建全部 DOM（实测方法见 [benchmark](docs/benchmark.md)）。
 
 ## 界面
 
@@ -65,22 +67,50 @@ PicGo 和 PicList 解决的是「上传完就拿到链接」。TOUKO 解决的�
 
 ## 安装
 
-需要 Go 1.27.1 或更高版本，以及支持的 Git。
+### 平台与运行依赖
+
+| 平台 | v0.1.0 状态 |
+| --- | --- |
+| Linux amd64 | 已验证；release pipeline 构建 CLI 与桌面版 |
+| macOS | Experimental / unverified；不提供本轮 release artifact |
+| Windows | Experimental / unverified；不提供本轮 release artifact |
+
+Linux 桌面已在 Wayland / GTK3 / WebKitGTK 4.1 上验证；这不是所有发行版、桌面环境或其他架构的兼容性承诺。CLI 与桌面均需要 Git（支持 SHA-1 仓库与 `show-ref --exists`，建议 Git 2.46+）。桌面另需 GTK3、WebKitGTK 4.1；托盘需要 Ayatana AppIndicator 与托盘宿主。GitHub 登录推荐安装 `gh`。
+
+### Release 安装（发布后）
+
+当前准备的是 v0.1.0 发布基础设施，不表示 tag 或 Release 已创建。正式发布后，从 [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases) 下载 `touko_0.1.0_linux_amd64.tar.gz` 及同名 `.sha256`，在下载目录执行：
+
+```sh
+sha256sum -c touko_0.1.0_linux_amd64.sha256
+tar -xzf touko_0.1.0_linux_amd64.tar.gz
+sudo install -m755 touko_0.1.0_linux_amd64/bin/touko touko_0.1.0_linux_amd64/bin/touko-desktop /usr/local/bin/
+sudo cp -R touko_0.1.0_linux_amd64/share/. /usr/local/share/
+touko version
+touko-desktop --version
+```
+
+安装预编译包不需要 Go。也可以不安装，直接运行解压后的 `bin/touko` 或 `bin/touko-desktop`；桌面条目和图标需安装到 XDG 路径后才能被系统菜单发现。缺少系统 WebView 时桌面版明确失败，CLI 仍可单独使用。
+
+### 从源码构建
+
+使用 `go.mod` 指定的 Go 版本（当前 1.27.1），以及上述运行依赖：
 
 ```sh
 git clone https://github.com/Eurekaimer/TOUKO.git
 cd TOUKO
 go build -o touko ./cmd/touko
-go build -o touko-desktop ./cmd/touko-desktop   # 可选：原生窗口
+go build -o touko-desktop ./cmd/touko-desktop
+./touko version --json
 ```
 
-Arch 用户可以构建本地包（从当前 checkout 编译，同时安装 CLI、桌面条目与图标）：
+普通开发构建显示 `dev / unknown`，不会冒充正式版本。版本注入与发布步骤见 [版本与发布](docs/usage.md#11-版本与发布)；性能基线见 [benchmark](docs/benchmark.md)。
+
+Arch 用户可从当前 checkout 构建本地包（不是已发布的 AUR 包，同时安装两个程序、桌面条目与图标）：
 
 ```sh
 cd packaging && makepkg -si
 ```
-
-若桌面条目启动失败，通常是 `Exec=` 指向了不在会话 `PATH` 里的裸命令名——改成二进制绝对路径即可。
 
 ## 快速开始
 
@@ -132,6 +162,7 @@ jsDelivr 对 GitHub 包有体积上限，超过后整包返回 403；此时改�
 | [仓库格式](docs/repository-format.md) | 远端目录结构与版本演进 |
 | [本地状态](docs/local-state.md) | SQLite 缓存、耐久暂存与重建 |
 | [发布协议](docs/publication.md) | 提交、恢复与删除语义 |
+| [Benchmark](docs/benchmark.md) | 可重复的 CLI/HTTP 基线与桌面 RSS 方法 |
 
 ## 边界
 

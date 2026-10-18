@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Run from the project root. Requires Go 1.26+, Git, Bash, and Python 3 stdlib.
+# Run from the project root. Requires Go matching go.mod, Git, Bash, Python 3 stdlib.
 # This demo uses only local Git; it never reads a token or contacts GitHub.
 set -euo pipefail
 
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
     printf '%s\n' 'Usage: bash examples/demo.sh [EMPTY_DIRECTORY]' \
-        'Run from the TOUKO project root; requires Go 1.26+, Git, Bash, Python 3 (stdlib only).' \
+        'Run from the TOUKO project root; requires Go matching go.mod, Git, Bash, Python 3 (stdlib only).' \
         'Go module dependencies must already be cached; network downloads are disabled.' \
         'An omitted directory uses mktemp. Results are retained; nonempty targets are refused.'
     exit 0

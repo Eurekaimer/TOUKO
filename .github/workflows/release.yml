@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Build Linux amd64 CLI and desktop bundle
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: bash scripts/release.sh "$RELEASE_VERSION" "$GITHUB_SHA"
+      - name: Smoke release binaries and checksum
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum -c "touko_${RELEASE_VERSION#v}_linux_amd64.sha256"
+          tar -xzf "touko_${RELEASE_VERSION#v}_linux_amd64.tar.gz"
+          bin="touko_${RELEASE_VERSION#v}_linux_amd64/bin"
+          "$bin/touko" version --json
+          "$bin/touko-desktop" --version
+          root=$(mktemp -d)
+          "$bin/touko" --state-dir "$root/state" repo init --local "$root/gallery.git"
+          "$bin/touko" --state-dir "$root/state" verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: touko-linux-amd64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: touko-linux-amd64
+          path: dist
+      - name: Publish verified tag artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: >-
+          gh release create "$RELEASE_VERSION" dist/*.tar.gz dist/*.sha256
+          --verify-tag --title "TOUKO $RELEASE_VERSION" --generate-notes

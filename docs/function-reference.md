@@ -129,7 +129,8 @@
 
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
-| `Ingest` | ctx、source、tempDir → `Result{Object, TempPath}`。 | source 只读一次，经 MultiWriter 同时写临时文件和 SHA-256；读到第 100000001 字节即可拒绝超限。Sync/Close 后从临时文件重新读 header，不解码完整图片；扩展名来自真实 PNG/JPEG/GIF 格式。空输入、格式错误、取消、IO 失败均移除临时文件；成功后临时文件由调用者接管，source 始终由调用者管理。 |
+| `Ingest`、`IngestWithOptions` | ctx、source、tempDir、可选 Options → `Result{Object, TempPath}`。 | source 只读一次，经 MultiWriter 同时写临时文件和 SHA-256；读到第 100000001 字节即可拒绝超限。Sync/Close 后从临时文件重新读 header；扩展名来自真实 PNG/JPEG/GIF/WebP 格式。可选转换只解码 PNG/JPEG，编码 WebP 后仅在更小时替换；GIF/WebP 保持原字节。转换受 50,000,000 像素上限约束。空输入、格式错误、取消、IO 失败、无效质量均移除临时文件；成功后临时文件由调用者接管，source 始终由调用者管理。 |
+| `convertToWebP` | ctx、源临时文件、tempDir、quality → 新 `Result`。 | 完整解码、编码到独立临时文件并流式计算 SHA-256；输出尺寸来自解码 bounds，manifest 描述实际 WebP 字节。失败不留下候选文件。 |
 | `(contextReader).Read` | 读取前后检查 ctx，将取消传播给复制/DecodeConfig。 | 不把读完时已取消的输入视作成功；不自行 Close source。 |
 
 ### [`staging/files.go`](../internal/staging/files.go)
@@ -446,7 +447,7 @@ Cobra 命令构造函数返回 `*cobra.Command`；真正业务发生在其匿名
 | `(*runtime).service` | ctx → 本次调用惰性打开并复用的 Service。 | StateDir→app.Open，只有需要本地状态的命令才开 DB；Run 最终关闭。 |
 | `(*runtime).backend` | Service.Location → localgit或GitHub API adapter。 | GitHub经credential.Resolve取得运行时凭据；用于写入与权威journal恢复，不以浅clone代替远端关系。localgit会实际Open仓库。 |
 | `(*runtime).encode` | 任意结果 → stdout 单个 JSON 值。 | 输出错误返回给 Run，不写调试日志。 |
-| `(*runtime).command` | 创建 root 与全部命令树。 | 注册全局 state-dir/json，禁自动 completion 子命令；Cobra 只解析，业务在子命令；PersistentPreRun 标记已开始，统一用法错误包装。 |
+| `(*runtime).command` | 创建 root 与全部命令树。 | 注册全局 state-dir/json、`version` 与 `--version`，禁自动 completion 子命令；版本查询只读 buildinfo，不打开 Service。其他业务在子命令；PersistentPreRun 标记已开始，统一用法错误包装。 |
 | `(*runtime).printAssets` | AssetView 列表 → JSON envelope 或人类行。 | nil 规范为空数组；人类输出 ID/state/namespace/title/hash；不改变 stage。 |
 | `(*runtime).statusCommand` | status → 本地 head/base/排序 changes。 | 只 Load，不隐式 sync；JSON 空 changes 为 []。人类删除条目的 metadata 从 committed Assets 取。 |
 | `(*runtime).resetCommand` | 要求显式--staged → backend + Service.Reset。 | GitHub构造APIclient但无journal不发HTTP；有journal用权威API恢复，不用浅clone。localgit仍会Open，因此本地仓库缺失时不能承诺离线reset成功。不修改远端ref。 |
@@ -504,6 +505,11 @@ Cobra 命令构造函数返回 `*cobra.Command`；真正业务发生在其匿名
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
 | `main` | 将真实 os.Args/stdin/stdout/stderr 接到 cli.Run。 | 只在进程入口建立 Background 根 context，通过 NotifyContext 处理 SIGINT/SIGTERM；Run 返回后 stop 通知并 os.Exit(code)。深层长 IO 继续使用传入 ctx，不自行另造 Background 截断取消链。 |
+
+### [`internal/buildinfo`](../internal/buildinfo/buildinfo.go)
+
+`Version`、`Commit` 由 `-ldflags -X` 注入，未注入时为 `dev`、`unknown`。`String` 为两个入口提供一致的版本文字，不读取 Git、网络或本地工作区。`version --json` 直接编码两个字段。
+
 
 ## 12. 按问题定位，而不是随意跨层改代码
 
@@ -574,7 +580,8 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `(*Server).selectRepository` | 严格JSON → {url,location}。 | local可显式create；GitHub Discover默认branch/private。workspaceSet按Location选择独立Service，不覆盖旧仓库stage；仅local create自动Initialize，其他库需显式init/sync；前端收到url后导航。 |
 | `(*Server).assetURL` | UUID、provider query → url、committed。 | 持本地锁读取可见 Asset，调用现有 BuildURL；added 为预期链接，modified 的 object 仍 committed。local/private 不产生假链接。 |
 | `(contextReader).Read` | 调用者 ctx 与 reader → bytes。 | 每次读之前检查取消；不承诺能强制打断任意自定义阻塞 reader，HTTP 连接关闭与 adapter 负责实际 IO 解除。 |
-| `(*Server).upload` | multipart files + directory/metadata → staged AssetViews。 | request≤500MB、单图≤100MB、≤100文件；私有临时目录流式spool并检PNG/JPEG/GIF，metadata有界不重复，tags/collections为JSON数组。整批预检后一次Add，directory传AddOptions；defer清spool，失败不留半批stage。 |
+| `(*Server).preview` | Asset selector → 原图字节。 | 先按当前 workspace 解析 Asset（删除后这里返回404），再以内容 hash 设置 ETag 与 `private, immutable`；`If-None-Match` 命中直接304，跳过原图读取。缓存不能绕过身份/删除检查。 |
+| `(*Server).upload` | multipart files + directory/metadata → staged AssetViews。 | request≤500MB、单图≤100MB、≤100文件；私有临时目录先spool原始part，metadata（含 `convert_webp`/`webp_quality`）有界且不重复，tags/collections为JSON数组，然后在已知选项下统一Ingest；支持PNG/JPEG/GIF/WebP。整批预检后一次Add，directory/转换参数传AddOptions；defer清spool，失败不留半批stage。 |
 | `(*lazyGit).resolve` | ctx → 按需打开并复用的 Git adapter。 | Reset 没有 journal 时可离线，不因提前打开不可用 backend 而失败；有 journal 时才访问远端，不能绕过恢复。 |
 | `(*lazyGit).Head`、`Commit`、`Tree`、`OpenBlob`、`IsAncestor` | repository.Git 读接口的延迟装配。 | 每个方法先 resolve，再调用同一 adapter；只解决普通 reset 的离线边界，不改变返回值/错误。 |
 | `(*lazyGit).CreateBlob`、`CreateTree`、`CreateCommit`、`UpdateRef` | repository.Git 写接口的延迟装配。 | 与上行相同；完整实现接口，不伪造未使用方法的成功结果。 |
@@ -687,7 +694,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
-| `main` | `--state-dir`、`--port` → `desktop.Run`。 | 与 CLI 相同的 state 选择规则；参数非法退出码 2，Run 出错退出码 1。窗口壳不另写业务状态。 |
+| `main` | `--state-dir`、`--port` → `desktop.Run`；`--version` 仅打印 buildinfo。 | 与 CLI 相同的 state 选择规则；参数非法退出码 2，Run 出错退出码 1。版本查询不启动窗口或 Service。窗口壳不另写业务状态。 |
 | `Run` | stateDir、port、输出 → 直到退出的错误。 | 必须在主 goroutine 上运行：MyGo 在该线程驱动系统 WebView。复用 `app.Open` + `webview.Listen`（同一内嵌 UI 与 API），窗口关闭时隐藏而不退出，真正退出时先取消并 join 请求再关 SQLite。 |
 | `session.onClose` | window close 事件。 | 未在退出流程时 `PreventDefault` 并隐藏窗口；MyGo 只要有一个窗口拒绝关闭就整体放弃退出，因此退出标志必须放行，否则托盘“退出”会静默挂住。 |
 | `session.addTray` | 托盘图标与菜单。 | 菜单项：显示主窗口（`Show`+`Focus`）、在浏览器中打开（`browser.Open` 到 loopback URL）、打开工作区目录、分隔线、退出 TOUKO。AppIndicator 不提供点击事件，所以“重新打开窗口”必须是一个菜单项；打开失败写 stdout，不静默。 |
