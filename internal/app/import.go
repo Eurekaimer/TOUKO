@@ -160,6 +160,8 @@ func inspectLegacy(ctx context.Context, r repository.Reader, entry repository.Gi
 		object.Ext, object.MIME = "jpg", "image/jpeg"
 	case "gif":
 		object.Ext, object.MIME = "gif", "image/gif"
+	case "webp":
+		object.Ext, object.MIME = "webp", "image/webp"
 	default:
 		return object, image.ErrFormat
 	}

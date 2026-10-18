@@ -1478,6 +1478,33 @@ progress {
   line-height: var(--lh-read);
   overflow-wrap: anywhere;
 }
+.webp-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  background: var(--mount);
+  border-radius: var(--radius-mount);
+}
+.webp-toggle,
+.webp-quality {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.webp-quality input {
+  width: 5.5rem;
+}
+.webp-option small {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-read);
+}
 .field-help code,
 .repo-security code {
   padding: 1px 5px;

@@ -57,7 +57,7 @@ LEGACY_STATE="$HOME/.local/share/touko-picgo"
 /tmp/touko --state-dir "$LEGACY_STATE" commit -m 'images: upload into images/blog'
 ```
 
-`import` 只读取固定 Git HEAD 中已提交的普通 PNG/JPEG/GIF；按真实 header 识别，支持无后缀和 Unicode 文件。`--directory img` 递归限定仓库路径，留空扫描全仓库；已有管理路径/非图片跳过，重复导入幂等。导入只暂存 metadata，保留原路径、原 Git blob 和原链接，不重新上传、不复制到 `objects/`。未初始化会拒绝，错误不留下部分导入；检查 imported/skipped 及暂存后必须显式 commit。删除纳管图并提交会按完整路径末引用规则移除原文件，不是仅取消纳管。
+`import` 只读取固定 Git HEAD 中已提交的普通 PNG/JPEG/GIF/WebP；按真实 header 识别，支持无后缀和 Unicode 文件。`--directory img` 递归限定仓库路径，留空扫描全仓库；已有管理路径/非图片跳过，重复导入幂等。导入只暂存 metadata，保留原路径、原 Git blob 和原链接，不重新上传、不复制到 `objects/`。未初始化会拒绝，错误不留下部分导入；检查 imported/skipped 及暂存后必须显式 commit。删除纳管图并提交会按完整路径末引用规则移除原文件，不是仅取消纳管。
 
 `add --directory` 是仓库目标目录，不是本机输入目录，新图用内容 hash 命名。路径为规范相对 POSIX 路径，禁止穿越、反斜杠、控制字符、`.git/.touko` 路径段。**首次提交含显式 `path` 的导入/目录上传会原子升级 manifest 到 format v2；旧客户端 fail-closed 拒绝读取，请先升级每台设备。** 现有 v1 可读，默认 canonical 上传不强制升级。网页有同样的旧图库导入、目标目录、真实路径搜索与目录筛选。
 

@@ -104,7 +104,30 @@ func imageBytes(t *testing.T) []byte {
 	}
 	return b.Bytes()
 }
+func photoBytes(t *testing.T) []byte {
+	t.Helper()
+	im := image.NewNRGBA(image.Rect(0, 0, 128, 96))
+	state := uint32(0x9e3779b9)
+	for y := range 96 {
+		for x := range 128 {
+			state ^= state << 13
+			state ^= state >> 17
+			state ^= state << 5
+			im.SetNRGBA(x, y, color.NRGBA{R: uint8(state), G: uint8(state >> 8), B: uint8(state >> 16), A: 255})
+		}
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, im); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
 func (f *fixture) upload(files [][]byte, status int) *httptest.ResponseRecorder {
+	f.t.Helper()
+	return f.uploadOptions(files, nil, status)
+}
+func (f *fixture) uploadOptions(files [][]byte, extra map[string]string, status int) *httptest.ResponseRecorder {
 	f.t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -118,6 +141,9 @@ func (f *fixture) upload(files [][]byte, status int) *httptest.ResponseRecorder 
 	writer.WriteField("namespace", "notes")
 	writer.WriteField("tags", `[" sky ","sky"]`)
 	writer.WriteField("collections", `["日常"]`)
+	for name, value := range extra {
+		writer.WriteField(name, value)
+	}
 	writer.Close()
 	req := httptest.NewRequest("POST", testOrigin+"/api/upload", &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -199,6 +225,59 @@ func TestGalleryLifecycleAndImmutablePreview(t *testing.T) {
 	f.request("POST", "/api/sync", map[string]any{}, 200)
 	f.request("GET", "/api/assets/"+id+"/image", nil, 404)
 	f.request("POST", "/api/verify", map[string]any{}, 200)
+}
+
+func TestPreviewRevalidatesWithoutReadingBytes(t *testing.T) {
+	f := newFixture(t)
+	f.setup()
+	id, data := f.add()
+	first := f.request("GET", "/api/assets/"+id+"/image", nil, 200)
+	if !bytes.Equal(first.Body.Bytes(), data) {
+		t.Fatal("initial preview bytes differ")
+	}
+	tag := first.Header().Get("ETag")
+	if tag == "" || first.Header().Get("Cache-Control") != "private, max-age=31536000, immutable" {
+		t.Fatalf("preview caching headers: %v", first.Header())
+	}
+	req := httptest.NewRequest("GET", testOrigin+"/api/assets/"+id+"/image", nil)
+	req.Header.Set("If-None-Match", tag)
+	out := httptest.NewRecorder()
+	f.server.ServeHTTP(out, req)
+	if out.Code != http.StatusNotModified || out.Body.Len() != 0 {
+		t.Fatalf("revalidation: %d %q", out.Code, out.Body.String())
+	}
+	f.request("POST", "/api/remove", map[string]any{"selectors": []string{id}}, 200)
+	f.request("GET", "/api/assets/"+id+"/image", nil, 404)
+}
+
+func TestUploadWebPAndOptionalConversion(t *testing.T) {
+	f := newFixture(t)
+	f.setup()
+	f.uploadOptions([][]byte{photoBytes(t)}, map[string]string{
+		"convert_webp": "true", "webp_quality": "80",
+	}, 200)
+	state := f.request("GET", "/api/state", nil, 200)
+	var value struct {
+		Assets []app.AssetView `json:"assets"`
+	}
+	if err := json.Unmarshal(state.Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Assets) != 1 {
+		t.Fatalf("uploaded assets: %+v", value.Assets)
+	}
+	asset := value.Assets[0].Asset
+	if asset.Object.Ext != "webp" || asset.Object.MIME != "image/webp" {
+		t.Fatalf("conversion metadata: %+v", asset)
+	}
+	preview := f.request("GET", "/api/assets/"+asset.ID.String()+"/image", nil, 200)
+	if preview.Header().Get("Content-Type") != "image/webp" || int64(preview.Body.Len()) != asset.Object.Size {
+		t.Fatalf("converted preview headers or size differ: %s", preview.Header())
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(preview.Body.Bytes()))
+	if err != nil || format != "webp" || config.Width != 128 || config.Height != 96 {
+		t.Fatalf("preview is not WebP: %+v %q %v", config, format, err)
+	}
 }
 
 func TestUploadFailureIsAtomicAndCleansTemporaryFiles(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/app"
 	"github.com/Eurekaimer/TOUKO/internal/delivery"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
+	ingest "github.com/Eurekaimer/TOUKO/internal/image"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/spf13/cobra"
 )
@@ -16,9 +17,17 @@ import (
 func (r *runtime) addCommand() *cobra.Command {
 	var namespace, directory, title, name, output string
 	var tags, collections []string
+	var convertWebP bool
+	var webpQuality int
 	cmd := &cobra.Command{Use: "add FILE...", Short: "Stage images, or read one image from stdin with add -", Args: arguments(cobra.MinimumNArgs(1)), RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("output") && r.json {
 			return usage("--output cannot be combined with --json")
+		}
+		if cmd.Flags().Changed("webp-quality") && !convertWebP {
+			return usage("--webp-quality requires --webp")
+		}
+		if convertWebP && (webpQuality < 1 || webpQuality > 100) {
+			return usage("--webp-quality must be between 1 and 100")
 		}
 		if output != "" && output != "id" && output != "markdown" {
 			return usage("--output must be id or markdown")
@@ -39,7 +48,10 @@ func (r *runtime) addCommand() *cobra.Command {
 		if err != nil {
 			return &usageError{err}
 		}
-		opts := app.AddOptions{Namespace: ns, Directory: directory, Tags: tags, Collections: collections}
+		opts := app.AddOptions{
+			Namespace: ns, Directory: directory, Tags: tags, Collections: collections,
+			ConvertWebP: convertWebP, WebPQuality: webpQuality,
+		}
 		if cmd.Flags().Changed("title") {
 			opts.Title = &title
 		}
@@ -110,6 +122,8 @@ func (r *runtime) addCommand() *cobra.Command {
 	cmd.Flags().StringArrayVar(&collections, "collection", nil, "Collection; repeat for multiple collections")
 	cmd.Flags().StringVar(&name, "name", "", "Original filename for stdin input")
 	cmd.Flags().StringVar(&output, "output", "", "Output format: id or markdown (default: human-readable)")
+	cmd.Flags().BoolVar(&convertWebP, "webp", false, "Convert PNG/JPEG uploads to WebP when that reduces bytes; GIF and WebP stay unchanged")
+	cmd.Flags().IntVar(&webpQuality, "webp-quality", ingest.DefaultWebPQuality, "WebP quality 1-100 (with --webp)")
 	return cmd
 }
 

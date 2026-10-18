@@ -375,12 +375,12 @@
             ><svg class="icon large-icon"><use href="#i-upload" /></svg
             ><strong>拖入图片，或点击选择</strong
             ><span id="upload-limit"
-              >PNG、JPEG 或 GIF。每张不超过 100 MB，每批不超过 500 MB
+              >PNG、JPEG、GIF 或 WebP。每张不超过 100 MB，每批不超过 500 MB
               或 100 张。</span
             ><input
               type="file"
               id="upload-files"
-              accept="image/png,image/jpeg,image/gif"
+              accept="image/png,image/jpeg,image/gif,image/webp"
               multiple
               aria-label="选择要上传的图片"
           /></label>
@@ -394,7 +394,7 @@
               <svg class="icon"><use href="#i-copy" /></svg>从剪贴板粘贴
             </button>
             <span id="upload-paste-help" class="field-help"
-              >桌面版可直接按 Ctrl / ⌘ + V。浏览器会索取一次性剪贴板图片权限；只支持 PNG、JPEG、GIF。</span
+              >桌面版可直接按 Ctrl / ⌘ + V。浏览器会索取一次性剪贴板图片权限；支持 PNG、JPEG、GIF、WebP。</span
             >
           </div>
           <div class="upload-list" id="upload-list"></div>
@@ -431,6 +431,25 @@
           <label>目标目录（可选）<input id="upload-directory" placeholder="例如 images/blog，留空使用默认内容路径" />
             <small>相对仓库根目录，使用 / 分隔；图片以内容哈希命名，不覆盖原文件名。</small>
           </label>
+          <div class="webp-option">
+            <label class="webp-toggle"
+              ><input type="checkbox" id="upload-webp" />
+              把 PNG / JPEG 转为 WebP</label
+            ><label class="webp-quality"
+              >质量<input
+                type="number"
+                id="upload-webp-quality"
+                min="1"
+                max="100"
+                value="85"
+                disabled
+              /></label
+            >
+            <small
+              >可选。仅在 WebP 更小时替换原图（转换后不保留原始字节）；
+              GIF 与已有 WebP 保持原样，避免丢失动画或二次压缩。</small
+            >
+          </div>
           <p class="field-help">
             标签和分类可以用中文逗号、英文逗号或换行分隔。分类之间是平级关系，不分层级。
           </p>
@@ -464,7 +483,7 @@
       </div>
       <form id="import-form">
         <div class="dialog-body">
-          <p class="muted intro">扫描仓库固定 HEAD 中已有的 PNG、JPEG 和 GIF，保留原路径与旧链接；不会重新上传或移动图片。导入只暂存管理元数据，不会自动发布。</p>
+          <p class="muted intro">扫描仓库固定 HEAD 中已有的 PNG、JPEG、GIF 和 WebP，保留原路径与旧链接；不会重新上传或移动图片。导入只暂存管理元数据，不会自动发布。</p>
           <p id="import-initialization" class="notice warning" hidden>此仓库尚未初始化。请关闭此窗口，先同步已有 TOUKO 图库，或明确点击「初始化 TOUKO」，再回来导入。初始化不会自动导入旧图片。</p>
           <label id="import-member-field" hidden>来源成员<span class="select-field"
               ><select id="import-member"></select></span>

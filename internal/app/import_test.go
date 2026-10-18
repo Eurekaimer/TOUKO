@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	stdimage "image"
+	"image/color"
 	"io"
 	"path/filepath"
 	"reflect"
@@ -12,7 +14,19 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
+	"github.com/gen2brain/webp"
 )
+
+func webpBytes(t *testing.T) []byte {
+	t.Helper()
+	img := stdimage.NewNRGBA(stdimage.Rect(0, 0, 9, 6))
+	img.SetNRGBA(3, 2, color.NRGBA{R: 20, G: 180, B: 90, A: 255})
+	var b bytes.Buffer
+	if err := webp.Encode(&b, img, webp.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
 
 func TestImportLegacyPreservesPathsAndPublishesRecoverableV2(t *testing.T) {
 	ctx, r, s := realRepository(t)
@@ -107,6 +121,27 @@ func TestImportLegacyPreservesPathsAndPublishesRecoverableV2(t *testing.T) {
 	}
 	if remainingPaths["img/photo.PNG"] || !remainingPaths["img/无后缀"] || !remainingPaths["outside.png"] || !remainingPaths["img/notes.txt"] {
 		t.Fatalf("custom deletion removed unrelated or retained deleted files: %#v", remainingPaths)
+	}
+}
+
+func TestImportLegacyRecognizesWebP(t *testing.T) {
+	ctx, r, s := realRepository(t)
+	data := webpBytes(t)
+	publishRaw(t, ctx, r, []repository.TreeChange{
+		{Path: "img/photo.webp", Blob: blob(t, ctx, r, data)},
+	})
+	result, err := s.ImportLegacy(ctx, r, ImportOptions{Directory: "img"})
+	if err != nil || result.Imported != 1 || result.Skipped != 0 {
+		t.Fatalf("WebP import: %#v, %v", result, err)
+	}
+	state, err := s.Store.Load(ctx)
+	if err != nil || len(state.Changes) != 1 {
+		t.Fatalf("WebP staging: %#v, %v", state, err)
+	}
+	for _, change := range state.Changes {
+		if change.Asset == nil || change.Asset.Object.Ext != "webp" || change.Asset.Object.MIME != "image/webp" || change.Asset.Object.Width != 9 || change.Asset.Object.Height != 6 {
+			t.Fatalf("WebP metadata: %+v", change)
+		}
 	}
 }
 

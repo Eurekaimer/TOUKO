@@ -2,7 +2,7 @@
 
 这篇教程面向会编程、但没有参与本轮实现的读者。目标不是记住目录，而是能回答三个问题：**一条命令到底改了什么？中途失败留下什么？修改某个功能时，哪些边界不能破坏？**
 
-当前实现管理 PNG/JPEG/GIF，提供 CLI 和本地浏览器 Webview：以 Git 保存图片和完整元数据，以 SQLite schema2 保存 committed cache，以独立 `workspace.json` 耐久保存暂存修改及发布日志。后端保留本地 Git 与 GitHub Git Data API 写入，GitHub 常规读取使用本地 clone；没有缩略图服务、R2、插件框架或自动冲突合并。Webview 复用业务核心，并为多个仓库隔离工作区。
+当前实现管理 PNG/JPEG/GIF/WebP，提供 CLI 和本地浏览器 Webview：以 Git 保存图片和完整元数据，以 SQLite schema2 保存 committed cache，以独立 `workspace.json` 耐久保存暂存修改及发布日志。后端保留本地 Git 与 GitHub Git Data API 写入，GitHub 常规读取使用本地 clone；没有缩略图服务、R2、插件框架或自动冲突合并。Webview 复用业务核心，并为多个仓库隔离工作区。
 
 本文的函数名以源码为准，不依赖容易变化的行号。逐函数查询见 [函数参考](function-reference.md)，日常操作和 GitHub 接入见 [使用教程](usage.md)。本文中的命令是供你执行的练习，**不是已经运行过的验收记录，也没有虚构运行输出**。GitHub HTTP 测试不等于使用真实 token 完成了线上验收。
 
@@ -124,7 +124,7 @@ objects/<namespace>/sha256/<前2位>/<接着2位>/<完整hash>.<ext>
 
 ### 3.3 ingest 与 staging：分别处理 bytes 和本地所有权
 
-`image.Ingest` 接收 `context.Context`、`io.Reader` 和临时目录，返回 `Result{Object,TempPath}`。它负责识别内容，不知道 Asset UUID、title 或远程分支。文件扩展名由 header 解码结果决定，`.jpg` 文件名不能伪装 PNG bytes 的真实格式。
+`image.IngestWithOptions` 接收 `context.Context`、`io.Reader`、临时目录和可选的 WebP 转换参数，返回 `Result{Object,TempPath}`。它负责识别内容，不知道 Asset UUID、title 或远程分支。文件扩展名由 header 解码结果决定，`.jpg` 文件名不能伪装 PNG bytes 的真实格式。转换只作用于 PNG/JPEG，且仅当编码结果更小才替换；GIF/WebP 原样通过，避免丢动画或二次有损压缩。转换需要完整解码，因此有独立的像素上限。
 
 `staging.Install` 接管临时文件，校验后放入 `<state-dir>/stage/objects/<namespace>/<hash>.<ext>`。这个本地路径和 committed 分片路径不是同一个规则。已有 payload 必须校验，不能覆盖不同内容。`Cleanup` 只清理无 stage 引用的 payload，不碰 config、数据库或锁文件。
 

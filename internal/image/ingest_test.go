@@ -13,6 +13,8 @@ import (
 	"io"
 	"os"
 	"testing"
+
+	"github.com/gen2brain/webp"
 )
 
 func encodedImage(t *testing.T, format string) []byte {
@@ -28,6 +30,34 @@ func encodedImage(t *testing.T, format string) []byte {
 		err = jpeg.Encode(&b, img, nil)
 	case "gif":
 		err = gif.Encode(&b, img, nil)
+	case "webp":
+		err = webp.Encode(&b, img, webp.Options{Quality: 90})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+func encodedPhoto(t *testing.T, format string) []byte {
+	t.Helper()
+	img := stdimage.NewNRGBA(stdimage.Rect(0, 0, 256, 192))
+	state := uint32(0x9e3779b9)
+	for y := range 192 {
+		for x := range 256 {
+			state ^= state << 13
+			state ^= state >> 17
+			state ^= state << 5
+			img.SetNRGBA(x, y, color.NRGBA{R: uint8(state), G: uint8(state >> 8), B: uint8(state >> 16), A: 255})
+		}
+	}
+	var b bytes.Buffer
+	var err error
+	switch format {
+	case "png":
+		err = png.Encode(&b, img)
+	case "jpeg":
+		err = jpeg.Encode(&b, img, &jpeg.Options{Quality: 100})
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +66,12 @@ func encodedImage(t *testing.T, format string) []byte {
 }
 
 func TestIngestContentIdentityAndFormats(t *testing.T) {
-	for _, tc := range []struct{ format, ext, mime string }{{"png", "png", "image/png"}, {"jpeg", "jpg", "image/jpeg"}, {"gif", "gif", "image/gif"}} {
+	for _, tc := range []struct{ format, ext, mime string }{
+		{"png", "png", "image/png"},
+		{"jpeg", "jpg", "image/jpeg"},
+		{"gif", "gif", "image/gif"},
+		{"webp", "webp", "image/webp"},
+	} {
 		t.Run(tc.format, func(t *testing.T) {
 			data := encodedImage(t, tc.format)
 			dir := t.TempDir()
@@ -63,6 +98,84 @@ func TestIngestContentIdentityAndFormats(t *testing.T) {
 				t.Fatalf("temporary permissions: %v %v", info, err)
 			}
 		})
+	}
+}
+
+func TestIngestConvertsPNGAndJPEGToWebP(t *testing.T) {
+	for _, format := range []string{"png", "jpeg"} {
+		t.Run(format, func(t *testing.T) {
+			result, err := IngestWithOptions(
+				context.Background(),
+				bytes.NewReader(encodedPhoto(t, format)),
+				t.TempDir(),
+				Options{ConvertWebP: true, WebPQuality: 80},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Object.Ext != "webp" || result.Object.MIME != "image/webp" || result.Object.Width != 256 || result.Object.Height != 192 {
+				t.Fatalf("conversion metadata: %+v", result.Object)
+			}
+			encoded, err := os.ReadFile(result.TempPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Object.Size != int64(len(encoded)) || result.Object.Hash != sha256.Sum256(encoded) {
+				t.Fatal("converted bytes do not match their manifest")
+			}
+			config, decodedFormat, err := stdimage.DecodeConfig(bytes.NewReader(encoded))
+			if err != nil || decodedFormat != "webp" || config.Width != 256 || config.Height != 192 {
+				t.Fatalf("staged WebP invalid: %+v %q %v", config, decodedFormat, err)
+			}
+		})
+	}
+}
+
+func TestIngestKeepsSmallerOriginal(t *testing.T) {
+	data := encodedImage(t, "png")
+	result, err := IngestWithOptions(
+		context.Background(),
+		bytes.NewReader(data),
+		t.TempDir(),
+		Options{ConvertWebP: true, WebPQuality: 80},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Object.Ext != "png" || result.Object.Hash != sha256.Sum256(data) {
+		t.Fatalf("larger WebP replaced a smaller PNG: %+v", result.Object)
+	}
+	persisted, err := os.ReadFile(result.TempPath)
+	if err != nil || !bytes.Equal(persisted, data) {
+		t.Fatalf("original bytes not retained: %v", err)
+	}
+}
+
+func TestIngestDoesNotReencodeGIFOrWebP(t *testing.T) {
+	for _, format := range []string{"gif", "webp"} {
+		t.Run(format, func(t *testing.T) {
+			data := encodedImage(t, format)
+			result, err := IngestWithOptions(
+				context.Background(),
+				bytes.NewReader(data),
+				t.TempDir(),
+				Options{ConvertWebP: true},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Object.Hash != sha256.Sum256(data) || result.Object.Ext != format {
+				t.Fatalf("input was re-encoded: %+v", result.Object)
+			}
+		})
+	}
+}
+
+func TestIngestRejectsInvalidWebPQuality(t *testing.T) {
+	for _, quality := range []int{-1, 101} {
+		if result, err := IngestWithOptions(context.Background(), bytes.NewReader(encodedImage(t, "png")), t.TempDir(), Options{ConvertWebP: true, WebPQuality: quality}); err == nil || result != (Result{}) {
+			t.Fatalf("quality %d accepted: %+v %v", quality, result, err)
+		}
 	}
 }
 

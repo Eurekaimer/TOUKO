@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/egoist/mygo v0.5.5
+	github.com/gen2brain/webp v0.6.4
 	github.com/gofrs/flock v0.13.1
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.10.2

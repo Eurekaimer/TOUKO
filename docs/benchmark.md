@@ -145,6 +145,14 @@ HTTP state samples run on the server that just completed startup, so they
 measure warm state loading rather than another cold process. Image bytes are
 checked after the clock stops: status, `Content-Type`, size and full SHA-256
 must match the Asset. Browser loading is never inferred from these samples.
+
+The `image_bytes` samples intentionally do not send `If-None-Match`; they measure
+the first origin read. The live server separately gives each preview an ETag
+derived from the content hash and `private, immutable` caching, so a repeat view
+revalidates to `304` without streaming the image again. That saving is a UI
+behavior, not part of this first-read number; measure it with browser/network
+instrumentation rather than subtracting from this table.
+
 At cardinality `0` there is no committed Asset to request, so `image_bytes`
 has no samples and carries a `skipped` reason.
 

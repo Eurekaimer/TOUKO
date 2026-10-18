@@ -65,8 +65,8 @@ printf '请保存这个 state 路径：%s\n' "$TOUKO_GALLERY_STATE"
 
 ### A. 上传与预览
 
-1. 使用上传按钮或拖入 `logo/TOUKO.png`、`examples/images/red.png` 和 `blue.png`。
-2. Namespace 设为 `blog`，标签填 `demo, 灯子`，分类填 `测试图库`；可设置标题。目标目录可留空使用 canonical `objects/...`，或填 `images/blog`，文件以内容 hash 命名，不是照搬本机文件名。
+1. 使用上传按钮或拖入 `logo/TOUKO.png`、`examples/images/red.png` 和 `blue.png`。上传接受 PNG、JPEG、GIF、WebP。
+2. Namespace 设为 `blog`，标签填 `demo, 灯子`，分类填 `测试图库`；可设置标题。目标目录可留空使用 canonical `objects/...`，或填 `images/blog`，文件以内容 hash 命名，不是照搬本机文件名。勾选“把 PNG / JPEG 转为 WebP”可设置质量；只有编码结果更小时才替换原图，GIF 与已有 WebP 不重新编码。转换在服务端进入 staging 前完成。
 3. 确认上传。应看到真实图片预览、尺寸/体积及“待发布”的新增状态。
 4. 打开详情，检查原文件名、实际仓库路径、UUID、hash、尺寸与 MIME。
 5. 此时去 GitHub 看分支 HEAD，**不应因为上传而产生 commit**。
@@ -77,7 +77,7 @@ printf '请保存这个 state 路径：%s\n' "$TOUKO_GALLERY_STATE"
 
 1. 先连接旧仓库正确分支。无 TOUKO manifest 时，必须由你点击“初始化”明确写入 manifest；导入不会自动初始化。
 2. 点击“导入旧图库 / PicGo”，填仓库目录（例如 `img`；留空扫描全仓库）、namespace、标签和分类。
-3. 确认导入，检查 imported/skipped 统计与待发布记录。按真实图片 header 识别 PNG/JPEG/GIF，支持 Unicode 和无后缀图片；已有管理路径、非图片/非普通文件跳过，`.touko` 不扫描，重复导入幂等。
+3. 确认导入，检查 imported/skipped 统计与待发布记录。按真实图片 header 识别 PNG/JPEG/GIF/WebP，支持 Unicode 和无后缀图片；已有管理路径、非图片/非普通文件跳过，`.touko` 不扫描，重复导入幂等。
 4. 此时只暂存 metadata，原路径与原 Git blob 不变，不移动、不复制到 `objects/`，也不重新上传。检查后仍需打开待发布列表，显式 `commit` 才发布 metadata；原有图片链接保持原路径。
 
 **先升级所有设备：** PicGo 导入或指定非空上传目录产生显式 `path`。第一次提交此类 metadata 会在同一原子 commit 中升级 manifest 到 format v2；旧客户端会 fail-closed 拒绝读取 v2。已有 v1 与默认 canonical 上传不强制升级。已纳管旧图的删除也是暂存后提交，并按实际路径移除最后引用的原文件，不是单纯“取消管理”。

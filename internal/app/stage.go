@@ -26,6 +26,8 @@ type AddOptions struct {
 	Directory         string
 	Title             *string
 	Tags, Collections []string
+	ConvertWebP       bool
+	WebPQuality       int
 }
 type EditOptions struct {
 	Title             *string
@@ -110,7 +112,10 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 		if input.Reader == nil {
 			return nil, fmt.Errorf("nil input")
 		}
-		result, err := ingest.Ingest(ctx, input.Reader, tempDir)
+		result, err := ingest.IngestWithOptions(ctx, input.Reader, tempDir, ingest.Options{
+			ConvertWebP: opts.ConvertWebP,
+			WebPQuality: opts.WebPQuality,
+		})
 		if err != nil {
 			return nil, err
 		}

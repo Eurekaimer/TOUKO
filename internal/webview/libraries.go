@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
@@ -989,7 +990,10 @@ func (b uploadBatch) options() (app.AddOptions, error) {
 	if err != nil {
 		return app.AddOptions{}, usage("%v", err)
 	}
-	options := app.AddOptions{Namespace: namespace, Directory: b.fields["directory"]}
+	options := app.AddOptions{
+		Namespace: namespace, Directory: b.fields["directory"],
+		WebPQuality: image.DefaultWebPQuality,
+	}
 	if title, ok := b.fields["title"]; ok {
 		options.Title = &title
 	}
@@ -1002,6 +1006,25 @@ func (b uploadBatch) options() (app.AddOptions, error) {
 				return app.AddOptions{}, usage("%s must be a JSON array of strings", field.name)
 			}
 		}
+	}
+	if value, ok := b.fields["convert_webp"]; ok {
+		switch value {
+		case "true":
+			options.ConvertWebP = true
+		case "false":
+		default:
+			return app.AddOptions{}, usage("convert_webp must be true or false")
+		}
+	}
+	if value, ok := b.fields["webp_quality"]; ok {
+		quality, err := strconv.Atoi(value)
+		if err != nil || quality < 1 || quality > 100 {
+			return app.AddOptions{}, usage("webp_quality must be between 1 and 100")
+		}
+		if !options.ConvertWebP {
+			return app.AddOptions{}, usage("webp_quality requires convert_webp=true")
+		}
+		options.WebPQuality = quality
 	}
 	return options, nil
 }
@@ -1041,6 +1064,8 @@ func parseUploadBatch(w http.ResponseWriter, r *http.Request, baseDir string, ma
 		}
 	}()
 	var total int64
+	type rawUpload struct{ name, path string }
+	raw := make([]rawUpload, 0, maxUploadFiles)
 	for {
 		if err = r.Context().Err(); err != nil {
 			return batch, err
@@ -1082,28 +1107,16 @@ func parseUploadBatch(w http.ResponseWriter, r *http.Request, baseDir string, ma
 			if total > maxUploadBytes {
 				return batch, tooLarge("upload request exceeds 500 MB")
 			}
-			// Ingest reads the part once from the temporary, so the same bytes are
-			// never hashed twice and the batch limit above stays authoritative.
-			payload, e := os.Open(file.Name())
-			if e != nil {
-				return batch, e
-			}
-			result, ingestErr := image.Ingest(r.Context(), contextReader{r.Context(), payload}, dir)
-			closeErr = payload.Close()
-			if ingestErr == nil {
-				ingestErr = closeErr
-			}
-			if ingestErr != nil {
-				return batch, usage("invalid image: %v", ingestErr)
-			}
-			batch.files = append(batch.files, uploadFile{name: part.FileName(), result: result})
+			// Conversion options may arrive after the file parts, so the raw part
+			// is kept until every metadata field has been read.
+			raw = append(raw, rawUpload{name: part.FileName(), path: file.Name()})
 			if e = part.Close(); e != nil {
 				return batch, bodyError(e)
 			}
 			continue
 		}
 		switch name {
-		case "namespace", "directory", "title", "tags", "collections":
+		case "namespace", "directory", "title", "tags", "collections", "convert_webp", "webp_quality":
 		default:
 			return batch, usage("unknown multipart field %q", name)
 		}
@@ -1122,8 +1135,30 @@ func parseUploadBatch(w http.ResponseWriter, r *http.Request, baseDir string, ma
 			return batch, bodyError(e)
 		}
 	}
-	if len(batch.files) == 0 {
+	if len(raw) == 0 {
 		return batch, usage("select at least one image")
+	}
+	options, err := batch.options()
+	if err != nil {
+		return batch, err
+	}
+	for _, item := range raw {
+		payload, e := os.Open(item.path)
+		if e != nil {
+			return batch, e
+		}
+		result, ingestErr := image.IngestWithOptions(r.Context(), contextReader{r.Context(), payload}, dir, image.Options{
+			ConvertWebP: options.ConvertWebP,
+			WebPQuality: options.WebPQuality,
+		})
+		closeErr := payload.Close()
+		if ingestErr == nil {
+			ingestErr = closeErr
+		}
+		if ingestErr != nil {
+			return batch, usage("invalid image: %v", ingestErr)
+		}
+		batch.files = append(batch.files, uploadFile{name: item.name, result: result})
 	}
 	keep = true
 	return batch, nil

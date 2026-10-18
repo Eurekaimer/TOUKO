@@ -23,6 +23,17 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request, selector string
 		return
 	}
 	defer source.Close()
+	// An Asset's content hash never changes for its ID, and preview URLs already
+	// carry that hash. The browser may therefore reuse the bytes for this URL
+	// without another repository read; deletion still invalidates it because the
+	// Asset lookup above runs first.
+	tag := `"` + object.Hash.String() + `"`
+	w.Header().Set("ETag", tag)
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	if matchesETag(r.Header.Get("If-None-Match"), tag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	w.Header().Set("Content-Type", object.MIME)
 	w.Header().Set("Content-Length", strconv.FormatInt(object.Size, 10))
 	w.Header().Set("Content-Disposition", "inline")

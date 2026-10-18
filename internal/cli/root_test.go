@@ -49,6 +49,25 @@ func picture(t *testing.T) []byte {
 	return b.Bytes()
 }
 
+func photo(t *testing.T) []byte {
+	t.Helper()
+	im := image.NewNRGBA(image.Rect(0, 0, 128, 96))
+	state := uint32(0x9e3779b9)
+	for y := range 96 {
+		for x := range 128 {
+			state ^= state << 13
+			state ^= state >> 17
+			state ^= state << 5
+			im.SetNRGBA(x, y, color.NRGBA{R: uint8(state), G: uint8(state >> 8), B: uint8(state >> 16), A: 255})
+		}
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, im); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
 func setupCLI(t *testing.T) (string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -327,6 +346,28 @@ func TestRunRepositorySelectionSyncAndErrorStreams(t *testing.T) {
 	}
 	if got.code != 3 || got.out != "" || response.Error.Code != "conflict" {
 		t.Fatalf("selection conflict=%+v", got)
+	}
+}
+
+func TestRunAddConvertsToWebP(t *testing.T) {
+	dir, _ := setupCLI(t)
+	path := filepath.Join(t.TempDir(), "photo.png")
+	if err := os.WriteFile(path, photo(t), 0600); err != nil {
+		t.Fatal(err)
+	}
+	views := assetList(t, invoke(dir, nil, "add", path, "--webp", "--webp-quality", "80", "--json"))
+	if len(views) != 1 {
+		t.Fatalf("added=%+v", views)
+	}
+	asset := views[0].Asset
+	if asset.Object.Ext != "webp" || asset.Object.MIME != "image/webp" || asset.OriginalName != "photo.png" || asset.Object.Width != 128 || asset.Object.Height != 96 {
+		t.Fatalf("conversion metadata: %+v", asset)
+	}
+	if got := invoke(dir, nil, "add", path, "--webp-quality", "80"); got.code != 2 || got.out != "" {
+		t.Fatalf("quality without conversion accepted: %+v", got)
+	}
+	if views := assetList(t, invoke(dir, nil, "ls", "--json")); len(views) != 1 {
+		t.Fatalf("rejected invocation mutated staging: %+v", views)
 	}
 }
 

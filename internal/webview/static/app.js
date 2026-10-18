@@ -1192,6 +1192,10 @@ function uploadFields() {
   if ($("upload-title").value.trim())
     data.append("title", $("upload-title").value);
   data.append("tags", JSON.stringify(list($("upload-tags").value)));
+  if ($("upload-webp").checked) {
+    data.append("convert_webp", "true");
+    data.append("webp_quality", $("upload-webp-quality").value);
+  }
   data.append(
     "collections",
     JSON.stringify(list($("upload-collections").value)),
@@ -2081,6 +2085,9 @@ function bindEvents() {
   });
   $("copy-url").addEventListener("click", () => copyDelivery(false));
   $("copy-markdown").addEventListener("click", () => copyDelivery(true));
+  $("upload-webp").addEventListener("change", () => {
+    $("upload-webp-quality").disabled = !$("upload-webp").checked;
+  });
   $("upload-files").addEventListener("change", () => {
     // Appending keeps files pasted earlier; clearing value allows picking the
     // same file again after it has been removed.

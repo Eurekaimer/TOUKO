@@ -50,7 +50,9 @@ type Asset struct {
 }
 
 func (o ContentObject) Validate() error {
-	mime := map[string]string{"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif"}[o.Ext]
+	mime := map[string]string{
+		"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+	}[o.Ext]
 	if mime == "" || mime != o.MIME || o.Size <= 0 || o.Size > 100_000_000 || o.Width <= 0 || o.Height <= 0 {
 		return fmt.Errorf("invalid content object description")
 	}
