@@ -43,6 +43,15 @@ let githubRequestSequence = 0;
 let branchRequestSequence = 0;
 let clipboardBusy = false;
 let operationRetry = null;
+// A large gallery must not build every card up front: each card owns an image,
+// listeners and layout. Cards are mounted in bounded batches as the sentinel
+// approaches the viewport; filters or a refreshed state restart the window.
+const GALLERY_BATCH = 60;
+let renderedGalleryCount = 0;
+let mountedGalleryCount = 0;
+let gallerySignature = "";
+let searchTimer;
+let galleryMoreObserver = null;
 
 // Metadata is always text, never interpolated HTML. The only SVG references are
 // our own fixed symbols in index.html; uploaded bytes cannot introduce markup.
@@ -298,6 +307,9 @@ async function refreshState() {
   const available = new Set(next.assets.map(keyOf));
   for (const key of selected) if (!available.has(key)) selected.delete(key);
   cards.clear();
+  // The cached nodes are gone, so the next gallery render must rebuild its
+  // mounted window even if the filter signature happens to match.
+  gallerySignature = "";
   clearError("page-error");
   renderWorkspace();
 }
@@ -677,7 +689,7 @@ function card(entry) {
   checkbox.addEventListener("change", () => {
     if (checkbox.checked) selected.add(key);
     else selected.delete(key);
-    renderGallery();
+    updateSelectionUI();
   });
   select.append(checkbox);
   media.append(open, select);
@@ -781,6 +793,53 @@ function renderTrail() {
     trail.append(chip);
   });
 }
+function gallerySignatureFor(views) {
+  const heads = view.members?.map((member) => member.head || "").join(",");
+  return [
+    JSON.stringify(filters),
+    views.length,
+    heads || view.head || "",
+    view.changes.length,
+  ].join("|");
+}
+function updateGalleryMore(views) {
+  const wrapper = $("gallery-more-wrap");
+  if (!wrapper) return;
+  wrapper.hidden = !views.length || renderedGalleryCount >= views.length;
+  if (!wrapper.hidden) {
+    $("gallery-more").textContent =
+      `显示更多（已显示 ${renderedGalleryCount} / ${views.length}）`;
+  }
+}
+function loadMoreGallery() {
+  if (!view) return;
+  const total = visibleAssets().length;
+  if (renderedGalleryCount >= total) return;
+  renderedGalleryCount = Math.min(
+    renderedGalleryCount + GALLERY_BATCH,
+    total,
+  );
+  renderGallery();
+}
+function updateSelectionUI() {
+  if (!view) return;
+  const views = visibleAssets();
+  $("gallery").classList.toggle("has-selection", selected.size > 0);
+  $("selection-bar").hidden = selected.size === 0;
+  $("selected-count").textContent = `已选 ${selected.size} 张`;
+  const checked = views.filter((entry) => selected.has(keyOf(entry))).length;
+  $("select-visible").checked = !!views.length && checked === views.length;
+  $("select-visible").indeterminate = checked > 0 && checked < views.length;
+  // Only mounted cards need class and checkbox updates; filtering the whole
+  // gallery for a single click is what made large selections stall.
+  for (const node of $("gallery").children) {
+    const key = node.dataset?.key;
+    if (!key) continue;
+    node.classList.toggle("is-selected", selected.has(key));
+    const checkbox = node.querySelector("input[type=checkbox]");
+    if (checkbox) checkbox.checked = selected.has(key);
+  }
+}
 function renderGallery() {
   if (!view) return;
   const views = visibleAssets();
@@ -798,12 +857,17 @@ function renderGallery() {
     `${views.length} / ${view.assets.length} 张`;
   renderTrail();
   $("gallery").setAttribute("aria-busy", "false");
-  $("gallery").classList.toggle("has-selection", selected.size > 0);
-  $("selection-bar").hidden = selected.size === 0;
-  $("selected-count").textContent = `已选 ${selected.size} 张`;
-  const checked = views.filter((entry) => selected.has(keyOf(entry))).length;
-  $("select-visible").checked = !!views.length && checked === views.length;
-  $("select-visible").indeterminate = checked > 0 && checked < views.length;
+  const signature = gallerySignatureFor(views);
+  const reset = signature !== gallerySignature;
+  if (reset) {
+    gallerySignature = signature;
+    renderedGalleryCount = 0;
+    mountedGalleryCount = 0;
+  }
+  renderedGalleryCount = Math.min(
+    renderedGalleryCount || GALLERY_BATCH,
+    views.length,
+  );
   if (!views.length) {
     const empty = element("div", "empty-state");
     empty.append(
@@ -825,8 +889,10 @@ function renderGallery() {
       ),
     );
     $("gallery").replaceChildren(empty);
+    mountedGalleryCount = 0;
   } else {
-    const nodes = views.map((entry) => {
+    const shown = views.slice(0, renderedGalleryCount);
+    const nodes = shown.map((entry) => {
       const key = keyOf(entry);
       let node = cards.get(key);
       if (!node) {
@@ -838,8 +904,16 @@ function renderGallery() {
       node.querySelector("input[type=checkbox]").checked = selected.has(key);
       return node;
     });
-    $("gallery").replaceChildren(...nodes);
+    if (reset) {
+      $("gallery").replaceChildren(...nodes);
+      mountedGalleryCount = nodes.length;
+    } else if (nodes.length > mountedGalleryCount) {
+      $("gallery").append(...nodes.slice(mountedGalleryCount));
+      mountedGalleryCount = nodes.length;
+    }
   }
+  updateSelectionUI();
+  updateGalleryMore(views);
   $("gallery-footer-note").textContent = active
     ? `筛选出 ${views.length} 张图片。`
     : view.changes.length
@@ -1863,7 +1937,8 @@ function bindEvents() {
   $("upload-paste").addEventListener("click", () => void pasteUpload());
   $("search").addEventListener("input", () => {
     filters.query = $("search").value;
-    renderGallery();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderGallery, 120);
   });
   $("namespace-filter").addEventListener("change", () => {
     filters.namespace = $("namespace-filter").value;
@@ -1883,7 +1958,7 @@ function bindEvents() {
   });
   $("clear-selection").addEventListener("click", () => {
     selected.clear();
-    renderGallery();
+    updateSelectionUI();
   });
   $("select-visible").addEventListener("change", () => {
     for (const entry of visibleAssets()) {
@@ -1891,8 +1966,18 @@ function bindEvents() {
       if ($("select-visible").checked) selected.add(key);
       else selected.delete(key);
     }
-    renderGallery();
+    updateSelectionUI();
   });
+  $("gallery-more").addEventListener("click", loadMoreGallery);
+  if ("IntersectionObserver" in window) {
+    galleryMoreObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadMoreGallery();
+      },
+      { rootMargin: "800px 0px" },
+    );
+    galleryMoreObserver.observe($("gallery-more-wrap"));
+  }
   $("remove-selected").addEventListener("click", () =>
     removeAssets([...selected]),
   );

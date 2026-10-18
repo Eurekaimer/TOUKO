@@ -1000,6 +1000,15 @@ progress {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Large galleries keep only a bounded window of mounted cards; skip layout
+   * and paint for any of those that have scrolled out of view. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
+}
+.gallery-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding-top: var(--space-6);
 }
 .card-image-wrap {
   position: relative;
