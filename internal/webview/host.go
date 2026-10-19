@@ -24,6 +24,7 @@ type Host struct {
 	connections sync.WaitGroup
 	closeOnce   sync.Once
 	closeErr    error
+	handler     *Server
 	workspaces  *workspaceSet
 }
 
@@ -43,7 +44,7 @@ func Listen(ctx context.Context, service *app.Service, token string, port int) (
 		return nil, err
 	}
 	requests, cancel := context.WithCancel(ctx)
-	host := &Host{URL: origin, cancel: cancel, done: make(chan struct{}), workspaces: handler.spaces}
+	host := &Host{URL: origin, cancel: cancel, done: make(chan struct{}), handler: handler, workspaces: handler.spaces}
 	host.server = &http.Server{
 		Handler: handler, ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10,
@@ -83,6 +84,10 @@ func (h *Host) Wait(ctx context.Context) error {
 func (h *Host) Close() error {
 	h.closeOnce.Do(func() {
 		h.cancel()
+		// The device flow is background work, not an HTTP handler, and a cancel
+		// request may be waiting on it. Stop and join it before waiting for
+		// connections so exiting TOUKO never orphans gh or deadlocks shutdown.
+		h.handler.shutdownLogin()
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		h.closeErr = h.server.Shutdown(shutdown)
@@ -92,6 +97,9 @@ func (h *Host) Close() error {
 		// Serve cannot deliver another StateNew after it has returned.
 		<-h.done
 		h.connections.Wait()
+		// A handler that was already inside startLogin while the first
+		// shutdown ran could have launched gh after it. No handlers remain now.
+		h.handler.shutdownLogin()
 		h.closeErr = errors.Join(h.closeErr, h.serveErr)
 		h.closeErr = errors.Join(h.closeErr, h.workspaces.close())
 	})

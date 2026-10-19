@@ -496,7 +496,7 @@ JSON `publication` 存在不一定表示远程失败，也可能是远程已成�
 
 ### 8.7 GitHub 调试与当前范围
 
-接入时使用**用户自己的专用 gallery 仓库**，不能把开发代码仓库当试验 gallery。先初始化 README，使用隔离 state-dir 选择 `OWNER/REPO`。`touko auth login` 委托真实 `gh auth login --hostname github.com --web --git-protocol https`；`auth status` 经 Resolve 和 GET `/user` 输出 login/source，不显示凭据。优先级为 GITHUB_TOKEN、GH_TOKEN、gh keyring；不落盘到 TOUKO 配置。旧 `examples/github-acceptance.sh` 仍显式要求 GITHUB_TOKEN，这是脚本前置条件，不是 CLI/Web 本体的认证限制。
+接入时使用**用户自己的专用 gallery 仓库**，不能把开发代码仓库当试验 gallery。先初始化 README，使用隔离 state-dir 选择 `OWNER/REPO`。桌面/网页连接窗口可通过真实gh设备流程自动打开浏览器、显示一次性验证码并等待完成，无需输入命令；CLI `touko auth login` 仍委托 `gh auth login --hostname github.com --web --git-protocol https`。`auth status` 经 Resolve 和 GET `/user` 输出 login/source，不显示访问token。优先级为 GITHUB_TOKEN、GH_TOKEN、gh；显式环境覆盖时不能靠网页登录替换，token不落盘到TOUKO配置。旧 `examples/github-acceptance.sh` 仍显式要求 GITHUB_TOKEN，这是脚本前置条件而非 GUI 登录要求。
 
 阅读 `github.APIError` 时观察 status/endpoint，而不打印请求 header 或 token。401/权限 403 与 rate-limit 403 不同；429、5xx、timeout 不会通过隐藏重试伪装成功，stage 应保留。GitHub 的 public read 可以无 token，写入需要 token 与目标仓库权限。
 
@@ -510,7 +510,7 @@ JSON `publication` 存在不一定表示远程失败，也可能是远程已成�
 
 1. **进程边界**：`serveCommand → webview.Listen` 只绑定 `127.0.0.1`，以实际端口构造 Origin，默认打开浏览器（`--no-open` 禁用）；打开失败报 stderr 而服务继续。`Host.Close` 停止服务、等待 handler，再关闭额外 workspace 的 Service；根 Service 由调用方最后关闭，避免发布收尾与 SQLite Close 竞争。
 2. **HTTP 边界**：先读 `Server.ServeHTTP` 的 Host、Origin、Fetch Metadata 和 CSRF 检查，再读 `api`。每仓库 Server 有独立 Service 与 CSRF；`workspaceSet.serve` 将 `/w/<id>/` 请求绑定其自身实例，不修改共享 service 指针。静态白名单不能下载 state-dir；没有 token 输入/输出接口。
-3. **一致视图与认证**：`GET /api/state → ReadView → Store.Load` 组合 cache 与 durable stage；返回 `local_read` 诚实说明 clone 可用性。`workMu` 串行本服务状态操作，文件锁阻止 CLI 并发修改。`GET /api/auth` 刷新 Resolve 与 login，`/api/repos` 分页列可访问仓库，`/api/branches?repository=OWNER/REPO` 再列该仓库全部分支；普通 gallery/本地图像不调用列表 API。连接窗口只用这两个下拉的返回值构造 Location，不接受自由输入的分支名。
+3. **一致视图与认证**：`GET /api/state → ReadView → Store.Load` 组合 cache 与 durable stage；返回 `local_read` 说明 clone 可用性。`workMu` 串行本服务状态操作，文件锁阻止 CLI 并发修改。所有workspace共享root身份缓存和登录会话；`GET /api/auth` 刷新 Resolve 与 login，`/api/repos` 分页列仓库，`/api/branches?repository=OWNER/REPO` 列真实分支。`GET /api/auth/login` 只读状态，登录POST验证root CSRF；后台gh授权不占workMu，Host退出时取消并join。未登录/401可在用户主动连接时自动授权一次，403或限流不能反复弹窗。普通gallery/本地图像不调用GitHub列表API，连接仍只用真实下拉结果构造Location。
 4. **前端状态**：`workspace` 是服务器快照，filters 增加真实目录，selected 是 UUID，uploadFiles 是待传 File/ObjectURL。刷新仍恢复 stage，因为它在 `workspace.json`，不在 SQLite/localStorage。`workspacePrefix/apiURL` 使 API、上传、原图请求跟随 `/w/<id>/`；连接返回 url 后直接导航，不刷新旧 workspace。旧工作区修改保留。仓库/分支下拉各有递增 sequence：切换仓库先清空旧分支，晚到的旧响应被丢弃，避免把仓库 A 的分支提交给仓库 B。
 5. **上传与导入**：上传 XHR 传 directory/metadata/files，服务端私有临时目录流式 spool 后只调用一次 Add。`openImport → POST /api/import → ImportLegacy` 在固定已初始化快照扫描原图片，返回 imported/skipped，不搬图；必须显式 commit 才写 Git metadata。输入/校验失败不部分 stage，不自动重试或发布。
 6. **编辑、目录与链接**：原 metadata 编辑仍支持多个 tags/collections，留空清空。`assetPath` 用真实 path 或 canonical 派生筛选/显示；Copy Markdown 转义 alt 并派生 Raw/jsDelivr URL。剪贴板 API 受浏览器权限约束，失败提供可手动复制框，不能把“生成正确文本”当作“自动复制成功”。DOM 不拼接不可信 HTML。

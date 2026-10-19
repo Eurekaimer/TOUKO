@@ -22,6 +22,12 @@ import (
 
 func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	// Login commands never take workMu: starting returns immediately and
+	// cancelling joins a background process without blocking gallery state.
+	if isLoginEndpoint(path) {
+		s.loginAPI(w, r)
+		return
+	}
 	method := "POST"
 	switch path {
 	case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries":
@@ -209,6 +215,70 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		result = map[string]bool{"ok": true}
 	}
 	s.json(w, result)
+}
+
+func (s *Server) loginAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		if err := r.Context().Err(); err != nil {
+			s.respondError(w, err)
+			return
+		}
+	}
+	switch r.URL.Path {
+	case "/api/auth/login":
+		switch r.Method {
+		case http.MethodGet:
+			s.json(w, s.loginStateResponse())
+		case http.MethodPost:
+			if err := decodeJSON(w, r, &struct{}{}); err != nil {
+				s.respondError(w, err)
+				return
+			}
+			s.json(w, s.startLogin())
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			s.fail(w, http.StatusMethodNotAllowed, "usage", "method not allowed")
+		}
+	case "/api/auth/login/cancel":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			s.fail(w, http.StatusMethodNotAllowed, "usage", "method not allowed")
+			return
+		}
+		if err := decodeJSON(w, r, &struct{}{}); err != nil {
+			s.respondError(w, err)
+			return
+		}
+		s.json(w, s.cancelLogin())
+	case "/api/auth/login/open":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			s.fail(w, http.StatusMethodNotAllowed, "usage", "method not allowed")
+			return
+		}
+		if err := decodeJSON(w, r, &struct{}{}); err != nil {
+			s.respondError(w, err)
+			return
+		}
+		state, err := s.openLoginDevice(r.Context())
+		if err != nil {
+			s.respondError(w, err)
+			return
+		}
+		s.json(w, state)
+	case "/api/auth/install":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			s.fail(w, http.StatusMethodNotAllowed, "usage", "method not allowed")
+			return
+		}
+		if err := decodeJSON(w, r, &struct{}{}); err != nil {
+			s.respondError(w, err)
+			return
+		}
+		opened, message := s.openGHInstall(r.Context())
+		s.json(w, map[string]any{"opened": opened, "url": ghInstallURL, "message": message})
+	}
 }
 
 func (s *Server) location(ctx context.Context) (*repository.Location, error) {

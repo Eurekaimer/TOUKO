@@ -1,12 +1,20 @@
 # GitHub 接入
 
-浏览器图库的完整准备与验收步骤见 [Webview 教程](webview.md)。网页不接收 token；推荐先在终端用 `touko auth login` 登录并复用 GitHub CLI（`gh`）凭据。以下 CLI 命令也可独立核对网页发布结果。构建要求以 `go.mod` 为准，当前为 Go 1.27.1；Git 需支持 SHA-1 repository 与 `show-ref --exists`。
+浏览器图库的完整准备与验收步骤见 [Webview 教程](webview.md)。桌面与网页均可在“连接 / 切换仓库”中发起浏览器授权，复用 GitHub CLI（`gh`）管理的凭据，不要求用户输入命令。以下 CLI 命令仍可独立核对网页发布结果。构建要求以 `go.mod` 为准，当前为 Go 1.27.1；Git 需支持 SHA-1 repository 与 `show-ref --exists`。
 
 ## 准备专用 gallery
 
 在 GitHub **自行创建专用图片仓库并勾选 Initialize with README**，不要把 TOUKO 源代码仓库当 gallery。Git Data API 不能为完全空仓库创建第一个 ref。分支应禁止 force push；若 branch protection 拒绝 TOUKO 写入，CLI 保留 staging，不绕过保护。
 
-认证优先级为 **`GITHUB_TOKEN` → `GH_TOKEN` → 已有 gh 登录**；无凭据可匿名读取公开仓库，账户信息/可访问仓库列表和写入需要认证。显式环境凭据无效时不静默回退。`auth login` 委托真实 `gh auth login --hostname github.com --web --git-protocol https`，需先安装 gh；`auth status` 只显示登录名与来源，不显示 token。凭据不写入 config/SQLite/metadata，也不传到网页、URL 或命令参数。自行配置 fine-grained token 时只授权目标仓库 Contents read/write，不发进聊天。
+认证优先级为 **`GITHUB_TOKEN` → `GH_TOKEN` → 已有 gh 登录**；无凭据可匿名读取公开仓库，账户信息/可访问仓库列表和写入需要认证。显式环境凭据无效时不静默回退；存在这类覆盖时，图形化 gh 登录会提示先修复或移除环境变量后重启。网页不接收访问 token；只显示浏览器授权所需的一次性设备验证码。真实授权由 `gh auth login --hostname github.com --web --git-protocol https` 完成，TOUKO 不自建 OAuth 应用、不持久化 token。gh 优先使用系统凭据存储，无法使用时可能回退到自己的配置文件，界面会提示相关存储警告。CLI `auth status` 只显示登录名与来源，不显示 token。自行配置 fine-grained token 时只授权目标仓库 Contents read/write，不发进聊天。
+
+### 不使用命令行的登录
+
+安装一次 [GitHub CLI](https://cli.github.com/)，在 TOUKO 连接弹窗选择 GitHub。未登录时自动发起一次授权；也可点击“在浏览器登录 GitHub”。复制界面中的一次性验证码，在自动打开的浏览器中登录 GitHub 并确认授权给 **GitHub CLI**。等待完成后，TOUKO 自动刷新身份和仓库列表。浏览器未自动打开时可重新打开，或手动访问界面给出的 `https://github.com/login/device`；可以取消、失败后重试，不会自动反复弹窗。缺少 gh 时“安装登录组件”打开官方安装页，安装后重新检测。
+
+浏览器中已经登录 GitHub，不等于本地应用已有 API 凭据。账号没有仓库写权限、组织未批准或分支保护拒绝时，授权不会绕过限制；仓库列表保留只读标记，GitHub 403 权限错误与 401 登录失效分开处理，限流也不会触发重新登录。不要在任何验证码页面输入访问 token。
+
+Windows 安装 gh 后，已经运行的 TOUKO 可能尚未取得新增的 PATH。重新检测仍找不到组件时，退出并重新打开应用即可；不需要输入登录命令。
 
 ```bash
 # 在项目根目录构建；下列 OWNER/touko-demo 必须换成你的专用仓库。
@@ -36,7 +44,7 @@ ID=$(/tmp/touko add logo/touko-logo.png --namespace blog --tag demo --output id)
 # /tmp/touko --state-dir "$HOME/.local/share/touko-galleries" serve --port 7788 --no-open
 ```
 
-`serve` 默认打开浏览器，打开失败会提示手动访问且继续服务。“连接 / 切换仓库”里选择 GitHub 后自动读取登录与仓库列表，先选仓库再从它的分支下拉里选分支（默认分支已预选）；没有 token 输入框，也不需要手填 `OWNER/REPO`。gh 在终端完成登录后可直接重新读取，无需重启。若改的是环境变量，需要重启进程才能获得新环境。
+`serve` 默认打开浏览器，打开失败会提示手动访问且继续服务。“连接 / 切换仓库”里选择 GitHub 后自动读取登录；未登录时会引导上述浏览器授权，完成后自动刷新仓库列表。先选仓库，再从分支下拉里选分支（默认分支已预选）；没有 token 输入框，也不需要手填 `OWNER/REPO`。已有 gh 登录会直接复用，外部 gh 登录完成后也可重新读取，无需重启。若改的是环境变量，需要重启进程才能获得新环境。
 
 每个仓库/分支是独立 URL 工作区（新工作区为 `/w/<key>/`），各自保存 clone、index、stage/journal；切换不会清空旧暂存，不必停止服务换 state。根工作区保持兼容，新工作区存于 `<state-root>/workspaces/<key>/`。独立 CLI 仍需按实际工作区路径传 `--state-dir`，不要拿根 state-dir 操作所有仓库。
 

@@ -33,10 +33,10 @@ ROOT=/tmp/脚本实际输出的目录
 1. 在 GitHub 自行新建**专用测试仓库**，例如 `你的用户名/touko-webview-test`。不要使用 TOUKO 源代码仓库，也不要选含重要资料的仓库。
 2. **勾选 Add a README file**。Git Data API 无法在完全空仓库创建第一个 ref。默认分支通常为 main，界面会读取实际 default branch。
 3. 需要测试公开 URL 时选 public；private 仍能存储、网页预览、编辑、同步和 verify，但不提供 raw/jsDelivr 公网链接。
-4. 推荐安装 GitHub CLI（`gh`），通过下面的 `touko auth login` 登录；已有 gh 登录可直接复用。若自行使用 fine-grained token，应仅选择目标仓库并授予 **Contents: Read and write**，设置短有效期；组织仓库可能还需组织批准。
+4. 安装一次 [GitHub CLI（gh）](https://cli.github.com/)，随后可在 TOUKO 的连接弹窗中完成浏览器授权，不需要输入 gh 命令；已有 gh 登录可直接复用。若自行使用 fine-grained token，应仅选择目标仓库并授予 **Contents: Read and write**，设置短有效期；组织仓库可能还需组织批准。
 5. 分支禁止 force push。若分支保护要求 Pull Request 或签名而拒绝直接发布，使用你为测试允许直接提交的专用分支；TOUKO 不绕过保护。
 
-不要把 token 贴到聊天、网页、URL、命令参数或 Git 仓库。网页没有手动 token 输入框，也不接收凭据；`auth login` 在终端委托 gh 打开 GitHub 登录流程，不是网页自建 OAuth 服务。运行时按 `GITHUB_TOKEN` → `GH_TOKEN` → gh 登录读取凭据；显式环境凭据无效不会静默回退。
+不要把访问 token 贴到聊天、网页、URL、命令参数或 Git 仓库。网页没有 token 输入框；图形化登录只显示一次性设备验证码，用户在 GitHub 的设备授权页面确认给 GitHub CLI 的权限，真实 token 仍由 gh 管理，不经过网页。gh 优先使用系统凭据存储，无法使用时可能回退到自己的配置文件。运行时按 `GITHUB_TOKEN` → `GH_TOKEN` → gh 登录读取凭据；显式环境凭据不会被网页登录覆盖。
 
 ## 3. 推荐的真实仓库启动方式
 
@@ -57,9 +57,13 @@ printf '请保存这个 state 路径：%s\n' "$TOUKO_GALLERY_STATE"
 
 `auth status` 应显示 GitHub 登录名和凭据来源，不显示 token。`repo list` 列出当前账户可访问仓库（含 private/can_push）；能读取不等于有发布权限。`repo init` 在现有 README commit 上增加 TOUKO manifest，不重写 README；重复执行合法 init 不创建额外提交。
 
-当前实现中，可直接启动空 state 的 `serve`，在“连接 / 切换仓库”里选择 GitHub：登录与仓库/分支都会自动读取，从两个联动下拉里选仓库再选分支即可连接（本地 Git 仓库仍填路径与分支）。连接后导航到独立工作区，已有 TOUKO 仓库先同步，旧图库按提示显式初始化再导入；不会自动纳管全部图片。细节与实测见第 8 节 A。
+可直接启动空 state 的 `serve` 或桌面版，在“连接 / 切换仓库”里选择 GitHub：未登录时自动发起一次浏览器授权，界面显示验证码，完成后自动读取身份与仓库/分支；也可手动点击“在浏览器登录 GitHub”。缺少 gh 时点击“安装登录组件”，安装后重新检测。浏览器未打开可重新打开或手动访问给出的 GitHub 设备授权地址；等待中可以取消，关掉连接弹窗也会取消未完成流程，不会循环弹出浏览器。
 
-没有安装 gh 或未登录时，先在终端运行 `touko auth login`，再回网页重新读取，**gh 登录不需要重启 serve**。若依靠环境变量，运行中进程不会获得另一个终端后来 export 的新值，修改环境凭据需重启服务。凭据只在 Go 服务内部，既不返回网页，也不写入 config/SQLite/metadata。
+Windows 安装组件后若重检仍未发现 gh，请退出并重新打开 TOUKO，让进程取得安装器更新后的 PATH。
+
+从两个联动下拉里选仓库再选分支即可连接（本地 Git 仓库仍填路径与分支）。连接后导航到独立工作区，已有 TOUKO 仓库先同步，旧图库按提示显式初始化再导入；不会自动纳管全部图片。只读仓库、组织授权限制或分支保护拒绝会明确提示，重新登录不会赋予账号原本没有的写权限。
+
+**gh 登录不需要重启 serve**。显式 `GITHUB_TOKEN` / `GH_TOKEN` 会阻止图形化 gh 登录，以免授权成功后仍使用旧的环境凭据；修复权限或移除覆盖后重启。运行中进程不会获得另一个终端后来修改的环境。凭据不返回网页，也不写入 TOUKO config/SQLite/metadata；一次性验证码不等于访问 token。
 
 ## 4. 按顺序验证每一个界面能力
 

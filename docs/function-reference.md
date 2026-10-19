@@ -565,7 +565,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `(*Server).json` | 任意结果 → JSON 响应。 | 设置 UTF-8 Content-Type；连接输出错误不能回滚已经完成的业务。 |
 | `(*Server).fail` | HTTP status、code、message → error envelope。 | 统一 `{\"error\":{\"code\",\"message\"}}`；message 中若出现当前 token，先替换为 redacted，不输出请求授权 header。 |
 | `(*requestError).Error`、`usage`、`tooLarge` | 生成/呈现请求错误。 | usage 为400，尺寸/数量上限为413；不把 domain conflict 伪装成参数错误。 |
-| `(*Server).respondError` | error 链 → 状态码和错误 JSON。 | missing404、conflict/busy409、unauthorized401、corrupt/hash422、GitHub API502、其他IO500；按 errors.Is/As 保留分类。 |
+| `(*Server).respondError` | error 链 → 状态码和错误 JSON。 | missing404、conflict/busy409、登录失效unauthorized401、GitHub权限forbidden403、corrupt/hash422、其余GitHub API502、其他IO500；限流不映射为需要登录。 |
 | `decodeJSON` | 有界 request body → 指定 input struct。 | 限1MiB、要求 application/json 与恰好一个对象，拒绝 null/数组/未知字段/尾随第二个值。第二次解码直接读 raw bytes，不复制为 string。 |
 | `bodyError` | 解码/读取错误 → request error。 | MaxBytesError 原样保留以返回413；其他 malformed input 返回400。 |
 
@@ -573,7 +573,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 
 | 精确符号 | 作用、输入与输出 | 副作用与约束 |
 | --- | --- | --- |
-| `(*Server).api` | 白名单 path、method → endpoint handler。 | image/url/edit 要求规范完整 UUID；其他 method 返回405。workMu 串行状态操作，已取消请求不进入 mutation；原图另走短 snapshot gate。成功后才写结果，无自动 reset/retry。 |
+| `(*Server).api` | 白名单 path、method → endpoint handler。 | image/url/edit 要求规范完整 UUID；其他 method 返回405。workMu 串行状态操作，已取消请求不进入 mutation；原图及浏览器登录会话另走各自短锁，等待浏览器授权不占图库业务锁。成功后才写结果，无自动 reset/retry。 |
 | `(*Server).location` | ctx → *Location 或 nil。 | 仅检查已知 state-dir/config.json 是否缺失；未选择仓库可 onboarding，损坏 config 必须报错，不能当空工作区。 |
 | `(*Server).backend` | 当前 Location → localgit/GitHub adapter。 | GitHub token 只保留在实例内部；未选择仓库为 usage。没有可由浏览器指定的 API host。 |
 | `(*Server).state` | ctx → 完整页面状态。 | 持Service.Lock、一次ReadView读head/base/assets/changes/journal；附workspace和local_read{available,path}与缓存认证状态，不隐式fetch或暴露token。 |
@@ -590,13 +590,25 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 
 | 精确符号 | 作用、输入与输出 | 副作用与约束 |
 | --- | --- | --- |
-| `(*Server).credentials` | ctx、refresh → 内存token/source。 | authMu下复用或刷新Resolve结果；显式传入token优先，token改变清旧login。GET auth主动refresh，不把gh凭据永久固化在CLI启动参数。 |
-| `(*Server).authenticationState` | 当前缓存身份 → configured/source/login。 | 只读内存，不请求GitHub、不暴露token；gallery state使用此快照。 |
-| `(*Server).authentication` | Resolve刷新 + GET /user → 真实身份。 | anonymous返回configured=false，无token不发User请求；失败显式返回，不把旧login当新成功。 |
+| `(*Server).credentials` | ctx、refresh → 内存token/source。 | 所有workspace委托root的authMu与缓存；显式传入token优先，token改变清旧login。GET auth主动refresh，浏览器登录成功后成员不保留旧身份。 |
+| `(*Server).authenticationState` | 当前共享缓存身份 → configured/source/login。 | 只读内存，不请求GitHub、不暴露token；gallery state使用此快照。 |
+| `(*Server).authentication` | Resolve刷新 + GET /user → 真实身份。 | anonymous返回configured=false，无token不发User请求；401登录失效、403权限限制分开反馈，不把旧login当新成功。 |
+| `(*Server).authOwner`、`refreshAuth` | 定位root认证所有者；gh完成后重新读取凭据。 | workspace不另存登录会话或身份；只有实际读取到凭据才可报告授权成功。 |
 | `(*Server).repositories` | 凭据 → repositories envelope。 | 调ListRepositories分页列当前用户可访问仓库，普通gallery/图片命中不调用此API。 |
 | `(*Server).branches` | `repository=OWNER/REPO` → branches envelope。 | 校验恰好一段owner/name，拒绝空段与多余斜杠；复用同一凭据缓存调ListBranches分页。这是分支下拉的唯一来源，不接受任意URL或分支名。 |
 | `(*Server).reader` | 当前Location → 本地Git reader。 | GitHub先ensureClone（缺失时可联网创建，但不fetch已有clone），再localgit.Open；localgit回backend。verify/import以此读取固定快照。 |
 | `(*Server).syncRepository` | Service.SyncWith → SyncResult。 | 同锁prepare中普通路径先updateClone再reader；journal走backend权威API，恢复成功后同锁刷新clone/再sync。 |
+
+### [`login.go`](../internal/webview/login.go)：浏览器设备授权
+
+| 精确符号 | 作用、输入与输出 | 副作用与约束 |
+| --- | --- | --- |
+| `newLoginManager`、`loginStateResponse` | 一份root进程级会话 → status、gh可用性、env覆盖与root CSRF。 | GET不启动子进程或打开浏览器；仅等待中暴露设备验证码与固定GitHub地址，不保留原始gh输出。 |
+| `startLogin`、`(*loginManager).start`、`session` | `{}` → 开始或复用活动会话；后台运行真实gh并刷新凭据。 | 单活动会话、约15分钟超时，不占workMu；失败、取消、未读到凭据都不能报告成功。 |
+| `(*loginOutput).parse`、`runGHLogin`、`loginEnvironment` | 非TTY gh输出 → 合法一次性code/固定设备URL和存储警告。 | TOUKO负责开浏览器，输出不进网页；只固定执行gh登录，不接受命令参数或任意URL。Windows登录子进程隐藏控制台。 |
+| `cancelLogin`、`(*loginManager).cancel`、`shutdownLogin` | 取消并join后台授权。 | 清除验证码，迟到的旧会话回调不能覆盖新状态；退出服务先停止登录，避免遗留gh。 |
+| `openLoginDevice`、`openGHInstall` | 重新打开等待中的授权页，或打开官方组件安装页。 | browser.Open只接收固定GitHub/gh地址；失败明确保留手动访问办法，不宣称已经打开。 |
+
 
 ### [`workspaces.go`](../internal/webview/workspaces.go)、[`host.go`](../internal/webview/host.go)
 
@@ -609,9 +621,9 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `(*workspaceSet).remember`、`activeURL` | 保存/读取active-workspace → 导航URL。 | 临时文件Sync/Close/Rename保存选择；读取验证id及config存在，坏状态报错，不是对业务stage的替代存储。 |
 | `(*workspaceSet).list` | current → 可导航workspace列表。 | 只读根与workspaces子目录config，核对Location/key一致并排序；空未选目录跳过，坏配置显式失败，不静默切库。 |
 | `(*workspaceSet).serve` | /w/id/请求 → 对应Server.ServeHTTP。 | 检查id，规范尾斜杠，克隆request后去前缀并保留安全边界；无效/不存在工作区404，不改共享Service指针。 |
-| `(*workspaceSet).close` | 关闭额外工作区Services。 | 只在Host已join所有请求后执行，default根Service仍由调用方拥有。 |
+| `(*workspaceSet).close` | 关闭额外工作区Services。 | Host完成登录会话与请求收尾后执行；default根Service仍由调用方拥有。 |
 | `Listen` | ctx、Service、token、port → Host。 | 仅tcp4 127.0.0.1，实际端口建立精确Origin，New建立默认/多工作区路由；跟踪连接用于有序收尾。 |
-| `(*Host).Wait`、`Close` | 等取消/Serve错误；幂等停止服务。 | Close取消请求、10秒Shutdown，必要时Close，等待Serve及全部handler，再close额外workspace；取消不等于远端回滚。 |
+| `(*Host).Wait`、`Close` | 等取消/Serve错误；幂等停止服务。 | Close先取消请求并停止/join gh会话，再做10秒Shutdown并等待全部handler，最后关闭额外workspace；取消不等于远端回滚。 |
 
 页面 API 契约：
 
@@ -628,6 +640,9 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | GET `/api/assets/<uuid>/image` | 原始图片流；不接受文件系统路径，已移除/不存在为404。 |
 | GET `/api/assets/<uuid>/url?provider=github或jsdelivr` | url、committed，public GitHub only。 |
 | GET `/api/auth`、`/api/repos` | 实际login/configured/source；可访问repositories列表（含private/can_push），不输出凭据。 |
+| GET `/api/auth/login` | root共享登录status、available、blocked_source、csrf；等待时给user_code与固定verification_url，不返回访问token或gh原始输出。GET不启动登录。 |
+| POST `/api/auth/login`、`/api/auth/login/cancel` | `{}` → 开始/复用活动会话，或取消并join。检查精确Origin及对应root CSRF；显式环境token覆盖时阻止gh授权。 |
+| POST `/api/auth/login/open`、`/api/auth/install` | `{}` → 系统浏览器打开固定GitHub设备授权页或gh官方安装页，不接受任意URL或命令；重新打开授权只允许等待中的会话。 |
 | GET `/api/branches?repository=OWNER/REPO` | 该仓库全部分支name/protected；缺参、多参或非OWNER/REPO为400，未登录/无权限/网络错误显式返回，不返回空列表冒充成功。 |
 | GET `/api/workspaces` | {current,workspaces:[{id,url,location}]}；/w/id/下同样可用。 |
 | POST `/api/import` | directory/namespace/tags/collections → imported/skipped；原路径仅暂存。 |
@@ -666,7 +681,13 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `$`、`element`、`icon`、`button` | ID查询、DOM/textContent、安全固定SVG use、带type=button的事件按钮。untrusted metadata只作文本或属性。 |
 | `bytes`、`date`、`list` | 十进制体积、本地日期、逗号/中文逗号/换行拆列表并trim/去重。持久化排序与规范化仍由app控制。 |
 | `showError`、`clearError`、`toast`、`responseError` | 可见错误/状态；保留实际服务端message，冲突/忙/鉴权另给操作提示。toast不是业务事实来源，不隐藏失败。 |
-| `api`、`apiURL`、`workspacePrefix` | 从pathname提取/w/id前缀，所有JSON/upload/image请求跟随当前workspace；POST带CSRF，失败抛实际错误，不自动重试。 |
+| `api`、`apiURL`、`apiRoot`、`apiMember` | pathname决定当前workspace/library前缀；根POST先取得并使用root CSRF，各member POST使用自己的CSRF。失败保留code/status，不自动重试mutation；401登录提示与403权限不足分开。 |
+| `ensureRootCSRF`、`fetchLoginStatus` | 读取共享登录状态并缓存root CSRF，同一在途读取合并。 |
+| `renderAuthLogin`、`loginDiagnostic` | 显示申请中、设备code、成功/失败、env覆盖与缺组件；不显示原始gh输出，终态清掉旧code。 |
+| `startBrowserLogin`、`performStartBrowserLogin`、`maybeAutoBrowserLogin` | 用户主动连接时至多自动开始一次；手动重试仍可用，403不循环触发。generation丢弃过期结果。 |
+| `scheduleLoginPoll`、`stopLoginPolling`、`cancelAuthLogin` | 串行状态轮询、停止与取消；关弹窗/切本地连接会取消未完成流程，不自动重发业务写入。 |
+| `handleLoginSucceeded`、`refreshRepositoryLogin`、`refreshLoginStatus` | 授权完成后刷新真实身份、仓库与分支；状态查询不等于授权成功。 |
+| `installAuthComponent`、`recheckLoginComponent`、`copyAuthCode` | 官方安装页入口、组件重检与设备code复制；剪贴板不可用时只选中供手动复制，不声称已复制。 |
 | `setBusy`、`updateActions` | 禁重复mutation和处理中dialog交互；根据是否选仓、初始化、changes/journal/selected启用动作。 |
 | `mutate` | 单次action→重新GET state→恢复按钮；失败保留表单。已成功但刷新失败时明确要求确认状态，不重复提交冒充重试。 |
 | `refreshState` | 读取完整state、清理失效selection/卡片缓存并渲染；sequence拒绝旧刷新响应覆盖新结果。 |
@@ -681,7 +702,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `releaseUploadFiles`、`setUploadFiles`、`renderUploadFiles`、`openUpload` | 维护File/ObjectURL、客户端数量/体积提示和可移除预览；移除/关闭revoke，失败保留本批输入。 |
 | `upload` | FormData+XHR，把传输百分比和服务端校验阶段分开；完整batch一次API请求，不把每个文件变成独立commit。 |
 | `openRepository`、`updateRepositoryFields` | local create/use与GitHub字段切换，回填Location并GET workspaces生成导航链接；换仓返回url后window.location.assign，不先refresh旧workspace，不丢旧stage。 |
-| `loadGitHubRepositories`、`loadRepositoryBranches` | 打开GitHub连接即GET auth+repos填仓库下拉，选中仓库再GET branches填分支下拉；预选顺序preferred→当前连接的→默认分支→首个，并保留仍然存在的当前分支。加载中禁用无效连接，未登录/空仓库/无分支/失败都给显式文案，不退回让用户猜名字。 |
+| `loadGitHubRepositories`、`loadRepositoryBranches` | 打开GitHub连接即检查身份并读完整仓库/分支列表；缺少登录时每次连接弹窗最多自动开始一次浏览器授权，成功后重读，取消/失败/403不循环重启。预选真实preferred/当前/default/首项，显示只读与保护规则，不让用户猜仓库或分支名。 |
 | `invalidateGitHubRequests`、`validGitHubSelection`、`updateRepositoryControls`、`resetBranchChoices` | 仓库/分支请求各有递增sequence，切换仓库立即清旧分支并让晚到响应失效；只有下拉里真实存在的仓库+分支才启用连接，`aria-busy`只反映加载态，不用自由文本冒充有效选择。 |
 | `result` | 验证结果等数据用dl/textContent展示，长HEAD可换行。 |
 | `openImport` | 显示原路径导入表单与未初始化提示；提交directory/namespace/tags/collections后显示imported/skipped与必须commit的提示，不自动初始化/发布。 |

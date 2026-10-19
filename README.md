@@ -66,7 +66,7 @@ TOUKO 接受 PNG、JPEG、GIF 和 WebP。上传 PNG 或 JPEG 时可以选择转�
 
 ## 安装
 
-| 目标 | v0.1.0 状态 |
+| 目标 | v0.1.1 状态 |
 | --- | --- |
 | Linux amd64 | 桌面在 Wayland + GTK3 + WebKitGTK 4.1 上验证；发布流程构建 CLI 与桌面 |
 | Linux arm64 | 发布流程构建 CLI 与桌面，尚未做 GUI 实机验收 |
@@ -76,21 +76,21 @@ TOUKO 接受 PNG、JPEG、GIF 和 WebP。上传 PNG 或 JPEG 时可以选择转�
 
 Linux 的验证只覆盖一套 Wayland 桌面，不代表所有发行版、桌面环境或架构。Windows 与 macOS 的产物由原生 runner 构建，并通过 CLI 冒烟测试，但本轮没有在真实图形会话里验收，界面、托盘和剪贴板行为仍需实机确认。
 
-CLI 和桌面都需要 Git 支持 SHA-1 仓库与 `show-ref --exists`，建议使用 Git 2.46 或更高版本。桌面使用系统 WebView：Linux 需要 GTK3 与 WebKitGTK 4.1，托盘需要 Ayatana AppIndicator 和托盘宿主；Windows 需要 WebView2 Runtime；macOS 使用系统 WKWebView。GitHub 登录推荐安装 `gh`，也可改用 `GITHUB_TOKEN` 或 `GH_TOKEN`。
+CLI 和桌面都需要 Git 支持 SHA-1 仓库与 `show-ref --exists`，建议使用 Git 2.46 或更高版本。桌面使用系统 WebView：Linux 需要 GTK3 与 WebKitGTK 4.1，托盘需要 Ayatana AppIndicator 和托盘宿主；Windows 需要 WebView2 Runtime；macOS 使用系统 WKWebView。图形化 GitHub 登录需要安装一次 [GitHub CLI（gh）](https://cli.github.com/)，之后无需输入 gh 命令；高级用户也可配置 `GITHUB_TOKEN` 或 `GH_TOKEN`。
 
-发布矩阵固定为 linux/{amd64,arm64}、windows/amd64、darwin/{amd64,arm64}。每个目标生成统一根名 `touko_0.1.0_${GOOS}_${GOARCH}` 的归档：Windows 为 `.zip`，其余为 `.tar.gz`，并各附同名 `.sha256`。归档都含 README、`docs/` 与 LICENSE；CLI 在 `bin/touko`（Windows 为 `bin\touko.exe`），Linux/Windows 桌面在 `bin/touko-desktop[.exe]`；macOS 桌面是带 Info.plist 与 `.icns` 图标的真实 `TOUKO.app`，入口为 `TOUKO.app/Contents/MacOS/touko-desktop`，不再另外复制一份桌面二进制。Linux 包还保留桌面条目和 hicolor 图标。
+发布矩阵固定为 linux/{amd64,arm64}、windows/amd64、darwin/{amd64,arm64}。每个目标生成统一根名 `touko_0.1.1_${GOOS}_${GOARCH}` 的归档：Windows 为 `.zip`，其余为 `.tar.gz`，并各附同名 `.sha256`。归档都含 README、`docs/` 与 LICENSE；CLI 在 `bin/touko`（Windows 为 `bin\touko.exe`），Linux/Windows 桌面在 `bin/touko-desktop[.exe]`；macOS 桌面是带 Info.plist 与 `.icns` 图标的真实 `TOUKO.app`，入口为 `TOUKO.app/Contents/MacOS/touko-desktop`，不再另外复制一份桌面二进制。Linux 包还保留桌面条目和 hicolor 图标。
 
 ### 安装 release
 
-发布由 GitHub Actions 在原生 runner 上按上述五个目标构建，CI 通过后附加全部归档与校验文件，并创建 **draft** Release。draft 用于本机检查和 Windows 用户自行实机测试，测试通过后才正式发布。本轮会尝试创建 `v0.1.0` draft，是否已公开以 [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases) 的实际状态为准。
+从 [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases) 下载公开测试版 `v0.1.1`，不需要仓库维护权限。五个目标由原生 runner 构建并运行 CLI 烟测；公开测试版供用户继续验收，尤其是 Windows/macOS 的界面、剪贴板与托盘，不代表这些 GUI 行为已经全部通过实机测试。
 
 下载归档和同名 `.sha256` 后先校验，再解压。Linux：
 
 ```sh
-sha256sum -c touko_0.1.0_linux_amd64.sha256
-tar -xzf touko_0.1.0_linux_amd64.tar.gz
-sudo install -m755 touko_0.1.0_linux_amd64/bin/touko touko_0.1.0_linux_amd64/bin/touko-desktop /usr/local/bin/
-sudo cp -R touko_0.1.0_linux_amd64/share/. /usr/local/share/
+sha256sum -c touko_0.1.1_linux_amd64.sha256
+tar -xzf touko_0.1.1_linux_amd64.tar.gz
+sudo install -m755 touko_0.1.1_linux_amd64/bin/touko touko_0.1.1_linux_amd64/bin/touko-desktop /usr/local/bin/
+sudo cp -R touko_0.1.1_linux_amd64/share/. /usr/local/share/
 touko version
 touko-desktop --version
 ```
@@ -100,14 +100,20 @@ Linux arm64 把文件名中的 `amd64` 换成 `arm64`。预编译包不需要 Go
 Windows（PowerShell）：
 
 ```powershell
-Expand-Archive .\touko_0.1.0_windows_amd64.zip -DestinationPath .
-cd .\touko_0.1.0_windows_amd64
-Get-FileHash ..\touko_0.1.0_windows_amd64.zip -Algorithm SHA256
-Get-Content ..\touko_0.1.0_windows_amd64.sha256
+Expand-Archive .\touko_0.1.1_windows_amd64.zip -DestinationPath .
+cd .\touko_0.1.1_windows_amd64
+Get-FileHash ..\touko_0.1.1_windows_amd64.zip -Algorithm SHA256
+Get-Content ..\touko_0.1.1_windows_amd64.sha256
 .\bin\touko.exe version --json
 ```
 
-`Get-FileHash` 输出的十六进制应与 `.sha256` 中记录的值一致。要打开桌面版，双击包根下的 `bin\touko-desktop.exe`。关闭窗口只会隐藏到托盘，真正退出请使用托盘菜单里的“退出”。Windows 桌面需要 WebView2 Runtime；GitHub 登录推荐先执行 `gh auth login`。
+`Get-FileHash` 输出的十六进制应与 `.sha256` 中记录的值一致。要打开桌面版，双击包根下的 `bin\touko-desktop.exe`。托盘可用时，关闭窗口只会隐藏到托盘，真正退出请使用托盘菜单里的“退出”；没有托盘时关闭窗口会退出。Windows 桌面需要 WebView2 Runtime。
+
+在“连接 / 切换仓库”中选择 GitHub。未登录时会自动发起一次浏览器授权，按 TOUKO 显示的一次性验证码完成 GitHub CLI 授权，之后自动刷新身份与仓库；也可点击“在浏览器登录 GitHub”重新授权。未安装 gh 时，点击“安装登录组件”打开官方安装页，安装后重新检测即可，不必学习命令行。已有 gh 登录会直接复用。
+
+Windows 安装 gh 后若仍提示缺少组件，请退出并重新打开 TOUKO，确保应用取得安装器更新后的 PATH。
+
+登录不会赋予账号原本没有的仓库写权限；只读仓库、组织限制和分支保护需要仓库管理员处理。显式环境 token 优先于 gh，使用这类配置时需修复权限或移除环境变量后重启，不能通过重复网页登录覆盖。一次性验证码可以显示在界面，访问 token 不会进入网页或 TOUKO 的工作区文件；gh 自行管理凭据存储。
 
 首次测试请使用独立的 state 目录和新建的本地图仓，不要直接操作日常使用的仓库：
 
@@ -123,9 +129,9 @@ $repo = Join-Path $env:TEMP "touko-test.git"
 macOS：
 
 ```sh
-shasum -a 256 -c touko_0.1.0_darwin_arm64.sha256   # Intel 用 darwin_amd64
-tar -xzf touko_0.1.0_darwin_arm64.tar.gz
-cd touko_0.1.0_darwin_arm64
+shasum -a 256 -c touko_0.1.1_darwin_arm64.sha256   # Intel 用 darwin_amd64
+tar -xzf touko_0.1.1_darwin_arm64.tar.gz
+cd touko_0.1.1_darwin_arm64
 ./bin/touko version --json
 cp -R TOUKO.app /Applications/
 open /Applications/TOUKO.app
@@ -135,7 +141,7 @@ open /Applications/TOUKO.app
 
 ### 包体积与运行内存
 
-归档不包含 Chromium 或 Node：MyGo 复用系统 WebView，界面 HTML/CSS/JS/字体通过 `go:embed` 编进二进制，Go 后端通过本机回环 HTTP 提供页面并桥接剪贴板。因此包小不等于运行时内存小：二进制仍内嵌约 12 MiB 字体，以及 SQLite 与图像处理代码，桌面运行时还要加上系统 WebView 的进程树。最终体积以实际下载文件为准，可用 `ls -lh touko_0.1.0_*`（Windows：`Get-Item .\touko_0.1.0_windows_amd64.zip | Select-Object Length`）测量，本文不写死数字。
+归档不包含 Chromium 或 Node：MyGo 复用系统 WebView，界面 HTML/CSS/JS/字体通过 `go:embed` 编进二进制，Go 后端通过本机回环 HTTP 提供页面并桥接剪贴板。因此包小不等于运行时内存小：二进制仍内嵌约 12 MiB 字体，以及 SQLite 与图像处理代码，桌面运行时还要加上系统 WebView 的进程树。最终体积以实际下载文件为准，可用 `ls -lh touko_0.1.1_*`（Windows：`Get-Item .\touko_0.1.1_windows_amd64.zip | Select-Object Length`）测量，本文不写死数字。
 
 ### 从源码构建
 

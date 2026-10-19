@@ -1875,6 +1875,104 @@ progress {
   min-height: 32px;
   font-size: var(--fs-xs);
 }
+.auth-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.auth-actions .button {
+  min-height: 34px;
+}
+.auth-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  color: var(--ink-secondary);
+  background: var(--sakura-tint);
+  border-radius: var(--radius-control);
+  box-shadow: inset 3px 0 0 var(--sakura-strong);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-read);
+}
+.auth-note strong {
+  color: var(--ink);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.auth-login-state {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--page);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+.repo-security .auth-login-message {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-read);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.auth-device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.auth-field-label {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+.auth-code,
+.auth-url code {
+  font-family: "Monaspace Radon", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.auth-device .auth-code {
+  min-width: 0;
+  padding: 6px 10px;
+  color: var(--ink);
+  background: var(--mount);
+  border-radius: var(--radius-photo);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+.auth-url {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.auth-url code {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-secondary);
+  font-size: var(--fs-xs);
+}
+.auth-install p {
+  margin: 0 0 var(--space-3);
+}
+.auth-small {
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: var(--fs-xs);
+}
+.auth-warning {
+  color: var(--sakura-strong);
+  box-shadow: inset 3px 0 0 var(--sakura);
+}
 .repo-dialog #repo-error,
 .preview-details #edit-error {
   margin-top: var(--space-4);
@@ -2314,6 +2412,18 @@ progress {
   .gallery-subtitle {
     gap: 0 0.22em;
     font-size: 0.75rem;
+  }
+  .auth-actions .button,
+  .auth-actions .text-button {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+  .auth-device .auth-code {
+    flex: 1 1 auto;
+    text-align: center;
+  }
+  .auth-device .auth-small {
+    flex: 1 1 100%;
   }
 }
 @media (prefers-reduced-motion: reduce) {

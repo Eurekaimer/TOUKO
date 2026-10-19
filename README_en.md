@@ -86,7 +86,7 @@ The gallery mounts 60 cards first and appends more as the sentinel approaches th
 
 ### Platforms and runtime dependencies
 
-| Target | v0.1.0 status |
+| Target | v0.1.1 status |
 | --- | --- |
 | Linux amd64 | Desktop verified on Wayland + GTK3 + WebKitGTK 4.1; the release pipeline builds CLI and desktop |
 | Linux arm64 | Release pipeline builds CLI and desktop; no GUI acceptance run yet |
@@ -96,21 +96,21 @@ The gallery mounts 60 cards first and appends more as the sentinel approaches th
 
 The Linux verification covers one Wayland session, not every distribution, desktop environment or architecture. Windows and macOS artifacts are built on native runners and pass CLI smoke tests, but this round has not exercised their graphical sessions; the window, tray and clipboard behaviour still need real-machine confirmation.
 
-Both executables require Git with SHA-1 repository and `show-ref --exists` support (Git 2.46+ recommended). The desktop uses the system WebView: GTK3 and WebKitGTK 4.1 on Linux, with Ayatana AppIndicator and a tray host for the tray; WebView2 Runtime on Windows; WKWebView on macOS. Install `gh` for the recommended GitHub login flow, or provide `GITHUB_TOKEN` / `GH_TOKEN`.
+Both executables require Git with SHA-1 repository and `show-ref --exists` support (Git 2.46+ recommended). The desktop uses the system WebView: GTK3 and WebKitGTK 4.1 on Linux, with Ayatana AppIndicator and a tray host for the tray; WebView2 Runtime on Windows; WKWebView on macOS. Install [GitHub CLI (gh)](https://cli.github.com/) once for graphical GitHub login; no gh commands are needed afterwards. Advanced users can instead provide `GITHUB_TOKEN` / `GH_TOKEN`.
 
-The release matrix is linux/{amd64,arm64}, windows/amd64 and darwin/{amd64,arm64}. Every target uses the common root name `touko_0.1.0_${GOOS}_${GOARCH}`: a `.zip` on Windows and a `.tar.gz` elsewhere, each with a same-name `.sha256`. All archives contain README, `docs/` and LICENSE. The CLI is `bin/touko` (`bin\touko.exe` on Windows); the desktop is `bin/touko-desktop[.exe]` on Linux and Windows; macOS ships a real `TOUKO.app` with Info.plist and an `.icns` icon whose entry point is `TOUKO.app/Contents/MacOS/touko-desktop`, with no second desktop copy. Linux archives also keep the desktop entry and hicolor icons.
+The release matrix is linux/{amd64,arm64}, windows/amd64 and darwin/{amd64,arm64}. Every target uses the common root name `touko_0.1.1_${GOOS}_${GOARCH}`: a `.zip` on Windows and a `.tar.gz` elsewhere, each with a same-name `.sha256`. All archives contain README, `docs/` and LICENSE. The CLI is `bin/touko` (`bin\touko.exe` on Windows); the desktop is `bin/touko-desktop[.exe]` on Linux and Windows; macOS ships a real `TOUKO.app` with Info.plist and an `.icns` icon whose entry point is `TOUKO.app/Contents/MacOS/touko-desktop`, with no second desktop copy. Linux archives also keep the desktop entry and hicolor icons.
 
 ### Release installation
 
-GitHub Actions builds the five targets above on native runners. After CI passes it attaches every archive and checksum and creates a **draft** release. The draft supports local checks and lets users test the Windows package on real machines; it is published formally only after those checks pass. This round attempts to create a `v0.1.0` draft; whether it is public depends on the actual state of [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases).
+Download the public `v0.1.1` prerelease from [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases); repository maintainer access is not required. All five targets build and run CLI smoke checks on native runners. This prerelease invites real-machine testing, especially of the Windows/macOS window, clipboard and tray; those GUI behaviours are not claimed as fully verified.
 
 Download an archive and its `.sha256`, verify both, then extract. Linux:
 
 ```sh
-sha256sum -c touko_0.1.0_linux_amd64.sha256
-tar -xzf touko_0.1.0_linux_amd64.tar.gz
-sudo install -m755 touko_0.1.0_linux_amd64/bin/touko touko_0.1.0_linux_amd64/bin/touko-desktop /usr/local/bin/
-sudo cp -R touko_0.1.0_linux_amd64/share/. /usr/local/share/
+sha256sum -c touko_0.1.1_linux_amd64.sha256
+tar -xzf touko_0.1.1_linux_amd64.tar.gz
+sudo install -m755 touko_0.1.1_linux_amd64/bin/touko touko_0.1.1_linux_amd64/bin/touko-desktop /usr/local/bin/
+sudo cp -R touko_0.1.1_linux_amd64/share/. /usr/local/share/
 touko version
 touko-desktop --version
 ```
@@ -120,14 +120,20 @@ For Linux arm64, replace `amd64` in the filenames with `arm64`. Prebuilt artifac
 Windows (PowerShell):
 
 ```powershell
-Expand-Archive .\touko_0.1.0_windows_amd64.zip -DestinationPath .
-cd .\touko_0.1.0_windows_amd64
-Get-FileHash ..\touko_0.1.0_windows_amd64.zip -Algorithm SHA256
-Get-Content ..\touko_0.1.0_windows_amd64.sha256
+Expand-Archive .\touko_0.1.1_windows_amd64.zip -DestinationPath .
+cd .\touko_0.1.1_windows_amd64
+Get-FileHash ..\touko_0.1.1_windows_amd64.zip -Algorithm SHA256
+Get-Content ..\touko_0.1.1_windows_amd64.sha256
 .\bin\touko.exe version --json
 ```
 
-The hex digest from `Get-FileHash` must match the value in the `.sha256` file. To open the desktop, double-click `bin\touko-desktop.exe` under the package root. Closing the window hides it to the tray; use the tray menu's Exit command to actually quit. The Windows desktop needs the WebView2 Runtime; run `gh auth login` first for the recommended GitHub login flow.
+The hex digest from `Get-FileHash` must match the value in the `.sha256` file. To open the desktop, double-click `bin\touko-desktop.exe` under the package root. With a working tray, closing the window hides it; use the tray menu to quit. Without a tray, closing the window exits. The Windows desktop needs the WebView2 Runtime.
+
+Select GitHub in the connection dialog. When logged out, TOUKO starts browser authorization once, displays a one-time code and refreshes identity and repositories after GitHub CLI authorization completes. The browser-login button can also start a new login. If gh is missing, the Install login component button opens its official installation page; install it once and check again without learning command-line syntax. An existing gh session is reused.
+
+On Windows, if gh is installed but still reported missing, quit and reopen TOUKO so it inherits the PATH updated by the installer.
+
+Login cannot grant repository write access the account does not have; read-only access, organization restrictions and branch protection need repository-administrator action. Explicit environment tokens take precedence over gh: fix their permissions or remove them and restart rather than expecting browser login to override them. Only the one-time device code reaches the page, never an access token. TOUKO keeps credentials out of workspace files; gh manages its own credential storage.
 
 For a first test, use an independent state directory and a newly created local gallery repository; do not operate on your everyday repository:
 
@@ -143,9 +149,9 @@ $repo = Join-Path $env:TEMP "touko-test.git"
 macOS:
 
 ```sh
-shasum -a 256 -c touko_0.1.0_darwin_arm64.sha256   # use darwin_amd64 on Intel
-tar -xzf touko_0.1.0_darwin_arm64.tar.gz
-cd touko_0.1.0_darwin_arm64
+shasum -a 256 -c touko_0.1.1_darwin_arm64.sha256   # use darwin_amd64 on Intel
+tar -xzf touko_0.1.1_darwin_arm64.tar.gz
+cd touko_0.1.1_darwin_arm64
 ./bin/touko version --json
 cp -R TOUKO.app /Applications/
 open /Applications/TOUKO.app
@@ -155,7 +161,7 @@ Gatekeeper may block the first launch because the `.app` is not signed with a De
 
 ### Package size and runtime memory
 
-Archives contain neither Chromium nor Node: MyGo reuses the system WebView, HTML/CSS/JS and fonts are embedded with `go:embed`, and the Go backend serves the page over loopback HTTP while bridging the clipboard. A small package therefore does not mean a small runtime: the binary still embeds roughly 12 MiB of fonts plus SQLite and image-processing code, and the desktop adds the system WebView process tree. Measure the actual download instead of trusting a fixed number: `ls -lh touko_0.1.0_*` on Unix, or `Get-Item .\touko_0.1.0_windows_amd64.zip | Select-Object Length` on Windows.
+Archives contain neither Chromium nor Node: MyGo reuses the system WebView, HTML/CSS/JS and fonts are embedded with `go:embed`, and the Go backend serves the page over loopback HTTP while bridging the clipboard. A small package therefore does not mean a small runtime: the binary still embeds roughly 12 MiB of fonts plus SQLite and image-processing code, and the desktop adds the system WebView process tree. Measure the actual download instead of trusting a fixed number: `ls -lh touko_0.1.1_*` on Unix, or `Get-Item .\touko_0.1.1_windows_amd64.zip | Select-Object Length` on Windows.
 
 ### Build from source
 

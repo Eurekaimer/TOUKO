@@ -284,7 +284,7 @@ bash examples/demo.sh
 ```bash
 COMMIT=$(git rev-parse HEAD)
 go build -trimpath \
-  -ldflags "-X github.com/Eurekaimer/TOUKO/internal/buildinfo.Version=v0.1.0 -X github.com/Eurekaimer/TOUKO/internal/buildinfo.Commit=$COMMIT" \
+  -ldflags "-X github.com/Eurekaimer/TOUKO/internal/buildinfo.Version=v0.1.1 -X github.com/Eurekaimer/TOUKO/internal/buildinfo.Commit=$COMMIT" \
   -o /tmp/touko ./cmd/touko
 /tmp/touko version --json
 ```
@@ -301,14 +301,14 @@ bash scripts/release.sh vMAJOR.MINOR.PATCH FULL_COMMIT [OUTPUT_DIR]
 
 ```bash
 # 从已审核的 checkout 构建；脚本只打包，不创建 tag 或发布。
-bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
-GOOS=linux GOARCH=arm64 bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
-GOOS=windows GOARCH=amd64 bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
-GOOS=darwin GOARCH=arm64 bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
-cd dist && sha256sum -c touko_0.1.0_linux_amd64.sha256
+bash scripts/release.sh v0.1.1 "$(git rev-parse HEAD)"
+GOOS=linux GOARCH=arm64 bash scripts/release.sh v0.1.1 "$(git rev-parse HEAD)"
+GOOS=windows GOARCH=amd64 bash scripts/release.sh v0.1.1 "$(git rev-parse HEAD)"
+GOOS=darwin GOARCH=arm64 bash scripts/release.sh v0.1.1 "$(git rev-parse HEAD)"
+cd dist && sha256sum -c touko_0.1.1_linux_amd64.sha256
 ```
 
-脚本要求 Bash、Go（以 `go.mod` 为准）、Git、Python 3.12+，以及 `cp`、`mktemp`、`chmod` 等基础工具；归档与 SHA-256 由脚本内置的 Python helper 生成，不依赖 GNU tar。Windows 原生 runner 通过 Git Bash 与 setup-python 执行，本地 Windows 重跑也需要同样的 Bash 与 Python 3.12+ 环境。构建统一使用 `CGO_ENABLED=0`、`-trimpath -s -w` 并注入 `buildinfo.Version` / `buildinfo.Commit`；Windows 桌面额外加 `-H=windowsgui`。所有目标使用归档根名 `touko_0.1.0_${GOOS}_${GOARCH}`：Windows 为 `.zip`，其余为 `.tar.gz`，各自附同名 `.sha256`。
+脚本要求 Bash、Go（以 `go.mod` 为准）、Git、Python 3.12+，以及 `cp`、`mktemp`、`chmod` 等基础工具；归档与 SHA-256 由脚本内置的 Python helper 生成，不依赖 GNU tar。Windows 原生 runner 通过 Git Bash 与 setup-python 执行，本地 Windows 重跑也需要同样的 Bash 与 Python 3.12+ 环境。构建统一使用 `CGO_ENABLED=0`、`-trimpath -s -w` 并注入 `buildinfo.Version` / `buildinfo.Commit`；Windows 桌面额外加 `-H=windowsgui`。所有目标使用归档根名 `touko_0.1.1_${GOOS}_${GOARCH}`：Windows 为 `.zip`，其余为 `.tar.gz`，各自附同名 `.sha256`。
 
 布局固定：CLI 在 `bin/touko[.exe]`；Linux/Windows 桌面在 `bin/touko-desktop[.exe]`；macOS 桌面在 `TOUKO.app/Contents/MacOS/touko-desktop`，不再复制到 `bin/`。macOS `.app` 含 Info.plist 和 `.icns` 图标；Linux 包保留桌面条目和 16–256px 图标。每个归档都带 `share/doc/touko/` 下的 README 与 `docs/`，以及 `share/licenses/touko/LICENSE`。桌面仍依赖系统 WebView（Linux GTK3/WebKitGTK 4.1 与 Ayatana 托盘，Windows WebView2，macOS WKWebView），禁用 CGO 不等于不需要这些运行库。安装步骤见 [README](../README.md#安装)。
 
@@ -321,7 +321,7 @@ cd dist && sha256sum -c touko_0.1.0_linux_amd64.sha256
 1. resolve job 用完整历史解析 tag 指向的 commit；tag 不存在或不是 `vMAJOR.MINOR.PATCH` 就失败。
 2. 调用 `ci.yml` 对同一 commit 执行 test、race、vet 与隔离 CLI demo。
 3. 在五个原生 runner（ubuntu-24.04、ubuntu-24.04-arm、windows-2025、macos-15-intel、macos-15）上按 `go.mod` 安装 Go、复用 module cache，以 `GOOS`/`GOARCH` 调用 `release.sh` 构建对应归档和 SHA-256。这里不是交叉编译，每个产物都由目标 OS/架构的 runner 生成。
-4. 每个目标运行原生 smoke：检查归档布局和版本/commit 注入，并在新建的本地图库执行 `init`、`add`、`commit`、`verify`、`find`；Windows 同时覆盖 SQLite 路径编码、目录同步和原子替换回归。任一目标失败都不会发布。
+4. 每个目标运行持久化路径回归、浏览器登录生命周期与授权边界回归，再对归档执行原生 smoke：版本/commit 注入及本地图库 `init`、`add`、`commit`、`verify`、`find`。这些自动检查不向真实 GitHub 账号发起交互授权，也不替代 GUI 实机验收；任一目标失败都不会发布。
 5. 汇总全部归档与 `.sha256`，用最小 `contents: write` 权限创建 **draft** GitHub Release；`--verify-tag` 禁止隐式创建 tag。
 
-tag push 默认只生成 draft，便于先在本机和 Windows 实机测试。draft 中的 Windows 与 macOS 包已经过 CLI smoke，但不代表 GUI、托盘或剪贴板已验收。维护者测试通过后，在 GitHub 上手动把 draft 发布为正式 Release。本轮会尝试创建 `v0.1.0` draft；是否已经存在、状态是 draft 还是正式发布，以 GitHub 的实际状态为准，本文不承诺发布成功。push `main` 或提交 PR 只触发 CI，不发布 Release。
+tag push 默认只生成 draft，便于检查附件；draft 只有维护者可见，不适合直接发给外部测试者。要公开测试，维护者确认构建通过后将草稿发布为 prerelease，例如 `gh release edit v0.1.1 --draft=false --prerelease`，或在 GitHub 页面勾选预发布并发布。公开测试版无需维护权限即可下载，但不代表 Windows/macOS 的 GUI、托盘或剪贴板已经验收。后续验收完成再决定是否转为稳定版。push `main` 或提交 PR 只触发 CI，不发布 Release。

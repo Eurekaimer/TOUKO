@@ -759,6 +759,9 @@
                 </select>
               </span>
               <p id="repo-branch-help" class="field-help" role="status">选择仓库后读取全部分支，优先选择默认分支；受保护分支仍可选择，但发布须遵守仓库规则。</p>
+              <p id="repo-write-warning" class="field-help auth-warning" role="status" hidden>
+                当前仓库为只读。可以点击「切换账号或重新授权」使用有写入权限的账号，或联系仓库管理员授予 Contents 读写权限；重新登录本身不会自动获得写权限。
+              </p>
             </div>
             <p class="field-help">
               请先在 GitHub 创建图片仓库，并勾选添加 README。不要使用 TOUKO
@@ -768,15 +771,53 @@
           <div class="repo-security">
             <strong>凭据留在服务端</strong>
             <p>
-              在终端运行 <code>touko auth login</code> 使用 GitHub CLI 登录，或配置
-              <code>GITHUB_TOKEN</code> / <code>GH_TOKEN</code>，并授予目标仓库 Contents
-              读写权限。已有 gh 登录可直接读取，无需重启；这个页面不接收、也不保存 token。
+              TOUKO 调用本机 GitHub CLI 发起授权，并打开官方设备授权页。网页只显示一次性验证码和官方授权地址，不接收也不保存访问 token；gh 管理凭据。已有登录也可切换账号或重新授权。
             </p>
             <div class="auth-line">
-              <span id="auth-status" role="status">尚未检查凭据</span
-              ><button type="button" class="text-button" id="check-auth">
-                重新读取 GitHub 登录与仓库
-              </button>
+              <span id="auth-status" role="status">尚未检查凭据</span>
+            </div>
+            <div id="auth-panel" class="auth-panel">
+              <div id="auth-env-block" class="auth-note" role="alert" hidden>
+                <strong id="auth-env-source"></strong>
+                <span id="auth-env-message"></span>
+              </div>
+              <div id="auth-login-state" class="auth-login-state" hidden>
+                <p id="auth-login-message" class="auth-login-message" role="status"></p>
+                <div id="auth-device-box" class="auth-device" hidden>
+                  <span class="auth-field-label">一次性验证码</span>
+                  <code id="auth-user-code" class="auth-code" tabindex="0"></code>
+                  <button type="button" id="auth-copy-code" class="button secondary auth-small">
+                    复制验证码
+                  </button>
+                </div>
+                <div id="auth-url-box" class="auth-url" hidden>
+                  <span class="auth-field-label">授权地址</span>
+                  <code id="auth-verification-url"></code>
+                </div>
+                <div id="auth-wait-actions" class="auth-actions" hidden>
+                  <button type="button" id="auth-reopen" class="button secondary">
+                    重新打开浏览器
+                  </button>
+                  <button type="button" id="auth-cancel" class="text-button">取消登录</button>
+                </div>
+              </div>
+              <div id="auth-install" class="auth-install" hidden>
+                <p id="auth-install-message" class="field-help"></p>
+                <div class="auth-actions">
+                  <button type="button" id="auth-install-button" class="button secondary">
+                    安装登录组件
+                  </button>
+                  <button type="button" id="auth-recheck" class="text-button">已安装，重新检测</button>
+                </div>
+              </div>
+              <div id="auth-main-actions" class="auth-actions">
+                <button type="button" id="auth-login" class="button primary">
+                  在浏览器登录 GitHub
+                </button>
+                <button type="button" class="text-button" id="check-auth">
+                  重新读取 GitHub 登录与仓库
+                </button>
+              </div>
             </div>
           </div>
           <p class="field-help">

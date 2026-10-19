@@ -77,6 +77,8 @@ jobs:
         run: bash scripts/release.sh "$RELEASE_VERSION" "$SOURCE_COMMIT"
       - name: Check durable workspace replacement and escaped state paths
         run: go test ./internal/index -run '^TestChangeKindsSurviveReopen$'
+      - name: Check browser login lifecycle and authorization boundaries
+        run: go test ./internal/webview -run '^TestBrowserLogin'
       - name: Smoke native release binaries and checksum
         run: |
           extension=tar.gz

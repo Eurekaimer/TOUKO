@@ -43,6 +43,27 @@ let githubRequestSequence = 0;
 let branchRequestSequence = 0;
 let clipboardBusy = false;
 let operationRetry = null;
+// Browser authorization always talks to the root server, even when the dialog
+// was opened from one workspace. The root CSRF token is therefore cached
+// separately from the current view/member tokens.
+let rootCSRF = "";
+let loginSession = null;
+let loginPollTimer = null;
+let loginPollToken = 0;
+let loginPollInFlight = false;
+let loginStartPending = false;
+let loginGeneration = 0;
+let loginCancelRequest = null;
+let loginStatusRequest = null;
+let loginStartRequest = null;
+let loginReopenSucceeded = false;
+let loginBusy = false;
+let loginAutoAttempted = false;
+let loginSuccessHandled = false;
+let loginSuccessRefreshed = false;
+let loginActionError = "";
+let authInstallNotice = "";
+let authConfigured = false;
 // A large gallery must not build every card up front: each card owns an image,
 // listeners and layout. Cards are mounted in bounded batches as the sentinel
 // approaches the viewport; filters or a refreshed state restart the window.
@@ -126,8 +147,17 @@ function responseError(data, status) {
   if (code === "capacity_full")
     message += "\n请手动连接新的仓库，或先提交/清理已有图片。";
   if (code === "unauthorized")
-    message += "\n请在终端运行 touko auth login，或检查 GITHUB_TOKEN / GH_TOKEN 的仓库权限，再重新读取登录。";
-  return new Error(message);
+    message +=
+      "\nGitHub 授权缺失、已失效或权限不足。请打开仓库连接窗口，点击「在浏览器登录 GitHub」重新授权；如果正在使用 GITHUB_TOKEN / GH_TOKEN，请检查其仓库权限，或移除该环境变量并重启 TOUKO。";
+  if (code === "forbidden")
+    message +=
+      "\n当前 GitHub 账号无权执行这个操作。可以换一个账号重新授权，或联系仓库管理员授予权限；重新登录本身不会自动获得写权限。";
+  const error = new Error(message);
+  // Keep the server code and HTTP status so callers can distinguish a missing
+  // login (401) from a real permission failure (403) instead of matching text.
+  error.code = code || "";
+  error.status = status;
+  return error;
 }
 // A refused connection is not a server error: the window may still be starting,
 // or the process may have exited. Say which, instead of Chromium's "failed to
@@ -141,12 +171,23 @@ function networkError(error) {
   return error;
 }
 const apiRoot = (path, body) => api(path, body, "");
+// The root login endpoints also hand out the root server's CSRF token. Cache
+// it so a POST issued from /w/... or /l/... still passes the root's Origin and
+// CSRF checks instead of reusing a workspace/member token.
+async function ensureRootCSRF() {
+  if (rootCSRF) return rootCSRF;
+  const value = await fetchLoginStatus();
+  if (!value?.csrf)
+    throw new Error("本地服务返回的 GitHub 登录状态缺少根 CSRF 令牌；请重启 TOUKO 后重试。");
+  rootCSRF = value.csrf;
+  return rootCSRF;
+}
 async function api(path, body, prefix = viewPrefix) {
   const options = { headers: { Accept: "application/json" } };
   if (body !== undefined) {
     options.method = "POST";
     options.headers["Content-Type"] = "application/json";
-    options.headers["X-Touko-CSRF"] = view.csrf;
+    options.headers["X-Touko-CSRF"] = prefix === "" ? await ensureRootCSRF() : view.csrf;
     options.body = JSON.stringify(body);
   }
   let response;
@@ -405,9 +446,13 @@ function renderWorkspace() {
       : "尚未连接仓库";
     $("head-indicator").title = primary?.head || "";
   }
-  $("auth-status").textContent = view.auth.configured
-    ? "服务端已有 GitHub 凭据，可读取登录与仓库列表"
-    : "尚未读取 GitHub 登录；可使用 gh 登录或环境变量凭据";
+  authConfigured = Boolean(view.auth.configured);
+  // The repository dialog owns this line while open; a background state refresh
+  // must not replace a specific identity/source with the generic summary.
+  if (!$("repo-dialog")?.open)
+    $("auth-status").textContent = authConfigured
+      ? "服务端已有 GitHub 凭据，可读取登录与仓库列表"
+      : "尚未登录 GitHub；可在连接窗口点击「在浏览器登录 GitHub」";
   const readable = members.find((entry) => entry.local_read?.available);
   $("local-read-status").textContent = readable
     ? `本地读图副本可用：${readable.local_read.path}`
@@ -1365,6 +1410,405 @@ async function importFiles(files) {
     setUploadFiles([file], true);
   }
 }
+function authDialogCurrent() {
+  return Boolean($("repo-dialog")?.open) && $("repo-type")?.value === "github";
+}
+const authPlaintextWarning =
+  "安全提示：GitHub CLI 无法使用系统密钥环，可能已把凭据保存为明文文件；请加固或删除该文件。";
+function authSourceLabel(source) {
+  return { github_token: "GITHUB_TOKEN", gh_token: "GH_TOKEN" }[source] || source || "环境变量";
+}
+// gh messages are English diagnostics. Translate the known terminal states and
+// keep the security-relevant plaintext warning instead of showing raw output.
+function loginDiagnostic(message) {
+  const text = message || "";
+  const parts = [];
+  if (/timed out/i.test(text)) {
+    parts.push("GitHub 授权等待超时，请重试。");
+  } else if (/was cancelled/i.test(text)) {
+    parts.push(/TOUKO stopped/i.test(text) ? "TOUKO 已停止，登录已取消。" : "登录已取消。");
+  } else if (/was not found/i.test(text)) {
+    parts.push("未检测到 GitHub CLI，请先安装登录组件。");
+  } else if (/Could not open your browser/i.test(text)) {
+    parts.push("无法自动打开浏览器，请手动访问授权地址。");
+  } else if (/could not read the stored credential/i.test(text)) {
+    parts.push("GitHub CLI 已完成，但 TOUKO 无法读取已保存的凭据；请检查 gh 的登录状态后重试。");
+  } else {
+    const exit = text.match(/exit status (\d+)/i);
+    parts.push(exit ? `GitHub CLI 登录失败（退出状态 ${exit[1]}），请重试。` : "GitHub CLI 登录失败，请重试。");
+  }
+  if (/plain\s*text/i.test(text)) parts.push(authPlaintextWarning);
+  return parts.join("");
+}
+async function fetchLoginStatus() {
+  // A poll tick and a user-triggered re-read must share one request so a slow
+  // response can never overwrite a newer state with a stale one.
+  if (loginStatusRequest) return loginStatusRequest;
+  loginStatusRequest = (async () => {
+    const value = await apiRoot("auth/login");
+    if (!value?.csrf || typeof value.status !== "string")
+      throw new Error("本地服务返回的 GitHub 登录状态无效；请重启 TOUKO 后重试。");
+    rootCSRF = value.csrf;
+    return value;
+  })().finally(() => {
+    loginStatusRequest = null;
+  });
+  return loginStatusRequest;
+}
+// renderAuthLogin turns the server's login state into the one visible control
+// panel. The browser never receives a token: only the one-time device code and
+// the fixed GitHub verification URL are shown.
+function renderAuthLogin() {
+  if (!$("auth-panel")) return;
+  const status = loginSession?.status || "idle";
+  const blocked = loginSession?.blocked_source || "";
+  const available = loginSession?.available !== false;
+  const starting = status === "starting" || loginStartPending;
+  const waiting = starting || status === "waiting";
+  const hasCode = status === "waiting" && Boolean(loginSession?.user_code);
+  const showState = !blocked && available && (waiting || status === "succeeded" || status === "failed" || status === "cancelled");
+
+  $("auth-env-block").hidden = !blocked;
+  if (blocked) {
+    const source = authSourceLabel(blocked);
+    $("auth-env-source").textContent = `当前使用 ${source} 环境变量凭据`;
+    $("auth-env-message").textContent =
+      `网页登录不会覆盖或替换 ${source}。若要改用浏览器登录，请移除该环境变量并重启 TOUKO，然后重新打开此窗口。`;
+  }
+  $("auth-install").hidden = Boolean(blocked) || available;
+  if (!blocked && !available) {
+    $("auth-install-message").textContent = authInstallNotice
+      || "未检测到 GitHub CLI 登录组件。安装只需一次，之后都在浏览器里点击完成，不需要学习命令行。";
+  }
+  $("auth-login-state").hidden = !showState;
+  $("auth-main-actions").hidden = Boolean(blocked) || !available || waiting;
+  $("auth-login").disabled = loginBusy;
+  $("auth-login").textContent = status === "failed" || status === "cancelled"
+    ? "重试浏览器登录"
+    : authConfigured
+      ? "切换账号或重新授权"
+      : "在浏览器登录 GitHub";
+  $("auth-device-box").hidden = !hasCode;
+  const codeNode = $("auth-user-code");
+  const codeText = hasCode ? loginSession.user_code : "";
+  if (codeNode.textContent !== codeText) codeNode.textContent = codeText;
+  $("auth-url-box").hidden = !(status === "waiting" && loginSession?.verification_url);
+  const urlNode = $("auth-verification-url");
+  const urlText = status === "waiting" ? loginSession?.verification_url || "" : "";
+  if (urlNode.textContent !== urlText) urlNode.textContent = urlText;
+  $("auth-wait-actions").hidden = !waiting || Boolean(blocked);
+  $("auth-reopen").disabled = loginBusy || status !== "waiting" || !loginSession?.verification_url;
+  $("auth-cancel").disabled = !waiting;
+  $("auth-copy-code").disabled = loginBusy || !hasCode;
+  $("auth-install-button").disabled = loginBusy;
+  $("auth-recheck").disabled = loginBusy;
+
+  if (!showState) return;
+  if (waiting) {
+    if (starting)
+      $("auth-login-message").textContent =
+        "正在向 GitHub 申请一次性验证码…这可能需要一点时间，可以随时取消；整个登录最长等待约 15 分钟。";
+    else if (hasCode) {
+      const openFailed = !loginReopenSucceeded && /Could not open your browser/i.test(loginSession?.message || "");
+      $("auth-login-message").textContent = openFailed
+        ? `无法自动打开浏览器。请在系统浏览器访问 ${loginSession?.verification_url || "https://github.com/login/device"} 并输入下方一次性验证码，或点击「重新打开浏览器」。`
+        : "已请求系统浏览器打开 GitHub 授权页。请核对下方一次性验证码并完成授权；若窗口没有出现，请点击「重新打开浏览器」。";
+    } else
+      $("auth-login-message").textContent =
+        "正在向 GitHub 申请一次性验证码…";
+    if (loginActionError)
+      $("auth-login-message").textContent += `\n${loginActionError}`;
+    return;
+  }
+  if (status === "succeeded") {
+    const warning = /plain\s*text/i.test(loginSession?.message || "") ? `\n${authPlaintextWarning}` : "";
+    $("auth-login-message").textContent = (loginSuccessRefreshed
+      ? "登录成功，凭据已由后端或 gh 保存。仓库读取结果显示在上方。"
+      : "登录成功，正在重新读取 GitHub 身份、仓库与分支…") + warning;
+    return;
+  }
+  if (status === "failed") {
+    $("auth-login-message").textContent = loginSession?.localError
+      ? `浏览器登录未完成：${loginSession.message || "请重试。"}`
+      : `浏览器登录未完成。${loginDiagnostic(loginSession?.message)}`;
+    return;
+  }
+  $("auth-login-message").textContent =
+    `${loginDiagnostic(loginSession?.message) || "登录已取消。"} 可以点击下方按钮重新开始。`;
+}
+function stopLoginPolling() {
+  clearTimeout(loginPollTimer);
+  loginPollTimer = null;
+  loginPollInFlight = false;
+  loginPollToken++;
+}
+// Polling is strictly serial: the next timeout is only armed after the current
+// status request settles, and every timer is invalidated when the dialog closes
+// or switches away from GitHub.
+function scheduleLoginPoll(delay = 1400) {
+  if (loginPollTimer !== null || loginPollInFlight) return;
+  const token = loginPollToken;
+  loginPollTimer = setTimeout(async () => {
+    loginPollTimer = null;
+    if (token !== loginPollToken) return;
+    if (!authDialogCurrent()) {
+      stopLoginPolling();
+      void cancelAuthLogin({ silent: true });
+      return;
+    }
+    let continuePoll = false;
+    loginPollInFlight = true;
+    try {
+      const value = await fetchLoginStatus();
+      if (token !== loginPollToken) return;
+      if (!authDialogCurrent()) {
+        stopLoginPolling();
+        void cancelAuthLogin({ silent: true });
+        return;
+      }
+      loginSession = value;
+      loginStartPending = false;
+      if (value.status === "starting" || value.status === "waiting") {
+        loginSuccessHandled = false;
+        loginSuccessRefreshed = false;
+        continuePoll = true;
+      }
+      renderAuthLogin();
+      if (value.status === "succeeded") {
+        stopLoginPolling();
+        await handleLoginSucceeded();
+      }
+    } catch (error) {
+      if (token !== loginPollToken) return;
+      stopLoginPolling();
+      if (authDialogCurrent()) {
+        loginSession = {
+          ...(loginSession || {}),
+          status: "failed",
+          message: error.message,
+          localError: true,
+        };
+        renderAuthLogin();
+      }
+    } finally {
+      loginPollInFlight = false;
+      if (continuePoll && token === loginPollToken) scheduleLoginPoll();
+    }
+  }, delay);
+}
+function startBrowserLogin() {
+  if (loginBusy || !authDialogCurrent()) return Promise.resolve();
+  if (loginStatusRequest)
+    return loginStatusRequest.catch(() => {}).then(() => startBrowserLogin());
+  if (loginCancelRequest) return loginCancelRequest.then(() => startBrowserLogin());
+  if (loginStartRequest) return loginStartRequest;
+  loginStartRequest = performStartBrowserLogin().finally(() => {
+    loginStartRequest = null;
+  });
+  return loginStartRequest;
+}
+async function performStartBrowserLogin() {
+  if (loginBusy || !authDialogCurrent()) return;
+  const session = repositoryDialogSequence;
+  const generation = loginGeneration;
+  loginBusy = true;
+  loginActionError = "";
+  loginStartPending = true;
+  loginSuccessHandled = false;
+  loginSuccessRefreshed = false;
+  loginReopenSucceeded = false;
+  renderAuthLogin();
+  try {
+    const value = await apiRoot("auth/login", {});
+    if (!value || typeof value.status !== "string")
+      throw new Error("本地服务返回了无效的 GitHub 登录状态。");
+    if (value?.csrf) rootCSRF = value.csrf;
+    loginStartPending = false;
+    loginSession = value;
+    if (generation !== loginGeneration) {
+      await cancelAuthLogin({ silent: true });
+      return;
+    }
+    if (session !== repositoryDialogSequence || !authDialogCurrent()) {
+      await cancelAuthLogin({ silent: true });
+      return;
+    }
+    renderAuthLogin();
+    if (value.status === "succeeded") {
+      stopLoginPolling();
+      await handleLoginSucceeded();
+    } else if (value.status === "starting" || value.status === "waiting") {
+      scheduleLoginPoll(1200);
+    }
+  } catch (error) {
+    loginStartPending = false;
+    if (generation === loginGeneration && session === repositoryDialogSequence && authDialogCurrent()) {
+      loginSession = {
+        ...(loginSession || {}),
+        status: "failed",
+        message: error.message,
+        localError: true,
+        available: loginSession?.available !== false,
+        blocked_source: loginSession?.blocked_source || "",
+      };
+      loginActionError = "";
+    }
+  } finally {
+    loginBusy = false;
+    if (authDialogCurrent()) renderAuthLogin();
+  }
+}
+function cancelAuthLogin({ silent = false } = {}) {
+  stopLoginPolling();
+  loginActionError = "";
+  loginReopenSucceeded = false;
+  const active = loginStartPending || loginSession?.status === "starting" || loginSession?.status === "waiting";
+  if (!active) return Promise.resolve();
+  loginGeneration++;
+  if (loginCancelRequest) return loginCancelRequest;
+  loginCancelRequest = (async () => {
+    try {
+      const value = await apiRoot("auth/login/cancel", {});
+      if (value?.csrf) rootCSRF = value.csrf;
+      loginStartPending = false;
+      loginSession = value;
+      if (!silent && (value?.status === "cancelled" || value?.status === "idle"))
+        toast("已取消 GitHub 登录");
+    } catch (error) {
+      loginStartPending = false;
+      if (!silent) loginActionError = `取消登录失败：${error.message}`;
+    } finally {
+      loginCancelRequest = null;
+      if (authDialogCurrent()) renderAuthLogin();
+    }
+  })();
+  return loginCancelRequest;
+}
+async function refreshLoginStatus() {
+  if (!authDialogCurrent()) return null;
+  const session = repositoryDialogSequence;
+  const generation = loginGeneration;
+  try {
+    const value = await fetchLoginStatus();
+    if (generation !== loginGeneration || session !== repositoryDialogSequence || !authDialogCurrent())
+      return null;
+    loginSession = value;
+    if (value.available) authInstallNotice = "";
+    if (value.status === "starting" || value.status === "waiting") {
+      loginSuccessHandled = false;
+      loginSuccessRefreshed = false;
+      scheduleLoginPoll(700);
+    } else if (value.status === "succeeded" && !loginSuccessHandled) {
+      await handleLoginSucceeded();
+    }
+    renderAuthLogin();
+    return value;
+  } catch {
+    // The dialog's own read/repository controls still report network failures;
+    // login status being momentarily unavailable must not invent a login result.
+    return null;
+  }
+}
+async function maybeAutoBrowserLogin() {
+  if (loginAutoAttempted) return;
+  loginAutoAttempted = true;
+  const value = await refreshLoginStatus();
+  if (!value) return;
+  if (value.status === "starting" || value.status === "waiting" || value.status === "succeeded") return;
+  if (value.blocked_source || value.available === false) return;
+  await startBrowserLogin();
+}
+// The dialog always needs both the login panel state and the repository list.
+// A successful login already reloads the list, so avoid issuing the same read
+// twice when the panel was the first to observe success.
+async function refreshRepositoryLogin() {
+  const value = await refreshLoginStatus();
+  if (value?.status === "succeeded" && loginSuccessHandled) return;
+  await loadGitHubRepositories();
+}
+async function handleLoginSucceeded() {
+  if (loginSuccessHandled) return;
+  loginSuccessHandled = true;
+  loginSuccessRefreshed = false;
+  loginAutoAttempted = true;
+  loginActionError = "";
+  authConfigured = true;
+  if (!authDialogCurrent()) return;
+  $("auth-login-message").textContent = "登录成功，正在重新读取 GitHub 身份、仓库与分支…";
+  try {
+    await loadGitHubRepositories();
+  } catch (error) {
+    if (authDialogCurrent()) showError("repo-error", error);
+  }
+  try {
+    await refreshState();
+  } catch {
+    // loadGitHubRepositories has already reported any actionable failure.
+  }
+  loginSuccessRefreshed = true;
+  authConfigured = true;
+  if (authDialogCurrent()) renderAuthLogin();
+}
+async function installAuthComponent() {
+  if (loginBusy || !authDialogCurrent()) return;
+  loginBusy = true;
+  renderAuthLogin();
+  try {
+    const value = await apiRoot("auth/install", {});
+    const url = value?.url || "https://cli.github.com/";
+    authInstallNotice = value?.opened
+      ? `已请求系统浏览器打开 GitHub CLI 安装页（${url}）。安装只需一次；完成后回到这里点击「已安装，重新检测」。若仍未检测到，请退出并重新打开 TOUKO，让系统刷新组件路径。`
+      : `无法自动打开浏览器。请手动访问 ${url} 安装 GitHub CLI，再点击「已安装，重新检测」；若仍未检测到，请退出并重新打开 TOUKO。`;
+  } catch (error) {
+    authInstallNotice = `无法打开安装页：${error.message}`;
+  } finally {
+    loginBusy = false;
+    renderAuthLogin();
+  }
+}
+async function recheckLoginComponent() {
+  if (loginBusy || !authDialogCurrent()) return;
+  loginBusy = true;
+  renderAuthLogin();
+  try {
+    const value = await refreshLoginStatus();
+    if (!value) authInstallNotice = "重新检测失败，请稍后重试。";
+    else if (value.available === false)
+      authInstallNotice = "仍未检测到 GitHub CLI。若安装已完成，请退出并重新打开 TOUKO，以刷新组件路径；Windows 安装器添加的新路径不会自动传给已经运行的应用。";
+  } finally {
+    loginBusy = false;
+    renderAuthLogin();
+  }
+}
+async function copyAuthCode() {
+  const code = loginSession?.user_code;
+  if (!code) return;
+  const bridge = desktopBridge();
+  try {
+    if (bridge) await bridge.WriteText(code);
+    else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(code);
+    else throw new Error("当前环境不支持写入剪贴板");
+    loginActionError = "";
+    renderAuthLogin();
+    toast("一次性验证码已复制");
+  } catch {
+    // Selecting the visible code is the honest fallback: no copy is claimed.
+    loginActionError = "无法自动复制验证码，已选中验证码，请手动复制。";
+    renderAuthLogin();
+    const node = $("auth-user-code");
+    node.focus();
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+}
+function updateRepoWriteWarning() {
+  if (!$("repo-write-warning")) return;
+  const repo = repositories.find((item) => item.full_name === $("repo-choices").value);
+  $("repo-write-warning").hidden = !(repo && repo.can_push === false);
+}
 function invalidateGitHubRequests() {
   githubRequestSequence++;
   branchRequestSequence++;
@@ -1489,6 +1933,7 @@ async function loadRepositoryBranches(preferredBranch = "") {
   resetBranchChoices("正在读取全部分支…");
   const repository = $("repo-choices").value;
   const repo = repositories.find((item) => item.full_name === repository);
+  updateRepoWriteWarning();
   if (!repo) {
     resetBranchChoices("请先选择仓库");
     updateRepositoryControls();
@@ -1517,7 +1962,7 @@ async function loadRepositoryBranches(preferredBranch = "") {
     )));
     $("repo-branches").value = [preferredBranch, repo.default_branch, branches[0].name]
       .find((name) => branches.some((branch) => branch.name === name));
-    $("repo-branch-help").textContent = `已读取全部 ${branches.length} 个分支。受保护分支仍可选择，发布须遵守仓库规则。${repo.can_push ? "" : " 当前仓库只读，连接后不能发布。"}`;
+    $("repo-branch-help").textContent = `已读取全部 ${branches.length} 个分支。受保护分支仍可选择，发布须遵守仓库规则。${repo.can_push ? "" : " 当前仓库只读，连接后不能发布；可切换有权限的账号授权，或联系仓库管理员。"}`;
   } catch (error) {
     if (!current()) return;
     branches = [];
@@ -1547,18 +1992,21 @@ async function loadGitHubRepositories() {
   $("library-repos").replaceChildren(element("p", "field-help", "正在读取仓库…"));
   $("library-repos").dataset.signature = "";
   resetBranchChoices("请等待仓库列表加载");
+  updateRepoWriteWarning();
   clearError("repo-error");
   updateRepositoryControls();
   try {
     const auth = await apiRoot("auth");
     if (!current()) return;
+    authConfigured = Boolean(auth.configured);
     $("auth-status").textContent = auth.configured
       ? `GitHub 身份：${auth.login}（来源：${auth.source}）`
-      : "未找到登录。请在终端运行 touko auth login（需安装 GitHub CLI），或配置 GITHUB_TOKEN / GH_TOKEN，然后重新读取；无需在网页输入 token。";
+      : "尚未登录 GitHub；可在下方点击「在浏览器登录 GitHub」，无需在网页输入 token。";
     if (!auth.configured) {
       $("repo-choices").replaceChildren(new Option("请先登录 GitHub", ""));
-      $("repo-choice-help").textContent = "尚未登录，无法读取可访问仓库。完成终端登录后点击「重新读取」。";
+      $("repo-choice-help").textContent = "尚未登录，无法读取可访问仓库。点击「在浏览器登录 GitHub」完成授权后会自动读取。";
       resetBranchChoices("请先登录并选择仓库");
+      void maybeAutoBrowserLogin();
       return;
     }
     $("auth-status").textContent += " · 正在加载仓库…";
@@ -1574,7 +2022,7 @@ async function loadGitHubRepositories() {
       )),
     );
     $("repo-choice-help").textContent = repositories.length
-      ? `已读取全部 ${repositories.length} 个仓库，包含公开 / 私有与写入权限。只读仓库可以浏览，但不能发布。`
+      ? `已读取全部 ${repositories.length} 个仓库，包含公开 / 私有与写入权限。只读仓库可以浏览，但不能发布；重新登录不会自动获得写权限，需要管理员授权或切换有权限的账号。`
       : "当前账号没有可访问仓库。请在 GitHub 创建仓库或授予仓库 / 组织访问权限，然后重新读取。";
     $("library-repos").dataset.signature = "";
     updateRepositoryControls();
@@ -1585,17 +2033,29 @@ async function loadGitHubRepositories() {
     if (selectedRepository) {
       $("repo-choices").value = selectedRepository;
       repositoriesLoading = false;
+      updateRepoWriteWarning();
       void loadRepositoryBranches(selectedRepository === preferredRepository ? preferredBranch : "");
     } else {
       resetBranchChoices(repositories.length ? "请先选择仓库" : "没有可用仓库，无法读取分支");
+      updateRepoWriteWarning();
     }
   } catch (error) {
     if (!current()) return;
     repositories = [];
     $("repo-choices").replaceChildren(new Option("GitHub 仓库读取失败", ""));
-    $("repo-choice-help").textContent = "读取失败，请检查网络、GitHub 登录与仓库 / 组织权限，然后重新读取。";
-    $("auth-status").textContent = "GitHub 读取失败，请重试。";
+    if (error.status === 401 || error.code === "unauthorized") {
+      $("repo-choice-help").textContent = "GitHub 登录已失效或不足，点击「在浏览器登录 GitHub」重新授权后会自动读取。";
+      $("auth-status").textContent = "GitHub 登录已失效；可在下方重新登录。";
+      void maybeAutoBrowserLogin();
+    } else if (error.code === "forbidden") {
+      $("repo-choice-help").textContent = "当前账号无权读取该仓库或组织。可以切换账号授权，或联系仓库管理员；重新登录不会自动获得权限。";
+      $("auth-status").textContent = "当前 GitHub 账号访问受限（HTTP 403）。";
+    } else {
+      $("repo-choice-help").textContent = "读取失败，请检查网络与 GitHub 仓库 / 组织权限，然后重新读取。";
+      $("auth-status").textContent = "GitHub 读取失败，请重试。";
+    }
     resetBranchChoices("请先重新读取仓库");
+    updateRepoWriteWarning();
     showError("repo-error", error);
   } finally {
     if (current()) {
@@ -1606,8 +2066,30 @@ async function loadGitHubRepositories() {
 }
 async function openRepository() {
   if (busy || $("repo-dialog").open) return;
+  // A cancellation or start request from the previous dialog must join before
+  // a new login can start; otherwise the old request could terminate the new
+  // browser session.
+  if (loginStartRequest) await loginStartRequest;
+  if (loginCancelRequest) await loginCancelRequest;
+  if (loginStatusRequest) {
+    try {
+      await loginStatusRequest;
+    } catch {
+      // A stale read from the closed dialog is discarded by its poll token.
+    }
+  }
+  if (busy || $("repo-dialog").open) return;
   const session = ++repositoryDialogSequence;
   invalidateGitHubRequests();
+  stopLoginPolling();
+  loginSession = null;
+  loginAutoAttempted = false;
+  loginSuccessHandled = false;
+  loginSuccessRefreshed = false;
+  loginStartPending = false;
+  loginReopenSucceeded = false;
+  loginActionError = "";
+  authInstallNotice = "";
   repositories = [];
   $("repo-choices").replaceChildren(new Option("尚未读取仓库", ""));
   $("library-repos").replaceChildren(element("p", "field-help", "读取仓库后可以勾选成员。"));
@@ -1626,7 +2108,9 @@ async function openRepository() {
   clearError("repo-error");
   closeNavigation();
   showDialog("repo-dialog");
-  if ($("repo-type").value === "github") void loadGitHubRepositories();
+  if ($("repo-type").value === "github") {
+    void refreshRepositoryLogin();
+  }
   $("workspace-links").replaceChildren(element("p", "field-help", "正在读取已连接工作区…"));
   try {
     const value = await apiRoot("workspaces");
@@ -1723,6 +2207,7 @@ function updateRepositoryFields() {
   const libraryMode = github && (mode === "library" || mode === "add");
   $("local-fields").hidden = github;
   $("github-fields").hidden = !github;
+  if ($("auth-panel")) $("auth-panel").hidden = !github;
   $("library-fields").hidden = !libraryMode;
   $("single-repo-fields").hidden = libraryMode;
   $("repo-path").required = !github;
@@ -1921,6 +2406,8 @@ function bindEvents() {
       if (dialog.id === "repo-dialog" && !dialog.open) {
         repositoryDialogSequence++;
         invalidateGitHubRequests();
+        stopLoginPolling();
+        void cancelAuthLogin({ silent: true });
       }
       const origin = focusOrigins.get(dialog);
       if (origin?.isConnected) origin.focus();
@@ -2251,7 +2738,12 @@ function bindEvents() {
     invalidateGitHubRequests();
     updateRepositoryFields();
     clearError("repo-error");
-    if ($("repo-type").value === "github") void loadGitHubRepositories();
+    if ($("repo-type").value === "github") {
+      void refreshRepositoryLogin();
+    } else {
+      stopLoginPolling();
+      void cancelAuthLogin({ silent: true });
+    }
   });
   $("repo-mode").addEventListener("change", () => {
     clearError("repo-error");
@@ -2326,9 +2818,53 @@ function bindEvents() {
     if (busy) return;
     $("repo-type").value = "github";
     updateRepositoryFields();
-    void loadGitHubRepositories();
+    void refreshRepositoryLogin();
+  });
+  $("auth-login").addEventListener("click", () => {
+    void startBrowserLogin();
+  });
+  $("auth-cancel").addEventListener("click", () => {
+    void cancelAuthLogin();
+  });
+  $("auth-reopen").addEventListener("click", async () => {
+    if (loginBusy || loginSession?.status !== "waiting") return;
+    loginBusy = true;
+    loginActionError = "";
+    renderAuthLogin();
+    try {
+      const value = await apiRoot("auth/login/open", {});
+      if (value?.csrf) rootCSRF = value.csrf;
+      if (value && typeof value.status === "string") loginSession = value;
+      if (value?.status === "waiting" && /Could not open your browser/i.test(value.message || "")) {
+        // The waiting panel reads this message and shows the fixed URL itself.
+        loginReopenSucceeded = false;
+        loginActionError = "";
+      } else if (value?.status === "waiting") {
+        loginReopenSucceeded = true;
+        loginSession = { ...value, message: "" };
+        toast("已重新请求打开 GitHub 授权页");
+      } else if (value?.message) {
+        loginActionError = value.message;
+      }
+      if (value?.status === "succeeded" && !loginSuccessHandled) await handleLoginSucceeded();
+    } catch (error) {
+      loginActionError = `无法重新打开浏览器：${error.message}`;
+    } finally {
+      loginBusy = false;
+      renderAuthLogin();
+    }
+  });
+  $("auth-copy-code").addEventListener("click", () => {
+    void copyAuthCode();
+  });
+  $("auth-install-button").addEventListener("click", () => {
+    void installAuthComponent();
+  });
+  $("auth-recheck").addEventListener("click", () => {
+    void recheckLoginComponent();
   });
   $("repo-choices").addEventListener("change", () => {
+    updateRepoWriteWarning();
     if (!busy) void loadRepositoryBranches();
   });
   $("repo-branches").addEventListener("change", updateRepositoryControls);

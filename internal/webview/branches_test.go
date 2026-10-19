@@ -86,6 +86,13 @@ func TestBranchEndpointAnonymousEmptyAndRemoteFailures(t *testing.T) {
 		case "/repos/owner/denied/branches":
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprint(w, `{"message":"Resource not accessible"}`)
+		case "/repos/owner/limited/branches":
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		case "/repos/owner/expired/branches":
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"message":"Bad credentials"}`)
 		default:
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprint(w, `{"message":"GitHub unavailable"}`)
@@ -99,7 +106,9 @@ func TestBranchEndpointAnonymousEmptyAndRemoteFailures(t *testing.T) {
 	}{
 		{"owner/empty", http.StatusOK, "", ""},
 		{"owner/private", http.StatusBadGateway, "api_error", "Not Found"},
-		{"owner/denied", http.StatusUnauthorized, "unauthorized", "Resource not accessible"},
+		{"owner/denied", http.StatusForbidden, "forbidden", "Resource not accessible"},
+		{"owner/limited", http.StatusBadGateway, "api_error", "API rate limit exceeded"},
+		{"owner/expired", http.StatusUnauthorized, "unauthorized", "Bad credentials"},
 		{"owner/failure", http.StatusBadGateway, "api_error", "GitHub unavailable"},
 	} {
 		t.Run(tc.repository, func(t *testing.T) {

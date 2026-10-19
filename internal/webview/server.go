@@ -2,6 +2,7 @@ package webview
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +52,11 @@ type Server struct {
 	authSource   string
 	authLogin    string
 	authResolved bool
+	// authResolve is the process-wide credential lookup. The root Server owns
+	// it so every workspace observes the same refreshed gh identity.
+	authResolve func(context.Context) (string, string, error)
+	// login, like auth, is authoritative on the root Server only.
+	login *loginManager
 }
 
 func New(service *app.Service, token, origin string) (*Server, error) {
@@ -57,6 +64,7 @@ func New(service *app.Service, token, origin string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	server.login = newLoginManager()
 	server.workspaceID = "default"
 	server.spaces = &workspaceSet{root: server, servers: map[string]*Server{"default": server}}
 	return server, nil
@@ -132,7 +140,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method != "GET" && r.Method != "HEAD" {
-		if origin != s.origin || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Touko-CSRF")), []byte(s.csrf)) != 1 {
+		// Login endpoints are process-wide, so member URLs accept the root
+		// token, matching the one session and one credential cache they use.
+		csrf := s.csrf
+		if isLoginEndpoint(r.URL.Path) {
+			csrf = s.authOwner().csrf
+		}
+		if origin != s.origin || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Touko-CSRF")), []byte(csrf)) != 1 {
 			s.fail(w, http.StatusForbidden, "unauthorized", "exact Origin and X-Touko-CSRF are required")
 			return
 		}
@@ -158,14 +172,15 @@ func (s *Server) jsonStatus(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func (s *Server) fail(w http.ResponseWriter, status int, code, message string) {
-	if s.token != "" {
-		message = strings.ReplaceAll(message, s.token, "[redacted]")
+	owner := s.authOwner()
+	owner.authMu.Lock()
+	token, authToken := owner.token, owner.authToken
+	owner.authMu.Unlock()
+	for _, secret := range []string{token, authToken, os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN")} {
+		if secret != "" {
+			message = strings.ReplaceAll(message, secret, "[redacted]")
+		}
 	}
-	s.authMu.Lock()
-	if s.authToken != "" {
-		message = strings.ReplaceAll(message, s.authToken, "[redacted]")
-	}
-	s.authMu.Unlock()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
@@ -199,8 +214,6 @@ func errorDetail(err error) (int, string, string) {
 		return 409, "conflict", err.Error()
 	case errors.Is(err, domain.ErrBusy):
 		return 409, "busy", err.Error()
-	case errors.Is(err, domain.ErrUnauthorized):
-		return 401, "unauthorized", err.Error()
 	case errors.Is(err, domain.ErrRepositoryCorrupt):
 		return 422, "repository_corrupt", err.Error()
 	case errors.Is(err, domain.ErrHashMismatch):
@@ -210,7 +223,18 @@ func errorDetail(err error) (int, string, string) {
 	case errors.Is(err, domain.ErrDeliveryUnavailable):
 		return 400, "delivery_unavailable", err.Error()
 	case errors.As(err, &api):
-		return 502, "api_error", err.Error()
+		// A real GitHub 403 is an authenticated account without permission, not
+		// a missing login; a rate-limited 403 keeps the generic API failure.
+		switch {
+		case api.Status == 401:
+			return 401, "unauthorized", err.Error()
+		case api.Status == 403 && errors.Is(err, domain.ErrUnauthorized):
+			return 403, "forbidden", err.Error()
+		default:
+			return 502, "api_error", err.Error()
+		}
+	case errors.Is(err, domain.ErrUnauthorized):
+		return 401, "unauthorized", err.Error()
 	default:
 		return 500, "io_error", err.Error()
 	}
