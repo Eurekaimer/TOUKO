@@ -8,7 +8,7 @@
 
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-9c5238)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%C2%B7%20others%20experimental-1b2a3d)](#安装)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-1b2a3d)](#安装)
 [![Docs](https://img.shields.io/badge/docs-8%20guides-7f3f59)](docs/webview.md)
 
 [简体中文](README.md) · [English](README_en.md)
@@ -66,17 +66,25 @@ TOUKO 接受 PNG、JPEG、GIF 和 WebP。上传 PNG 或 JPEG 时可以选择转�
 
 ## 安装
 
-| 平台 | v0.1.0 状态 |
+| 目标 | v0.1.0 状态 |
 | --- | --- |
-| Linux amd64 | 已验证，release pipeline 会构建 CLI 和桌面版 |
-| macOS | Experimental / unverified，本轮没有 release artifact |
-| Windows | Experimental / unverified，本轮没有 release artifact |
+| Linux amd64 | 桌面在 Wayland + GTK3 + WebKitGTK 4.1 上验证；发布流程构建 CLI 与桌面 |
+| Linux arm64 | 发布流程构建 CLI 与桌面，尚未做 GUI 实机验收 |
+| Windows amd64 | 发布流程构建 CLI 与桌面，尚未做 GUI 实机验收 |
+| macOS amd64 | 发布流程构建 CLI 与 `.app`，尚未做 GUI 实机验收 |
+| macOS arm64 | 发布流程构建 CLI 与 `.app`，尚未做 GUI 实机验收 |
 
-Linux 桌面在 Wayland、GTK3 和 WebKitGTK 4.1 上验证过。其他发行版、桌面环境或架构尚未验证。CLI 和桌面都需要 Git 支持 SHA-1 仓库与 `show-ref --exists`，建议使用 Git 2.46 或更高版本。桌面版还需要 GTK3、WebKitGTK 4.1；托盘需要 Ayatana AppIndicator 和托盘宿主。GitHub 登录推荐安装 `gh`。
+Linux 的验证只覆盖一套 Wayland 桌面，不代表所有发行版、桌面环境或架构。Windows 与 macOS 的产物由原生 runner 构建，并通过 CLI 冒烟测试，但本轮没有在真实图形会话里验收，界面、托盘和剪贴板行为仍需实机确认。
+
+CLI 和桌面都需要 Git 支持 SHA-1 仓库与 `show-ref --exists`，建议使用 Git 2.46 或更高版本。桌面使用系统 WebView：Linux 需要 GTK3 与 WebKitGTK 4.1，托盘需要 Ayatana AppIndicator 和托盘宿主；Windows 需要 WebView2 Runtime；macOS 使用系统 WKWebView。GitHub 登录推荐安装 `gh`，也可改用 `GITHUB_TOKEN` 或 `GH_TOKEN`。
+
+发布矩阵固定为 linux/{amd64,arm64}、windows/amd64、darwin/{amd64,arm64}。每个目标生成统一根名 `touko_0.1.0_${GOOS}_${GOARCH}` 的归档：Windows 为 `.zip`，其余为 `.tar.gz`，并各附同名 `.sha256`。归档都含 README、`docs/` 与 LICENSE；CLI 在 `bin/touko`（Windows 为 `bin\touko.exe`），Linux/Windows 桌面在 `bin/touko-desktop[.exe]`；macOS 桌面是带 Info.plist 与 `.icns` 图标的真实 `TOUKO.app`，入口为 `TOUKO.app/Contents/MacOS/touko-desktop`，不再另外复制一份桌面二进制。Linux 包还保留桌面条目和 hicolor 图标。
 
 ### 安装 release
 
-当前只准备了 v0.1.0 的发布流程，tag 和 Release 还没有创建。正式发布后，从 [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases) 下载 `touko_0.1.0_linux_amd64.tar.gz` 和同名 `.sha256` 文件，在下载目录执行：
+发布由 GitHub Actions 在原生 runner 上按上述五个目标构建，CI 通过后附加全部归档与校验文件，并创建 **draft** Release。draft 用于本机检查和 Windows 用户自行实机测试，测试通过后才正式发布。本轮会尝试创建 `v0.1.0` draft，是否已公开以 [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases) 的实际状态为准。
+
+下载归档和同名 `.sha256` 后先校验，再解压。Linux：
 
 ```sh
 sha256sum -c touko_0.1.0_linux_amd64.sha256
@@ -87,7 +95,47 @@ touko version
 touko-desktop --version
 ```
 
-预编译包不需要 Go。也可以直接运行解压后的 `bin/touko` 或 `bin/touko-desktop`。桌面条目和图标需要安装到 XDG 路径，之后才会出现在系统菜单里。缺少系统 WebView 时桌面版会报错退出，CLI 仍可单独使用。
+Linux arm64 把文件名中的 `amd64` 换成 `arm64`。预编译包不需要 Go。桌面包直接运行解压后的 `bin/touko-desktop` 也可以，桌面条目和图标需要安装到 XDG 路径后才会出现在系统菜单。缺少系统 WebView 时桌面版会报错退出，CLI 仍可单独使用。
+
+Windows（PowerShell）：
+
+```powershell
+Expand-Archive .\touko_0.1.0_windows_amd64.zip -DestinationPath .
+cd .\touko_0.1.0_windows_amd64
+Get-FileHash ..\touko_0.1.0_windows_amd64.zip -Algorithm SHA256
+Get-Content ..\touko_0.1.0_windows_amd64.sha256
+.\bin\touko.exe version --json
+```
+
+`Get-FileHash` 输出的十六进制应与 `.sha256` 中记录的值一致。要打开桌面版，双击包根下的 `bin\touko-desktop.exe`。关闭窗口只会隐藏到托盘，真正退出请使用托盘菜单里的“退出”。Windows 桌面需要 WebView2 Runtime；GitHub 登录推荐先执行 `gh auth login`。
+
+首次测试请使用独立的 state 目录和新建的本地图仓，不要直接操作日常使用的仓库：
+
+```powershell
+$state = Join-Path $env:TEMP "touko-test-state"
+$repo = Join-Path $env:TEMP "touko-test.git"
+.\bin\touko.exe --state-dir $state repo init --local $repo
+.\bin\touko.exe --state-dir $state add .\some-photo.png
+.\bin\touko.exe --state-dir $state commit -m "test: add a photo"
+.\bin\touko.exe --state-dir $state verify
+```
+
+macOS：
+
+```sh
+shasum -a 256 -c touko_0.1.0_darwin_arm64.sha256   # Intel 用 darwin_amd64
+tar -xzf touko_0.1.0_darwin_arm64.tar.gz
+cd touko_0.1.0_darwin_arm64
+./bin/touko version --json
+cp -R TOUKO.app /Applications/
+open /Applications/TOUKO.app
+```
+
+首次打开未使用开发者 ID 签名、也未公证的 `.app` 可能被 Gatekeeper 拦截。请在 Finder 中右键选择“打开”，或到“系统设置 → 隐私与安全性”中确认放行；只在确认来源后操作，不推荐全局关闭 Gatekeeper 或其他安全机制。
+
+### 包体积与运行内存
+
+归档不包含 Chromium 或 Node：MyGo 复用系统 WebView，界面 HTML/CSS/JS/字体通过 `go:embed` 编进二进制，Go 后端通过本机回环 HTTP 提供页面并桥接剪贴板。因此包小不等于运行时内存小：二进制仍内嵌约 12 MiB 字体，以及 SQLite 与图像处理代码，桌面运行时还要加上系统 WebView 的进程树。最终体积以实际下载文件为准，可用 `ls -lh touko_0.1.0_*`（Windows：`Get-Item .\touko_0.1.0_windows_amd64.zip | Select-Object Length`）测量，本文不写死数字。
 
 ### 从源码构建
 
@@ -96,12 +144,12 @@ touko-desktop --version
 ```sh
 git clone https://github.com/Eurekaimer/TOUKO.git
 cd TOUKO
-go build -o touko ./cmd/touko
-go build -o touko-desktop ./cmd/touko-desktop
+go build -trimpath -o touko ./cmd/touko
+go build -trimpath -o touko-desktop ./cmd/touko-desktop
 ./touko version --json
 ```
 
-开发构建显示 `dev / unknown`，不会被误认为正式版本。版本注入和发布步骤见[版本与发布](docs/usage.md#11-版本与发布)，测量方法见 [benchmark](docs/benchmark.md)。
+发布构建统一使用 `CGO_ENABLED=0`、`-trimpath -s -w`，并注入 `buildinfo.Version` / `buildinfo.Commit`；Windows 桌面额外加 `-H=windowsgui`，避免附带控制台窗口。开发构建显示 `dev / unknown`，不会被误认为正式版本。版本注入和发布步骤见[版本与发布](docs/usage.md#11-版本与发布)，测量方法见 [benchmark](docs/benchmark.md)。
 
 Arch 用户可以从当前 checkout 构建本地包。这不是已经发布的 AUR 包，会安装两个程序、桌面条目和图标：
 
@@ -130,7 +178,7 @@ cd packaging && makepkg -si
 ./touko --state-dir ~/.local/share/touko serve --port 7788
 ```
 
-默认会打开浏览器，加 `--no-open` 只启动服务。也可以运行 `touko-desktop` 打开原生窗口。窗口没有地址栏，但页面仍由系统 WebView 渲染。
+默认会打开浏览器，加 `--no-open` 只启动服务。也可以运行 `touko-desktop` 打开原生窗口。窗口没有地址栏，但页面仍由系统 WebView 渲染。MyGo 不携带 Chromium 或 Node，界面资源通过 `go:embed` 编入 Go 二进制，服务端用本机回环 HTTP 提供页面并桥接剪贴板。
 
 服务只监听本机回环地址，并校验 Host、Origin 和 CSRF。GitHub 凭据留在服务端进程内，不会进入网页。
 
@@ -186,7 +234,7 @@ python3 scripts/plot-benchmark.py \
 
 ## 边界
 
-预览不是缩略图服务，本地和私有仓库不会生成公网链接。`rm` 只从最新树移除文件，Git 历史仍然保留。当前只验证 Linux/Wayland；Windows 和 macOS 的剪贴板路径按 MyGo 契约实现，尚未实机验收。
+预览不是缩略图服务，本地和私有仓库不会生成公网链接。`rm` 只从最新树移除文件，Git 历史仍然保留。Linux/Wayland 已验证；Windows 与 macOS 已由发布流程构建并通过 CLI 冒烟测试，但 GUI、托盘和剪贴板路径尚未实机验收。
 
 ## 致谢
 

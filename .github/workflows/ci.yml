@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+    inputs:
+      source-ref:
+        description: Exact source ref to verify for a release
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -17,6 +22,8 @@ jobs:
       CGO_ENABLED: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.ref }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

@@ -113,19 +113,6 @@ func LoadWorkspace(ctx context.Context, dir string) (State, error) {
 	return state, nil
 }
 
-func syncDirectory(dir string) error {
-	f, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = f.Sync()
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	return closeErr
-}
-
 func saveWorkspace(ctx context.Context, dir string, state State) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -160,10 +147,11 @@ func writeWorkspace(ctx context.Context, dir string, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.Rename(name, filepath.Join(dir, workspaceName)); err != nil {
+	_, err = durableRename(name, filepath.Join(dir, workspaceName))
+	if err != nil {
 		return fmt.Errorf("replace durable workspace: %w", err)
 	}
-	return syncDirectory(dir)
+	return nil
 }
 
 func (s *Store) migrate(ctx context.Context) error {

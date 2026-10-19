@@ -3,65 +3,110 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable version tag (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  verify:
-    uses: ./.github/workflows/ci.yml
-
-  build:
-    needs: verify
+  resolve:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      commit: ${{ steps.source.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve existing release tag
+        id: source
+        env:
+          RELEASE_VERSION: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          commit=$(git rev-parse --verify "refs/tags/$RELEASE_VERSION^{commit}")
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      source-ref: ${{ needs.resolve.outputs.commit }}
+
+  build:
+    needs: [resolve, verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, os: linux, arch: amd64 }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
+          - { runner: windows-2025, os: windows, arch: amd64 }
+          - { runner: macos-15-intel, os: darwin, arch: amd64 }
+          - { runner: macos-15, os: darwin, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+      SOURCE_COMMIT: ${{ needs.resolve.outputs.commit }}
+      GOOS: ${{ matrix.os }}
+      GOARCH: ${{ matrix.arch }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
-      - name: Build Linux amd64 CLI and desktop bundle
-        env:
-          RELEASE_VERSION: ${{ github.ref_name }}
-        run: bash scripts/release.sh "$RELEASE_VERSION" "$GITHUB_SHA"
-      - name: Smoke release binaries and checksum
-        env:
-          RELEASE_VERSION: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build CLI and desktop bundle
+        run: bash scripts/release.sh "$RELEASE_VERSION" "$SOURCE_COMMIT"
+      - name: Check durable workspace replacement and escaped state paths
+        run: go test ./internal/index -run '^TestChangeKindsSurviveReopen$'
+      - name: Smoke native release binaries and checksum
         run: |
-          cd dist
-          sha256sum -c "touko_${RELEASE_VERSION#v}_linux_amd64.sha256"
-          tar -xzf "touko_${RELEASE_VERSION#v}_linux_amd64.tar.gz"
-          bin="touko_${RELEASE_VERSION#v}_linux_amd64/bin"
-          "$bin/touko" version --json
-          "$bin/touko-desktop" --version
-          root=$(mktemp -d)
-          "$bin/touko" --state-dir "$root/state" repo init --local "$root/gallery.git"
-          "$bin/touko" --state-dir "$root/state" verify
+          extension=tar.gz
+          if [[ "$GOOS" == windows ]]; then extension=zip; fi
+          python3 scripts/smoke-release.py "dist/touko_${RELEASE_VERSION#v}_${GOOS}_${GOARCH}.$extension" "$RELEASE_VERSION" "$SOURCE_COMMIT"
       - uses: actions/upload-artifact@v4
         with:
-          name: touko-linux-amd64
+          name: touko-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             dist/*.tar.gz
+            dist/*.zip
             dist/*.sha256
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [resolve, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: touko-linux-amd64
+          pattern: touko-*
+          merge-multiple: true
           path: dist
-      - name: Publish verified tag artifacts
+      - name: Create draft release for manual GUI acceptance
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
         run: >-
-          gh release create "$RELEASE_VERSION" dist/*.tar.gz dist/*.sha256
-          --verify-tag --title "TOUKO $RELEASE_VERSION" --generate-notes
+          gh release create "$RELEASE_VERSION" dist/*.tar.gz dist/*.zip dist/*.sha256
+          --verify-tag --draft --title "TOUKO $RELEASE_VERSION" --generate-notes

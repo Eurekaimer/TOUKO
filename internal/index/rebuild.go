@@ -75,27 +75,25 @@ func Rebuild(ctx context.Context, dir string, state State) error {
 	restore := func(cause error) error {
 		for i := len(moved) - 1; i >= 0; i-- {
 			name := moved[i]
-			cause = errors.Join(cause, os.Rename(filepath.Join(backup, name), filepath.Join(dir, name)))
+			_, err := durableRename(filepath.Join(backup, name), filepath.Join(dir, name))
+			cause = errors.Join(cause, err)
 		}
 		return cause
 	}
 	for _, name := range []string{"index.db", "index.db-wal", "index.db-shm"} {
-		if err := os.Rename(filepath.Join(dir, name), filepath.Join(backup, name)); err != nil {
+		didMove, err := durableRename(filepath.Join(dir, name), filepath.Join(backup, name))
+		if didMove {
+			moved = append(moved, name)
+		}
+		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			return restore(fmt.Errorf("preserve corrupt index: %w", err))
 		}
-		moved = append(moved, name)
 	}
-	if err := syncDirectory(backup); err != nil {
-		return restore(err)
-	}
-	if err := os.Rename(filepath.Join(tmp, "index.db"), filepath.Join(dir, "index.db")); err != nil {
+	if _, err := durableRename(filepath.Join(tmp, "index.db"), filepath.Join(dir, "index.db")); err != nil {
 		return restore(fmt.Errorf("replace corrupt index: %w", err))
-	}
-	if err := syncDirectory(dir); err != nil {
-		return err
 	}
 	return saveWorkspace(ctx, dir, state)
 }

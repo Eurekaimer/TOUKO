@@ -74,7 +74,11 @@ func Open(ctx context.Context, stateDir string) (*Store, error) {
 	if err := file.Close(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path}).String())
+	uriPath := filepath.ToSlash(path)
+	if filepath.VolumeName(path) != "" && uriPath[0] != '/' {
+		uriPath = "/" + uriPath
+	}
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: uriPath}).String())
 	if err != nil {
 		return nil, err
 	}

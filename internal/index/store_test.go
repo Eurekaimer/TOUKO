@@ -155,7 +155,7 @@ func TestLoadRejectsCorruption(t *testing.T) {
 
 func TestChangeKindsSurviveReopen(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "资料 # 100%")
 	s, err := Open(ctx, dir)
 	if err != nil {
 		t.Fatal(err)

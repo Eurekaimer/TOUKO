@@ -10,7 +10,7 @@ Content-addressed · Git-style staging · Local-first reads · Multi-repository 
 
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-9c5238)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux%20amd64%20%C2%B7%20others%20experimental-1b2a3d)](#install)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-1b2a3d)](#install)
 [![Docs](https://img.shields.io/badge/docs-8%20guides-7f3f59)](docs/webview.md)
 
 [English](README_en.md) · [简体中文](README.md)
@@ -86,17 +86,25 @@ The gallery mounts 60 cards first and appends more as the sentinel approaches th
 
 ### Platforms and runtime dependencies
 
-| Platform | v0.1.0 status |
+| Target | v0.1.0 status |
 | --- | --- |
-| Linux amd64 | Verified; the release pipeline builds both CLI and desktop |
-| macOS | Experimental / unverified; no artifact in this release matrix |
-| Windows | Experimental / unverified; no artifact in this release matrix |
+| Linux amd64 | Desktop verified on Wayland + GTK3 + WebKitGTK 4.1; the release pipeline builds CLI and desktop |
+| Linux arm64 | Release pipeline builds CLI and desktop; no GUI acceptance run yet |
+| Windows amd64 | Release pipeline builds CLI and desktop; no GUI acceptance run yet |
+| macOS amd64 | Release pipeline builds CLI and `.app`; no GUI acceptance run yet |
+| macOS arm64 | Release pipeline builds CLI and `.app`; no GUI acceptance run yet |
 
-The Linux desktop has been exercised on Wayland with GTK3 and WebKitGTK 4.1. This does not claim compatibility with every distribution, desktop environment or architecture. Both executables require Git with SHA-1 repository and `show-ref --exists` support (Git 2.46+ recommended). The desktop also needs GTK3 and WebKitGTK 4.1; the tray needs Ayatana AppIndicator and a tray host. Install `gh` for the recommended GitHub login flow.
+The Linux verification covers one Wayland session, not every distribution, desktop environment or architecture. Windows and macOS artifacts are built on native runners and pass CLI smoke tests, but this round has not exercised their graphical sessions; the window, tray and clipboard behaviour still need real-machine confirmation.
 
-### Release installation (after publication)
+Both executables require Git with SHA-1 repository and `show-ref --exists` support (Git 2.46+ recommended). The desktop uses the system WebView: GTK3 and WebKitGTK 4.1 on Linux, with Ayatana AppIndicator and a tray host for the tray; WebView2 Runtime on Windows; WKWebView on macOS. Install `gh` for the recommended GitHub login flow, or provide `GITHUB_TOKEN` / `GH_TOKEN`.
 
-This checkout prepares v0.1.0 infrastructure; it does not mean a tag or Release has been published. Once available, download `touko_0.1.0_linux_amd64.tar.gz` and its `.sha256` file from [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases), then run in the download directory:
+The release matrix is linux/{amd64,arm64}, windows/amd64 and darwin/{amd64,arm64}. Every target uses the common root name `touko_0.1.0_${GOOS}_${GOARCH}`: a `.zip` on Windows and a `.tar.gz` elsewhere, each with a same-name `.sha256`. All archives contain README, `docs/` and LICENSE. The CLI is `bin/touko` (`bin\touko.exe` on Windows); the desktop is `bin/touko-desktop[.exe]` on Linux and Windows; macOS ships a real `TOUKO.app` with Info.plist and an `.icns` icon whose entry point is `TOUKO.app/Contents/MacOS/touko-desktop`, with no second desktop copy. Linux archives also keep the desktop entry and hicolor icons.
+
+### Release installation
+
+GitHub Actions builds the five targets above on native runners. After CI passes it attaches every archive and checksum and creates a **draft** release. The draft supports local checks and lets users test the Windows package on real machines; it is published formally only after those checks pass. This round attempts to create a `v0.1.0` draft; whether it is public depends on the actual state of [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases).
+
+Download an archive and its `.sha256`, verify both, then extract. Linux:
 
 ```sh
 sha256sum -c touko_0.1.0_linux_amd64.sha256
@@ -107,7 +115,47 @@ touko version
 touko-desktop --version
 ```
 
-Prebuilt artifacts do not require Go. You can also run the extracted `bin/touko` or `bin/touko-desktop` directly; desktop entries and icons need installation into XDG locations for system menu discovery. A missing system WebView makes the desktop fail explicitly; the CLI remains independently usable.
+For Linux arm64, replace `amd64` in the filenames with `arm64`. Prebuilt artifacts do not require Go. The extracted `bin/touko-desktop` also runs in place; desktop entries and icons only appear in system menus after installation into XDG paths. A missing system WebView makes the desktop fail explicitly; the CLI remains independently usable.
+
+Windows (PowerShell):
+
+```powershell
+Expand-Archive .\touko_0.1.0_windows_amd64.zip -DestinationPath .
+cd .\touko_0.1.0_windows_amd64
+Get-FileHash ..\touko_0.1.0_windows_amd64.zip -Algorithm SHA256
+Get-Content ..\touko_0.1.0_windows_amd64.sha256
+.\bin\touko.exe version --json
+```
+
+The hex digest from `Get-FileHash` must match the value in the `.sha256` file. To open the desktop, double-click `bin\touko-desktop.exe` under the package root. Closing the window hides it to the tray; use the tray menu's Exit command to actually quit. The Windows desktop needs the WebView2 Runtime; run `gh auth login` first for the recommended GitHub login flow.
+
+For a first test, use an independent state directory and a newly created local gallery repository; do not operate on your everyday repository:
+
+```powershell
+$state = Join-Path $env:TEMP "touko-test-state"
+$repo = Join-Path $env:TEMP "touko-test.git"
+.\bin\touko.exe --state-dir $state repo init --local $repo
+.\bin\touko.exe --state-dir $state add .\some-photo.png
+.\bin\touko.exe --state-dir $state commit -m "test: add a photo"
+.\bin\touko.exe --state-dir $state verify
+```
+
+macOS:
+
+```sh
+shasum -a 256 -c touko_0.1.0_darwin_arm64.sha256   # use darwin_amd64 on Intel
+tar -xzf touko_0.1.0_darwin_arm64.tar.gz
+cd touko_0.1.0_darwin_arm64
+./bin/touko version --json
+cp -R TOUKO.app /Applications/
+open /Applications/TOUKO.app
+```
+
+Gatekeeper may block the first launch because the `.app` is not signed with a Developer ID and is not notarized. Right-click it in Finder and choose Open, or allow it under System Settings → Privacy & Security after confirming the source. Do not disable Gatekeeper or other system security controls globally.
+
+### Package size and runtime memory
+
+Archives contain neither Chromium nor Node: MyGo reuses the system WebView, HTML/CSS/JS and fonts are embedded with `go:embed`, and the Go backend serves the page over loopback HTTP while bridging the clipboard. A small package therefore does not mean a small runtime: the binary still embeds roughly 12 MiB of fonts plus SQLite and image-processing code, and the desktop adds the system WebView process tree. Measure the actual download instead of trusting a fixed number: `ls -lh touko_0.1.0_*` on Unix, or `Get-Item .\touko_0.1.0_windows_amd64.zip | Select-Object Length` on Windows.
 
 ### Build from source
 
@@ -116,12 +164,12 @@ Use the Go version specified by `go.mod` (currently 1.27.1) and the runtime depe
 ```sh
 git clone https://github.com/Eurekaimer/TOUKO.git
 cd TOUKO
-go build -o touko ./cmd/touko
-go build -o touko-desktop ./cmd/touko-desktop
+go build -trimpath -o touko ./cmd/touko
+go build -trimpath -o touko-desktop ./cmd/touko-desktop
 ./touko version --json
 ```
 
-Ordinary development builds report `dev / unknown`, not a release version. See [versioning and releases](docs/usage.md#11-版本与发布) for metadata injection and publication, and the [benchmark guide](docs/benchmark.md) for reproducible measurements.
+Release builds use `CGO_ENABLED=0` and `-trimpath -s -w`, and inject `buildinfo.Version` / `buildinfo.Commit`; the Windows desktop adds `-H=windowsgui` to avoid a console window. Ordinary development builds report `dev / unknown`, not a release version. See [versioning and releases](docs/usage.md#11-版本与发布) for metadata injection and publication, and the [benchmark guide](docs/benchmark.md) for reproducible measurements.
 
 Arch users can build the local package from their current checkout (not a published AUR package); it installs both programs, the desktop entry and icons:
 
@@ -153,7 +201,7 @@ Other commands: `status`, `ls`, `find`, `show`, `edit`, `rm`, `verify`, `reindex
 ./touko --state-dir ~/.local/share/touko serve --port 7788
 ```
 
-The browser opens by default; `--no-open` starts the server alone. `touko-desktop` opens the same interface in a native window without an address bar, still rendered by the system WebView.
+The browser opens by default; `--no-open` starts the server alone. `touko-desktop` opens the same interface in a native window without an address bar, still rendered by the system WebView. MyGo bundles neither Chromium nor Node: interface assets are compiled into the Go binary with `go:embed`, and the server serves them over loopback HTTP while bridging the clipboard.
 
 The server listens on loopback only and validates Host, Origin and CSRF. GitHub credentials stay inside the server process and never reach the page.
 
@@ -209,7 +257,7 @@ python3 scripts/plot-benchmark.py \
 
 ## Boundaries
 
-Previews are not a thumbnail service, and local or private repositories produce no public links. `rm` removes a picture from the latest tree while Git history keeps it; truly erasing it requires rewriting history, which TOUKO does not offer. Only Linux/Wayland is verified today; the Windows and macOS clipboard paths follow the MyGo contract but have not been run on those systems.
+Previews are not a thumbnail service, and local or private repositories produce no public links. `rm` removes a picture from the latest tree while Git history keeps it; truly erasing it requires rewriting history, which TOUKO does not offer. Linux/Wayland is verified; Windows and macOS are built by the release pipeline and pass CLI smoke tests, but their GUI, tray and clipboard paths have not been accepted on real machines.
 
 ## Credits
 

@@ -153,7 +153,7 @@
 
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
-| `Open` | ctx、stateDir → *Store。 | 创建/收紧目录0700、DB0600，单连接 SQLite；初始化失败关闭连接。普通 app.Open 依赖它，损坏 cache 恢复应走独立 app.Reindex。 |
+| `Open` | ctx、stateDir → *Store。 | 创建/收紧目录0700、DB0600（Unix；Windows继承ACL），绝对路径转为正确转义的file URI，支持Windows盘符与中文/#/%路径；单连接 SQLite，初始化失败关闭连接。普通 app.Open 依赖它，损坏 cache 恢复应走独立 app.Reindex。 |
 | `(*Store).initialize` | user_version → 新建/迁移/校验 schema。 | 接受0/1/2，设置WAL/foreign_keys；0新建 committed-only schema2并确保workspace，1调用migrate，2要求耐久工作区可读；未知版本拒绝。 |
 | `(*Store).Close`、`corrupt` | 关闭 DB；构造 ErrRepositoryCorrupt。 | Close 不删除工作区；corrupt 不吞底层问题。 |
 | `(*Store).Load` | Store mutex 下组合完整 State。 | 先LoadWorkspace，再只读SQL事务读 committed singleton/manifest/assets；核对两处 repository identity。错误不返回部分状态，不把坏 workspace 当空 stage。 |
@@ -168,8 +168,8 @@
 | `validateChanges`、`validateWorkspace` | 验证change key/ID/kind/完整metadata，delete无metadata，journal candidate/tree完整，identity非零。 | 无IO；迁移和每次保存复用，坏旧stage不能被“修复”为丢失记录。 |
 | `encodeWorkspace` | State → version1 durable JSON。 | 仅编码identity/base/changes/journal，不持久化第二份committed Assets。 |
 | `LoadWorkspace` | ctx、dir → 不打开SQLite的durable State。 | 严格JSON、版本与change校验；Manifest若存在仅含恢复identity。缺失/损坏均报错，绝不等同空stage。 |
-| `syncDirectory` | 目录 → Sync/Close结果。 | rename后刷新目录entry；失败显式返回。 |
-| `saveWorkspace`、`writeWorkspace` | 校验编码后以临时文件替换workspace.json。 | CreateTemp0600→Write→Sync→Close→取消检查→Rename→目录Sync；失败清理临时文件。rename后目录Sync失败不等于旧文件仍在。 |
+| `durableRename`（`rename_unix.go` / `rename_windows.go`） | source、target → 是否已移动及错误。 | Unix Rename→目标目录Sync/Close；Windows MoveFileEx(REPLACE_EXISTING\|WRITE_THROUGH)，不对只读目录句柄Sync。即使后续Sync失败也报告已移动，让重建能恢复该文件；错误显式返回。 |
+| `saveWorkspace`、`writeWorkspace` | 校验编码后以临时文件替换workspace.json。 | CreateTemp0600→Write→Sync→Close→取消检查→durableRename；失败清理临时文件。Unix rename后目录Sync失败不等于旧文件仍在。 |
 | `(*Store).migrate` | schema1 → schema2。 | SQL事务读旧base/changes/publication，先写耐久副本，再DROP旧changes/publication和base列并升版本。已有durable副本须完全一致；失败保留旧SQL源，不保留双写真相。 |
 | `loadLegacyChanges` | 旧SQL rows → validated changes。 | 仅兼容迁移入口；严格UUID/kind/metadata，拒绝坏stage，非schema2日常读取路径。 |
 

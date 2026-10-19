@@ -6,27 +6,40 @@
 
 ## 1. 环境与构建
 
-CLI 构建需要 Go 1.27.1 或更高版本（以 `go.mod` 为准）、Git（须支持 SHA-1 repository 和 `show-ref --exists`）、可写的本地 state 目录。SQLite 是纯 Go driver，不需要 CGO 或另外启动数据库服务。GitHub 浏览器登录需要安装 GitHub CLI（`gh`）；已有 `gh` 登录可直接复用。离线 demo 另外需要 Bash、Python 3（仅标准库断言，不是 CLI 的运行依赖）。
+CLI 构建需要 Go 1.27.1 或更高版本（以 `go.mod` 为准）、Git（须支持 SHA-1 repository 和 `show-ref --exists`，建议 2.46+）、可写的本地 state 目录。SQLite 是纯 Go driver，不需要 CGO 或另外启动数据库服务。GitHub 浏览器登录需要安装 GitHub CLI（`gh`）；已有 `gh` 登录可直接复用，也可改用 `GITHUB_TOKEN` / `GH_TOKEN`。离线 demo 另外需要 Bash、Python 3（仅标准库断言，不是 CLI 的运行依赖）。
 
-在项目根目录：
+在项目根目录（Linux/macOS）：
 
 ```bash
 go test ./...
 go vet ./...
-CGO_ENABLED=0 go build -o /tmp/touko ./cmd/touko
+CGO_ENABLED=0 go build -trimpath -o /tmp/touko ./cmd/touko
 /tmp/touko --help
 ```
 
-不要直接修改 `.touko` metadata 或 SQLite 表来操作图片；使用 CLI 保持内容描述、staging base 和 publication journal 一致。
+Windows PowerShell：
+
+```powershell
+go test ./...
+go vet ./...
+$env:CGO_ENABLED = "0"
+go build -trimpath -o touko.exe .\cmd\touko
+.\touko.exe --help
+go build -trimpath -ldflags "-H=windowsgui" -o touko-desktop.exe .\cmd\touko-desktop
+```
+
+发布构建固定使用 `CGO_ENABLED=0`、`-trimpath -s -w`，并注入 `buildinfo`；Windows 桌面加 `-H=windowsgui` 只是不弹控制台，不改变 WebView2 依赖。Windows 的 SQLite 路径编码、目录同步与原子替换已按平台实现，并由 release matrix 的原生回归覆盖。不要直接修改 `.touko` metadata 或 SQLite 表来操作图片；使用 CLI 保持内容描述、staging base 和 publication journal 一致。
 
 ### 桌面窗口与本地包（可选）
 
-`touko-desktop` 用系统 WebView（Linux 需要 GTK3 + WebKitGTK 4.1，Windows WebView2，macOS WKWebView）显示与 `touko serve` 完全相同的界面，不启动完整浏览器、不使用 Electron，但仍有渲染内核，内存要按完整进程树量。窗口关闭默认隐藏到系统托盘；托盘菜单提供显示主窗口、在浏览器中打开、打开工作区目录和退出，只有“退出”才会释放 HTTP 端口与 SQLite，SIGINT/SIGTERM 也一样。没有托盘支持时它会明确提示“关闭窗口即停止 TOUKO”，不会留下无法找回的隐藏窗口。
+`touko-desktop` 用系统 WebView（Linux 需要 GTK3 + WebKitGTK 4.1，Windows WebView2，macOS WKWebView）显示与 `touko serve` 完全相同的界面，不启动完整浏览器、不使用 Electron，但仍有渲染内核，内存要按完整进程树量。MyGo 不打包 Chromium 或 Node：界面 HTML/CSS/JS/字体以 `go:embed` 编入二进制，Go 后端用本机回环 HTTP 提供页面并桥接剪贴板。二进制仍内嵌约 12 MiB 字体、SQLite 与图像处理代码，所以包小不等于运行内存小。窗口关闭默认隐藏到系统托盘；托盘菜单提供显示主窗口、在浏览器中打开、打开工作区目录和退出，只有“退出”才会释放 HTTP 端口与 SQLite，SIGINT/SIGTERM 也一样。没有托盘支持时它会明确提示“关闭窗口即停止 TOUKO”，不会留下无法找回的隐藏窗口。Linux 桌面已在 Wayland 上实机验收；Windows 与 macOS 桌面由发布流程原生构建并通过 CLI smoke，但窗口、托盘和剪贴板尚未 GUI 验收。
 
 ```bash
-go build -o /tmp/touko-desktop ./cmd/touko-desktop
+go build -trimpath -o /tmp/touko-desktop ./cmd/touko-desktop
 /tmp/touko-desktop --state-dir "$HOME/.local/share/touko-gallery"   # 省略则用默认 state 目录
 ```
+
+Windows 本地构建使用 `go build -trimpath -ldflags "-H=windowsgui" -o touko-desktop.exe .\cmd\touko-desktop`，避免启动时附带控制台窗口。
 
 Arch 系可以直接装成本地包：`packaging/PKGBUILD` 从当前 checkout 构建（含未提交改动），安装 `touko`、`touko-desktop`、桌面条目和 16–256px 图标：
 
@@ -278,24 +291,37 @@ go build -trimpath \
 
 ### 本地构建 release bundle
 
+脚本签名固定为：
+
+```bash
+bash scripts/release.sh vMAJOR.MINOR.PATCH FULL_COMMIT [OUTPUT_DIR]
+```
+
+第三个参数可指定输出目录，默认 `dist/`；同名归档或校验文件已存在时拒绝覆盖。脚本用 `GOOS` / `GOARCH` 选择目标：未设置时构建宿主平台，显式支持 linux/{amd64,arm64}、windows/amd64、darwin/{amd64,arm64}，其他组合直接失败。例如：
+
 ```bash
 # 从已审核的 checkout 构建；脚本只打包，不创建 tag 或发布。
 bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
-cd dist
-sha256sum -c touko_0.1.0_linux_amd64.sha256
+GOOS=linux GOARCH=arm64 bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
+GOOS=windows GOARCH=amd64 bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
+GOOS=darwin GOARCH=arm64 bash scripts/release.sh v0.1.0 "$(git rev-parse HEAD)"
+cd dist && sha256sum -c touko_0.1.0_linux_amd64.sha256
 ```
 
-脚本要求 Bash、Go（以 `go.mod` 为准）及 GNU coreutils/tar；只构建 Linux amd64，使用 `CGO_ENABLED=0`。第三个参数可指定输出目录，默认 `dist/`；同名归档或校验文件已存在时拒绝覆盖。压缩包包含 `bin/touko`、`bin/touko-desktop`、桌面条目、16–256px 图标、README、docs 和 LICENSE。桌面仍依赖系统 GTK3 / WebKitGTK 4.1，禁用 CGO 不等于不需要这些运行库。安装步骤见 [README](../README.md#安装)。
+脚本要求 Bash、Go（以 `go.mod` 为准）、Git、Python 3.12+，以及 `cp`、`mktemp`、`chmod` 等基础工具；归档与 SHA-256 由脚本内置的 Python helper 生成，不依赖 GNU tar。Windows 原生 runner 通过 Git Bash 与 setup-python 执行，本地 Windows 重跑也需要同样的 Bash 与 Python 3.12+ 环境。构建统一使用 `CGO_ENABLED=0`、`-trimpath -s -w` 并注入 `buildinfo.Version` / `buildinfo.Commit`；Windows 桌面额外加 `-H=windowsgui`。所有目标使用归档根名 `touko_0.1.0_${GOOS}_${GOARCH}`：Windows 为 `.zip`，其余为 `.tar.gz`，各自附同名 `.sha256`。
+
+布局固定：CLI 在 `bin/touko[.exe]`；Linux/Windows 桌面在 `bin/touko-desktop[.exe]`；macOS 桌面在 `TOUKO.app/Contents/MacOS/touko-desktop`，不再复制到 `bin/`。macOS `.app` 含 Info.plist 和 `.icns` 图标；Linux 包保留桌面条目和 16–256px 图标。每个归档都带 `share/doc/touko/` 下的 README 与 `docs/`，以及 `share/licenses/touko/LICENSE`。桌面仍依赖系统 WebView（Linux GTK3/WebKitGTK 4.1 与 Ayatana 托盘，Windows WebView2，macOS WKWebView），禁用 CGO 不等于不需要这些运行库。安装步骤见 [README](../README.md#安装)。
 
 本地 Arch 包继续从当前 checkout 构建，注入 `dev-r…` 版本及源码 commit；`Git` 是运行依赖。它不是 AUR 正式发布包。
 
 ### GitHub Release
 
-`.github/workflows/release.yml` 由 `v*` tag push 触发；打包脚本只接受稳定的 `vMAJOR.MINOR.PATCH`。发布顺序：
+`.github/workflows/release.yml` 由 `v*` tag push 触发，也支持手动 `workflow_dispatch` 指定一个已存在的稳定 tag。发布顺序：
 
-1. 调用 `ci.yml`，通过 test、race、vet 与隔离 CLI demo。
-2. 在 Linux runner 上按 `go.mod` 安装 Go 并复用 module cache，注入 tag 和 `GITHUB_SHA`，构建双程序归档及 SHA-256 文件。
-3. 校验归档、运行两个程序的版本命令，在新建的本地图库运行 CLI init/verify；成功才上传 artifacts。
-4. 独立 publish job 使用最小 `contents: write` 权限创建该已有 tag 的 GitHub Release，并附加归档和校验文件；`--verify-tag` 禁止隐式创建 tag。
+1. resolve job 用完整历史解析 tag 指向的 commit；tag 不存在或不是 `vMAJOR.MINOR.PATCH` 就失败。
+2. 调用 `ci.yml` 对同一 commit 执行 test、race、vet 与隔离 CLI demo。
+3. 在五个原生 runner（ubuntu-24.04、ubuntu-24.04-arm、windows-2025、macos-15-intel、macos-15）上按 `go.mod` 安装 Go、复用 module cache，以 `GOOS`/`GOARCH` 调用 `release.sh` 构建对应归档和 SHA-256。这里不是交叉编译，每个产物都由目标 OS/架构的 runner 生成。
+4. 每个目标运行原生 smoke：检查归档布局和版本/commit 注入，并在新建的本地图库执行 `init`、`add`、`commit`、`verify`、`find`；Windows 同时覆盖 SQLite 路径编码、目录同步和原子替换回归。任一目标失败都不会发布。
+5. 汇总全部归档与 `.sha256`，用最小 `contents: write` 权限创建 **draft** GitHub Release；`--verify-tag` 禁止隐式创建 tag。
 
-维护者确认准备发布后才手动创建并推送 `v0.1.0` tag。本轮不执行这一步；push `main` 或提交 PR 只触发 CI，不发布 Release。当前只验证 Linux amd64；macOS / Windows 为 experimental / unverified，其他 Linux 架构也不在发布矩阵。workflow 配置可本地静态检查，实际 GitHub 托管执行和发布结果必须等远端触发后确认，不能以本地构建冒充线上发布成功。
+tag push 默认只生成 draft，便于先在本机和 Windows 实机测试。draft 中的 Windows 与 macOS 包已经过 CLI smoke，但不代表 GUI、托盘或剪贴板已验收。维护者测试通过后，在 GitHub 上手动把 draft 发布为正式 Release。本轮会尝试创建 `v0.1.0` draft；是否已经存在、状态是 draft 还是正式发布，以 GitHub 的实际状态为准，本文不承诺发布成功。push `main` 或提交 PR 只触发 CI，不发布 Release。
