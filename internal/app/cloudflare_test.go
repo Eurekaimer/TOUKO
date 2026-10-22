@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/index"
 	"github.com/Eurekaimer/TOUKO/internal/r2"
@@ -290,7 +291,7 @@ func enableTestCloudflare(t *testing.T, s *Service, fake *fakeMirror, cfg r2.Con
 	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "fixture-access-key")
 	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "fixture-secret-key")
 	writeTestCloudflareConfig(t, s.Dir, cfg, false)
-	s.NewCloudflare = func(context.Context, r2.Config) (r2.Mirror, error) { return fake, nil }
+	s.NewCloudflare = func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error) { return fake, nil }
 }
 
 func testSourceID() string {
@@ -787,7 +788,7 @@ func TestCloudflareSyncRechecksAuthoritativeHeadBeforeDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustCommit(t, ctx, s, r)
-	s.NewCloudflare = func(context.Context, r2.Config) (r2.Mirror, error) { return fake, nil }
+	s.NewCloudflare = func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error) { return fake, nil }
 	wrapped := &headAdvanceGit{Git: r, at: 2}
 	wrapped.advance = func() {
 		publishRaw(t, ctx, r, []repository.TreeChange{{Path: "README.md", Blob: blob(t, ctx, r, []byte("remote moved"))}})
@@ -1096,7 +1097,7 @@ func TestCloudflareStatusUsesOnlyReadViewAndLedger(t *testing.T) {
 	mustCommit(t, ctx, s, r)
 	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "access-SENTINEL")
 	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "secret-SENTINEL")
-	s.NewCloudflare = func(context.Context, r2.Config) (r2.Mirror, error) {
+	s.NewCloudflare = func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error) {
 		t.Error("CloudflareStatus must not construct an R2 client")
 		return nil, errors.New("must not be called")
 	}
@@ -1187,7 +1188,7 @@ func TestCloudflareDisabledAndLocalDoNothing(t *testing.T) {
 	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "\tinvalid")
 	ctx, r, s := realRepository(t)
 	asset := stageImage(t, ctx, s)
-	s.NewCloudflare = func(context.Context, r2.Config) (r2.Mirror, error) {
+	s.NewCloudflare = func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error) {
 		t.Error("disabled Cloudflare constructed an R2 client")
 		return nil, errors.New("must not be called")
 	}
@@ -1209,7 +1210,7 @@ func TestCloudflareDisabledAndLocalDoNothing(t *testing.T) {
 	localConfig := fmt.Sprintf(`{"backend":"localgit","path":%q,"branch":"main","cloudflare":{"enabled":true,"endpoint":%q,"bucket":%q,"public_base_url":%q}}`+"\n",
 		filepath.Join(t.TempDir(), "local.git"), fakeCFEndpoint, fakeCFBucket, fakeCFPublicURL)
 	writeCloudflareConfigTestFile(t, s.Dir, localConfig)
-	s.NewCloudflare = func(context.Context, r2.Config) (r2.Mirror, error) {
+	s.NewCloudflare = func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error) {
 		t.Error("localgit Cloudflare constructed an R2 client")
 		return nil, errors.New("must not be called")
 	}
@@ -1354,7 +1355,7 @@ func TestCloudflareNonPublicAndFactoryBoundaries(t *testing.T) {
 		filepath.Join(t.TempDir(), "repo.git"), fakeCFEndpoint, fakeCFBucket, fakeCFPublicURL)
 	writeCloudflareConfigTestFile(t, s.Dir, localConfig)
 	called := false
-	s.NewCloudflare = func(context.Context, r2.Config) (r2.Mirror, error) {
+	s.NewCloudflare = func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error) {
 		called = true
 		return newFakeMirror(), nil
 	}
@@ -1385,7 +1386,7 @@ func TestCloudflareNonPublicAndFactoryBoundaries(t *testing.T) {
 func TestCloudflareEmptySyncRequiresCredentials(t *testing.T) {
 	ctx, remote, service := realRepository(t)
 	writeTestCloudflareConfig(t, service.Dir, testCloudflareConfig(), false)
-	service.NewCloudflare = r2.FromEnvironment
+	service.NewCloudflare = NewCloudflareMirror
 	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "")
 	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
 	for _, dryRun := range []bool{false, true} {

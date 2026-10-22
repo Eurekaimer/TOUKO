@@ -20,9 +20,9 @@ import (
 	"sync"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
+	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/github"
-	"github.com/Eurekaimer/TOUKO/internal/r2"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 )
 
@@ -92,7 +92,7 @@ func newServer(service *app.Service, token, origin string) (*Server, error) {
 		return nil, err
 	}
 	if service.NewCloudflare == nil {
-		service.NewCloudflare = r2.FromEnvironment
+		service.NewCloudflare = app.NewCloudflareMirror
 	}
 	return &Server{service: service, token: token, origin: origin, host: u.Host, csrf: hex.EncodeToString(nonce[:])}, nil
 }
@@ -183,7 +183,7 @@ func (s *Server) failExtra(w http.ResponseWriter, status int, code, message stri
 	owner.authMu.Lock()
 	token, authToken := owner.token, owner.authToken
 	owner.authMu.Unlock()
-	secrets := []string{token, authToken, os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN"), os.Getenv("TOUKO_R2_ACCESS_KEY_ID"), os.Getenv("TOUKO_R2_SECRET_ACCESS_KEY")}
+	secrets := append([]string{token, authToken, os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN"), os.Getenv("TOUKO_R2_ACCESS_KEY_ID"), os.Getenv("TOUKO_R2_SECRET_ACCESS_KEY")}, s.r2Secrets()...)
 	for _, secret := range secrets {
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "[redacted]")
@@ -196,6 +196,20 @@ func (s *Server) failExtra(w http.ResponseWriter, status int, code, message stri
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// r2Secrets returns this workspace's stored R2 pair for response scrubbing.
+// It is consulted on error paths only, tolerates a missing or unreadable
+// credential file, and never exposes the pair to a response.
+func (s *Server) r2Secrets() []string {
+	if s.service == nil {
+		return nil
+	}
+	pair, found, err := credential.LoadR2(context.Background(), s.service.Dir)
+	if err != nil || !found {
+		return nil
+	}
+	return []string{pair.AccessKeyID, pair.SecretAccessKey}
 }
 
 type requestError struct {
@@ -214,7 +228,10 @@ func errorDetail(err error) (int, string, string) {
 	var limit *http.MaxBytesError
 	var api *github.APIError
 	var mirror *app.CloudflareSyncError
+	var settings *app.CloudflareConfigError
 	switch {
+	case errors.As(err, &settings):
+		return 400, settings.Code, settings.Message
 	case errors.As(err, &mirror):
 		return 502, "cloudflare_sync_failed", err.Error()
 	case errors.As(err, &input):

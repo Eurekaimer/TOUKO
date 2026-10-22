@@ -10,11 +10,14 @@ import (
 	"testing"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
+	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/r2"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 )
 
 func TestCloudflareFailureDoesNotRepeatGitHubPublication(t *testing.T) {
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "fixture-access")
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "fixture-secret")
 	for _, lostResponse := range []bool{false, true} {
 		t.Run(map[bool]string{false: "normal", true: "lost_ref_response"}[lostResponse], func(t *testing.T) {
 			api, git := newAPI(t)
@@ -38,8 +41,8 @@ func TestCloudflareFailureDoesNotRepeatGitHubPublication(t *testing.T) {
 			if err = os.WriteFile(filepath.Join(svc.Dir, "config.json"), data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			svc.NewCloudflare = func(_ context.Context, c r2.Config) (r2.Mirror, error) {
-				return r2.NewWithClient(c, "fixture-access", "fixture-secret", origin.Client())
+			svc.NewCloudflare = func(_ context.Context, c r2.Config, pair credential.R2Pair) (r2.Mirror, error) {
+				return r2.NewWithClient(c, pair.AccessKeyID, pair.SecretAccessKey, origin.Client())
 			}
 			asset := stageImage(t, svc)
 			api.mu.Lock()

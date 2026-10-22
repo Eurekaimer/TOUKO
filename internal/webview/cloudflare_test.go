@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -19,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
+	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	gh "github.com/Eurekaimer/TOUKO/internal/github"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
@@ -274,7 +276,7 @@ func newCloudflareFixture(t *testing.T, private bool) *cloudflareFixture {
 	}
 	writeCloudflareConfig(t, f.service, location, cloudflareTestConfig)
 	mirror := newCloudflareMirror()
-	f.service.NewCloudflare = func(context.Context, r2.Config) (r2.Mirror, error) { return mirror, nil }
+	f.service.NewCloudflare = func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error) { return mirror, nil }
 	return &cloudflareFixture{fixture: f, mirror: mirror, assets: views, location: location}
 }
 
@@ -683,5 +685,430 @@ func TestCloudflareAPIFailRedactsR2Secrets(t *testing.T) {
 	}
 	if !strings.Contains(body, "[redacted]") {
 		t.Fatalf("secrets not replaced: %s", body)
+	}
+}
+
+func cloudflareSettingsJSON(t *testing.T, body io.Reader) map[string]any {
+	t.Helper()
+	var value map[string]any
+	if err := json.NewDecoder(body).Decode(&value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func TestCloudflareConfigEndpointRoundTrip(t *testing.T) {
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "")
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
+	f := newFixture(t)
+	f.setup()
+
+	out := f.request("GET", "/api/cloudflare/config", nil, 200)
+	value := cloudflareSettingsJSON(t, out.Body)
+	for _, field := range []string{"enabled", "endpoint", "bucket", "public_base_url", "credentials_configured"} {
+		if _, ok := value[field]; !ok {
+			t.Fatalf("GET response lacks %q: %v", field, value)
+		}
+	}
+	if value["enabled"] != false || value["credentials_configured"] != false {
+		t.Fatalf("initial settings = %v", value)
+	}
+	for _, field := range []string{"access_key_id", "secret_access_key"} {
+		if _, ok := value[field]; ok {
+			t.Fatalf("GET response exposes %q", field)
+		}
+	}
+
+	out = f.request("POST", "/api/cloudflare/config", map[string]any{
+		"enabled":           true,
+		"endpoint":          "https://acct.r2.cloudflarestorage.com",
+		"bucket":            "touko-images",
+		"public_base_url":   "https://img.example.test",
+		"access_key_id":     "access-SENTINEL",
+		"secret_access_key": "secret-SENTINEL",
+	}, 200)
+	if strings.Contains(out.Body.String(), "SENTINEL") {
+		t.Fatalf("POST response leaked credentials: %s", out.Body.String())
+	}
+	value = cloudflareSettingsJSON(t, out.Body)
+	if value["enabled"] != true || value["credentials_configured"] != true || value["bucket"] != "touko-images" {
+		t.Fatalf("saved settings = %v", value)
+	}
+
+	config, err := os.ReadFile(filepath.Join(f.service.Dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(config, []byte("SENTINEL")) {
+		t.Fatal("config.json contains credentials")
+	}
+	credentialPath := filepath.Join(f.service.Dir, "cloudflare", "credentials.json")
+	info, err := os.Stat(credentialPath)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("credential file: %v %v", info, err)
+	}
+	pair, found, err := credential.LoadR2(t.Context(), f.service.Dir)
+	if err != nil || !found || pair.AccessKeyID != "access-SENTINEL" || pair.SecretAccessKey != "secret-SENTINEL" {
+		t.Fatalf("stored credentials missing or mismatched: found=%t, err=%v", found, err)
+	}
+	before, err := os.ReadFile(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Blank credential fields keep the saved pair and a disabled toggle keeps
+	// the target fields readable.
+	f.request("POST", "/api/cloudflare/config", map[string]any{
+		"enabled":           false,
+		"endpoint":          "https://acct.r2.cloudflarestorage.com",
+		"bucket":            "touko-images",
+		"public_base_url":   "https://img.example.test",
+		"access_key_id":     "",
+		"secret_access_key": "",
+	}, 200)
+	after, err := os.ReadFile(credentialPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("blank credentials rewrote the stored pair: %v", err)
+	}
+	value = cloudflareSettingsJSON(t, f.request("GET", "/api/cloudflare/config", nil, 200).Body)
+	if value["enabled"] != false || value["endpoint"] != "https://acct.r2.cloudflarestorage.com" || value["credentials_configured"] != true {
+		t.Fatalf("disabled settings were not retained: %v", value)
+	}
+
+	// A partial pair and an unsafe public base are rejected without touching
+	// the saved settings or credentials.
+	configBefore, err := os.ReadFile(filepath.Join(f.service.Dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []map[string]any{
+		{"enabled": false, "access_key_id": "only-access-SENTINEL", "secret_access_key": ""},
+		{"enabled": false, "access_key_id": "", "secret_access_key": "only-secret-SENTINEL"},
+		{"enabled": true, "endpoint": "https://acct.r2.cloudflarestorage.com", "bucket": "touko-images", "public_base_url": "https://img.example.test/%2e%2e/secret"},
+	} {
+		out := f.request("POST", "/api/cloudflare/config", body, 400)
+		var failure struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(out.Body.Bytes(), &failure); err != nil {
+			t.Fatal(err)
+		}
+		if failure.Error.Code != "configuration_invalid" || failure.Error.Message == "" {
+			t.Fatalf("settings rejection = %s", out.Body.String())
+		}
+		if strings.Contains(out.Body.String(), "SENTINEL") {
+			t.Fatalf("settings rejection leaked a credential: %s", out.Body.String())
+		}
+	}
+	configAfter, err := os.ReadFile(filepath.Join(f.service.Dir, "config.json"))
+	if err != nil || !bytes.Equal(configBefore, configAfter) {
+		t.Fatal("rejected settings rewrote config.json")
+	}
+	after, err = os.ReadFile(credentialPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("rejected settings rewrote the stored pair")
+	}
+
+	// The endpoint requires the exact same CSRF and Origin protections as the
+	// other member mutations.
+	req := httptest.NewRequest("POST", testOrigin+"/api/cloudflare/config", strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Origin", testOrigin)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	f.server.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF status = %d", recorder.Code)
+	}
+}
+
+func TestCloudflareConfigEndpointIsMemberScoped(t *testing.T) {
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "")
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
+	f := newFixture(t)
+	f.setup()
+	location := repository.Location{Backend: "localgit", Path: filepath.Join(f.root, "second.git"), Branch: "main"}
+	target, err := f.server.spaces.selectLocation(t.Context(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberPath := workspaceURL(target.workspaceID) + "api/cloudflare/config"
+	post := func(body any) *httptest.ResponseRecorder {
+		t.Helper()
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest("POST", testOrigin+memberPath, bytes.NewReader(data))
+		req.Header.Set("Origin", testOrigin)
+		req.Header.Set("X-Touko-CSRF", target.csrf)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		f.server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("member POST status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		return recorder
+	}
+	post(map[string]any{
+		"enabled":           true,
+		"endpoint":          "https://member.r2.cloudflarestorage.com",
+		"bucket":            "member-bucket",
+		"public_base_url":   "https://member.example.test",
+		"access_key_id":     "member-access-SENTINEL",
+		"secret_access_key": "member-secret-SENTINEL",
+	})
+
+	req := httptest.NewRequest("GET", testOrigin+memberPath, nil)
+	recorder := httptest.NewRecorder()
+	f.server.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("member GET status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var member map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &member); err != nil {
+		t.Fatal(err)
+	}
+	if member["bucket"] != "member-bucket" || member["credentials_configured"] != true {
+		t.Fatalf("member settings = %v", member)
+	}
+
+	root := cloudflareSettingsJSON(t, f.request("GET", "/api/cloudflare/config", nil, 200).Body)
+	if root["enabled"] != false || root["credentials_configured"] != false || root["bucket"] != "" {
+		t.Fatalf("member settings leaked into the root workspace: %v", root)
+	}
+	if _, err := os.Stat(filepath.Join(f.service.Dir, "cloudflare")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("root workspace gained member credential state: %v", err)
+	}
+	memberPair, found, err := credential.LoadR2(t.Context(), target.service.Dir)
+	if err != nil || !found || memberPair.AccessKeyID != "member-access-SENTINEL" {
+		t.Fatalf("member credentials missing or mismatched: found=%t, err=%v", found, err)
+	}
+	if strings.Contains(recorder.Body.String(), "SENTINEL") {
+		t.Fatal("member response leaked credentials")
+	}
+}
+
+func TestCloudflareFailRedactsSavedWorkspaceCredentials(t *testing.T) {
+	f := newFixture(t)
+	f.setup()
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "")
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
+	if _, err := f.service.UpdateCloudflareSettings(t.Context(), app.CloudflareConfigInput{
+		AccessKeyID: "saved-access-SENTINEL", SecretAccessKey: "saved-secret-SENTINEL",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out := httptest.NewRecorder()
+	f.server.fail(out, http.StatusBadRequest, "usage", "access=saved-access-SENTINEL secret=saved-secret-SENTINEL")
+	body := out.Body.String()
+	if strings.Contains(body, "saved-access-SENTINEL") || strings.Contains(body, "saved-secret-SENTINEL") {
+		t.Fatalf("saved credential exposed: %s", body)
+	}
+	if !strings.Contains(body, "[redacted]") {
+		t.Fatalf("saved credentials not replaced: %s", body)
+	}
+}
+
+type cloudflareCredentialsJSON struct {
+	AccessKeyID     string `json:"access_key_id"`
+	SecretAccessKey string `json:"secret_access_key"`
+	Source          string `json:"source"`
+}
+
+func decodeCloudflareCredentials(t *testing.T, out *httptest.ResponseRecorder) cloudflareCredentialsJSON {
+	t.Helper()
+	if out.Code != http.StatusOK {
+		t.Fatalf("credentials status %d: %s", out.Code, out.Body.String())
+	}
+	if out.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("credentials response is cacheable: %q", out.Header().Get("Cache-Control"))
+	}
+	var value cloudflareCredentialsJSON
+	if err := json.Unmarshal(out.Body.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(out.Body.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 3 {
+		t.Fatalf("credentials response fields = %v", fields)
+	}
+	return value
+}
+
+func TestCloudflareCredentialsEndpointIsPostOnlyAndProtected(t *testing.T) {
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "")
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
+	f := newFixture(t)
+	f.setup()
+	path := "/api/cloudflare/credentials"
+
+	value := decodeCloudflareCredentials(t, cloudflareRequest(t, f, http.MethodPost, path, `{}`, nil))
+	if value.Source != "none" || value.AccessKeyID != "" || value.SecretAccessKey != "" {
+		t.Fatalf("unconfigured credentials = %+v", value)
+	}
+
+	out := cloudflareRequest(t, f, http.MethodGet, path, "", nil)
+	if out.Code != http.StatusMethodNotAllowed || out.Header().Get("Allow") != "POST" {
+		t.Fatalf("GET credentials: status=%d allow=%q", out.Code, out.Header().Get("Allow"))
+	}
+
+	for _, body := range []string{`{"access_key_id":"unexpected"}`, `null`, `[]`, ``, `{} {}`} {
+		out := cloudflareRequest(t, f, http.MethodPost, path, body, nil)
+		if out.Code != http.StatusBadRequest {
+			t.Fatalf("body %q status = %d: %s", body, out.Code, out.Body.String())
+		}
+	}
+
+	for name, mutate := range map[string]func(*http.Request){
+		"missing csrf": func(req *http.Request) { req.Header.Del("X-Touko-CSRF") },
+		"wrong csrf":   func(req *http.Request) { req.Header.Set("X-Touko-CSRF", "wrong-token") },
+		"missing origin": func(req *http.Request) {
+			req.Header.Del("Origin")
+		},
+		"wrong origin": func(req *http.Request) { req.Header.Set("Origin", "https://evil.example") },
+	} {
+		out := cloudflareRequest(t, f, http.MethodPost, path, `{}`, mutate)
+		if out.Code != http.StatusForbidden {
+			t.Fatalf("%s status = %d: %s", name, out.Code, out.Body.String())
+		}
+	}
+}
+
+func TestCloudflareCredentialsAreWorkspaceScopedAndNeverMixed(t *testing.T) {
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "")
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
+	f := newFixture(t)
+	f.setup()
+	location := repository.Location{Backend: "localgit", Path: filepath.Join(f.root, "credentials-member.git"), Branch: "main"}
+	target, err := f.server.spaces.selectLocation(t.Context(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberPath := workspaceURL(target.workspaceID) + "api/cloudflare/credentials"
+	memberGet := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, testOrigin+path, nil)
+		recorder := httptest.NewRecorder()
+		f.server.ServeHTTP(recorder, req)
+		return recorder
+	}
+	memberCredentials := func() cloudflareCredentialsJSON {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, testOrigin+memberPath, strings.NewReader(`{}`))
+		req.Header.Set("Origin", testOrigin)
+		req.Header.Set("X-Touko-CSRF", target.csrf)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		f.server.ServeHTTP(recorder, req)
+		return decodeCloudflareCredentials(t, recorder)
+	}
+
+	memberPair := credential.R2Pair{AccessKeyID: "member-access-SENTINEL", SecretAccessKey: "member-secret-SENTINEL"}
+	if err := credential.SaveR2(t.Context(), target.service.Dir, memberPair); err != nil {
+		t.Fatal(err)
+	}
+	value := memberCredentials()
+	if value.Source != "saved" || value.AccessKeyID != memberPair.AccessKeyID || value.SecretAccessKey != memberPair.SecretAccessKey {
+		t.Fatalf("member credentials = %+v", value)
+	}
+	root := decodeCloudflareCredentials(t, f.request("POST", "/api/cloudflare/credentials", map[string]any{}, 200))
+	if root.Source != "none" || root.AccessKeyID != "" || root.SecretAccessKey != "" {
+		t.Fatalf("member credentials leaked into the root workspace: %+v", root)
+	}
+
+	rootPair := credential.R2Pair{AccessKeyID: "root-access-SENTINEL", SecretAccessKey: "root-secret-SENTINEL"}
+	if err := credential.SaveR2(t.Context(), f.service.Dir, rootPair); err != nil {
+		t.Fatal(err)
+	}
+	value = memberCredentials()
+	if value.Source != "saved" || value.AccessKeyID != memberPair.AccessKeyID {
+		t.Fatalf("root credentials replaced the member pair: %+v", value)
+	}
+	root = decodeCloudflareCredentials(t, f.request("POST", "/api/cloudflare/credentials", map[string]any{}, 200))
+	if root.Source != "saved" || root.AccessKeyID != rootPair.AccessKeyID || root.SecretAccessKey != rootPair.SecretAccessKey {
+		t.Fatalf("root credentials = %+v", root)
+	}
+
+	// A complete environment pair is used only when the workspace has no saved
+	// file, and a saved pair always wins instead of mixing both sources.
+	envPair := credential.R2Pair{AccessKeyID: "env-access-SENTINEL", SecretAccessKey: "env-secret-SENTINEL"}
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", envPair.AccessKeyID)
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", envPair.SecretAccessKey)
+	value = memberCredentials()
+	if value.Source != "saved" || value.AccessKeyID != memberPair.AccessKeyID {
+		t.Fatalf("environment overrode a saved member pair: %+v", value)
+	}
+	if err := os.Remove(filepath.Join(target.service.Dir, "cloudflare", "credentials.json")); err != nil {
+		t.Fatal(err)
+	}
+	value = memberCredentials()
+	if value.Source != "environment" || value.AccessKeyID != envPair.AccessKeyID || value.SecretAccessKey != envPair.SecretAccessKey {
+		t.Fatalf("environment fallback = %+v", value)
+	}
+	root = decodeCloudflareCredentials(t, f.request("POST", "/api/cloudflare/credentials", map[string]any{}, 200))
+	if root.Source != "saved" || root.AccessKeyID != rootPair.AccessKeyID {
+		t.Fatalf("environment overrode the saved root pair: %+v", root)
+	}
+	if err := os.Remove(filepath.Join(f.service.Dir, "cloudflare", "credentials.json")); err != nil {
+		t.Fatal(err)
+	}
+	// A partial environment pair is not a usable source and is never completed
+	// with a saved value.
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
+	root = decodeCloudflareCredentials(t, f.request("POST", "/api/cloudflare/credentials", map[string]any{}, 200))
+	if root.Source != "none" || root.AccessKeyID != "" || root.SecretAccessKey != "" {
+		t.Fatalf("partial environment pair was mixed: %+v", root)
+	}
+
+	for _, path := range []string{"/api/cloudflare/config", "/api/state"} {
+		out := f.request("GET", path, nil, 200)
+		for _, secret := range []string{memberPair.AccessKeyID, memberPair.SecretAccessKey, rootPair.AccessKeyID, rootPair.SecretAccessKey, envPair.AccessKeyID, envPair.SecretAccessKey} {
+			if strings.Contains(out.Body.String(), secret) {
+				t.Fatalf("GET %s exposed %q: %s", path, secret, out.Body.String())
+			}
+		}
+	}
+	for _, path := range []string{"api/cloudflare/config", "api/state"} {
+		out := memberGet(workspaceURL(target.workspaceID) + path)
+		if out.Code != http.StatusOK {
+			t.Fatalf("member GET %s status = %d: %s", path, out.Code, out.Body.String())
+		}
+		for _, secret := range []string{memberPair.AccessKeyID, memberPair.SecretAccessKey, rootPair.AccessKeyID, rootPair.SecretAccessKey, envPair.AccessKeyID, envPair.SecretAccessKey} {
+			if strings.Contains(out.Body.String(), secret) {
+				t.Fatalf("member GET %s exposed %q: %s", path, secret, out.Body.String())
+			}
+		}
+	}
+}
+
+func TestCloudflareCredentialsCorruptSavedFileIsControlled(t *testing.T) {
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "")
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
+	f := newFixture(t)
+	f.setup()
+	dir := filepath.Join(f.service.Dir, "cloudflare")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := `{"version":1,"access_key_id":"corrupt-access-SENTINEL","secret_access_key":""}`
+	if err := os.WriteFile(filepath.Join(dir, "credentials.json"), []byte(corrupt), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := f.request("POST", "/api/cloudflare/credentials", map[string]any{}, 500)
+	if out.Code != http.StatusInternalServerError || strings.Contains(out.Body.String(), "corrupt-access-SENTINEL") {
+		t.Fatalf("corrupt credentials response = %d: %s", out.Code, out.Body.String())
+	}
+	config := f.request("GET", "/api/cloudflare/config", nil, 200)
+	if strings.Contains(config.Body.String(), "corrupt-access-SENTINEL") {
+		t.Fatalf("config exposed corrupt credentials: %s", config.Body.String())
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(config.Body.Bytes(), &settings); err != nil || settings["credentials_configured"] != false {
+		t.Fatalf("config readiness = %v, err=%v", settings, err)
 	}
 }

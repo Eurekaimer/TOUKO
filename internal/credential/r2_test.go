@@ -3,6 +3,8 @@ package credential_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,36 +17,49 @@ func setR2Environment(t *testing.T, accessKeyID, secretAccessKey string) {
 	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", secretAccessKey)
 }
 
-func TestResolveR2ReadsOnlyExplicitEnvironment(t *testing.T) {
+func saveR2Pair(t *testing.T, dir, accessKeyID, secretAccessKey string) {
+	t.Helper()
+	if err := credential.SaveR2(context.Background(), dir, credential.R2Pair{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResolveR2PrefersEnvironmentThenWorkspaceFile(t *testing.T) {
 	ctx := context.Background()
-	setR2Environment(t, "access-key-SENTINEL", "secret-key-SENTINEL")
-	accessKeyID, secretAccessKey, err := credential.ResolveR2(ctx)
-	if err != nil || accessKeyID != "access-key-SENTINEL" || secretAccessKey != "secret-key-SENTINEL" {
-		t.Fatalf("explicit R2 credentials not returned: %q %q %v", accessKeyID, secretAccessKey, err)
+	dir := t.TempDir()
+	setR2Environment(t, "", "")
+
+	if _, err := credential.ResolveR2(ctx, dir); err == nil {
+		t.Fatal("resolved R2 credentials without an environment or workspace source")
 	}
 
-	setR2Environment(t, "", "secret-key-SENTINEL")
-	accessKeyID, secretAccessKey, err = credential.ResolveR2(ctx)
-	if err == nil || accessKeyID != "" || secretAccessKey != "" {
-		t.Fatalf("missing access key id accepted: %q %q %v", accessKeyID, secretAccessKey, err)
-	}
-	if !strings.Contains(err.Error(), "TOUKO_R2_ACCESS_KEY_ID") || !strings.Contains(err.Error(), "TOUKO_R2_SECRET_ACCESS_KEY") {
-		t.Fatalf("missing credential error does not name its variables: %v", err)
-	}
-	if strings.Contains(err.Error(), "SENTINEL") {
-		t.Fatal("missing credential error disclosed a credential value")
+	saveR2Pair(t, dir, "stored-access-SENTINEL", "stored-secret-SENTINEL")
+	pair, err := credential.ResolveR2(ctx, dir)
+	if err != nil || pair.AccessKeyID != "stored-access-SENTINEL" || pair.SecretAccessKey != "stored-secret-SENTINEL" {
+		t.Fatalf("stored workspace credentials not used: %+v %v", pair, err)
 	}
 
-	setR2Environment(t, "access-key-SENTINEL", "")
-	accessKeyID, secretAccessKey, err = credential.ResolveR2(ctx)
-	if err == nil || accessKeyID != "" || secretAccessKey != "" {
-		t.Fatalf("missing secret access key accepted: %q %q %v", accessKeyID, secretAccessKey, err)
+	setR2Environment(t, "env-access-SENTINEL", "env-secret-SENTINEL")
+	pair, err = credential.ResolveR2(ctx, dir)
+	if err != nil || pair.AccessKeyID != "env-access-SENTINEL" || pair.SecretAccessKey != "env-secret-SENTINEL" {
+		t.Fatalf("environment did not override the workspace file: %+v %v", pair, err)
+	}
+}
+
+func TestResolveR2RejectsPartialEnvironmentInsteadOfFallingBack(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	saveR2Pair(t, dir, "stored-access-SENTINEL", "stored-secret-SENTINEL")
+	setR2Environment(t, "env-access-SENTINEL", "")
+	_, err := credential.ResolveR2(ctx, dir)
+	if err == nil {
+		t.Fatal("partially configured environment silently fell back to the workspace file")
 	}
 	if !strings.Contains(err.Error(), "TOUKO_R2_ACCESS_KEY_ID") || !strings.Contains(err.Error(), "TOUKO_R2_SECRET_ACCESS_KEY") {
-		t.Fatalf("missing credential error does not name its variables: %v", err)
+		t.Fatalf("partial environment error does not name both variables: %v", err)
 	}
 	if strings.Contains(err.Error(), "SENTINEL") {
-		t.Fatal("missing credential error disclosed a credential value")
+		t.Fatal("partial environment error disclosed a credential value")
 	}
 }
 
@@ -62,9 +77,9 @@ func TestResolveR2RejectsInvalidValuesWithoutDisclosure(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setR2Environment(t, tc.access, tc.secret)
-			accessKeyID, secretAccessKey, err := credential.ResolveR2(context.Background())
-			if err == nil || accessKeyID != "" || secretAccessKey != "" {
-				t.Fatalf("invalid R2 credential accepted: %q %q %v", accessKeyID, secretAccessKey, err)
+			pair, err := credential.ResolveR2(context.Background(), t.TempDir())
+			if err == nil || pair != (credential.R2Pair{}) {
+				t.Fatalf("invalid R2 credential accepted: %+v %v", pair, err)
 			}
 			if !strings.Contains(err.Error(), tc.variable) {
 				t.Fatalf("error does not name %s: %v", tc.variable, err)
@@ -83,9 +98,9 @@ func TestResolveR2DoesNotFallBackToOtherCredentials(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "github-SENTINEL")
 	t.Setenv("GH_TOKEN", "gh-SENTINEL")
 	t.Setenv("PATH", t.TempDir())
-	accessKeyID, secretAccessKey, err := credential.ResolveR2(context.Background())
-	if err == nil || accessKeyID != "" || secretAccessKey != "" {
-		t.Fatalf("R2 credentials fell back to another source: %q %q %v", accessKeyID, secretAccessKey, err)
+	pair, err := credential.ResolveR2(context.Background(), t.TempDir())
+	if err == nil || pair != (credential.R2Pair{}) {
+		t.Fatalf("R2 credentials fell back to another source: %+v %v", pair, err)
 	}
 	if strings.Contains(err.Error(), "SENTINEL") {
 		t.Fatal("fallback error disclosed a credential value")
@@ -96,8 +111,123 @@ func TestResolveR2RespectsCancellation(t *testing.T) {
 	setR2Environment(t, "access-SENTINEL", "secret-SENTINEL")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	accessKeyID, secretAccessKey, err := credential.ResolveR2(ctx)
-	if !errors.Is(err, context.Canceled) || accessKeyID != "" || secretAccessKey != "" {
-		t.Fatalf("cancellation not preserved: %q %q %v", accessKeyID, secretAccessKey, err)
+	pair, err := credential.ResolveR2(ctx, t.TempDir())
+	if !errors.Is(err, context.Canceled) || pair != (credential.R2Pair{}) {
+		t.Fatalf("cancellation not preserved: %+v %v", pair, err)
+	}
+}
+
+func TestSaveR2RoundTripsInAPrivateWorkspaceFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	saveR2Pair(t, dir, "access-SENTINEL", "secret-SENTINEL")
+
+	path := filepath.Join(dir, "cloudflare", "credentials.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("credential file permissions: %o, want 0600", info.Mode().Perm())
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Mode().Perm() != 0700 {
+		t.Fatalf("credential directory permissions: %o, want 0700", parent.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("saving credentials created config.json: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "cloudflare"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("cloudflare directory contents: %v %v", entries, err)
+	}
+
+	stored, found, err := credential.LoadR2(ctx, dir)
+	if err != nil || !found || stored.AccessKeyID != "access-SENTINEL" || stored.SecretAccessKey != "secret-SENTINEL" {
+		t.Fatalf("LoadR2 = %+v, %v, %v", stored, found, err)
+	}
+}
+
+func TestSaveR2RejectsInvalidPairsWithoutDisclosure(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		pair  credential.R2Pair
+		field string
+	}{
+		{"empty", credential.R2Pair{}, "access key id"},
+		{"blank access", credential.R2Pair{AccessKeyID: " ", SecretAccessKey: "secret-SENTINEL"}, "access key id"},
+		{"space secret", credential.R2Pair{AccessKeyID: "access-SENTINEL", SecretAccessKey: "secret SENTINEL"}, "secret access key"},
+		{"control secret", credential.R2Pair{AccessKeyID: "access-SENTINEL", SecretAccessKey: "secret\nSENTINEL"}, "secret access key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			err := credential.SaveR2(ctx, dir, tc.pair)
+			if err == nil {
+				t.Fatal("invalid credential pair was saved")
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("error does not name %q: %v", tc.field, err)
+			}
+			if strings.Contains(err.Error(), "SENTINEL") {
+				t.Fatal("validation error disclosed a credential value")
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "cloudflare", "credentials.json")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("invalid pair left a credential file: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestLoadR2RejectsMalformedStoredPairWithoutDisclosure(t *testing.T) {
+	ctx := context.Background()
+	for name, content := range map[string]string{
+		"unknown field": `{"version":1,"access_key_id":"access-SENTINEL","secret_access_key":"secret-SENTINEL","extra":"x"}`,
+		"wrong version": `{"version":2,"access_key_id":"access-SENTINEL","secret_access_key":"secret-SENTINEL"}`,
+		"blank secret":  `{"version":1,"access_key_id":"access-SENTINEL","secret_access_key":" "}`,
+		"trailing":      `{"version":1,"access_key_id":"access-SENTINEL","secret_access_key":"secret-SENTINEL"}{}`,
+		"not json":      `secret-SENTINEL`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			base := filepath.Join(dir, "cloudflare")
+			if err := os.MkdirAll(base, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(base, "credentials.json"), []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			pair, found, err := credential.LoadR2(ctx, dir)
+			if err == nil || found || pair != (credential.R2Pair{}) {
+				t.Fatalf("malformed credential file accepted: %+v %v %v", pair, found, err)
+			}
+			if strings.Contains(err.Error(), "SENTINEL") {
+				t.Fatal("malformed file error disclosed a credential value")
+			}
+		})
+	}
+}
+
+func TestResolveR2WorkspaceIsolation(t *testing.T) {
+	ctx := context.Background()
+	setR2Environment(t, "", "")
+	first := t.TempDir()
+	second := t.TempDir()
+	saveR2Pair(t, first, "first-access-SENTINEL", "first-secret-SENTINEL")
+	saveR2Pair(t, second, "second-access-SENTINEL", "second-secret-SENTINEL")
+
+	firstPair, err := credential.ResolveR2(ctx, first)
+	if err != nil || firstPair.AccessKeyID != "first-access-SENTINEL" {
+		t.Fatalf("first workspace pair: %+v %v", firstPair, err)
+	}
+	secondPair, err := credential.ResolveR2(ctx, second)
+	if err != nil || secondPair.AccessKeyID != "second-access-SENTINEL" {
+		t.Fatalf("second workspace pair: %+v %v", secondPair, err)
+	}
+	if firstPair == secondPair {
+		t.Fatal("workspaces shared one credential pair")
 	}
 }

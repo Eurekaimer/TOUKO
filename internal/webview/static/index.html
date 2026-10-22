@@ -83,11 +83,18 @@
           <circle cx="12" cy="12" r="9" />
           <path d="M12 7v5l3 2" />
         </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3" />
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"
+          />
+        </symbol>
       </defs>
     </svg>
     <a class="skip-link" href="#gallery">跳到图片库</a>
     <div class="workspace">
       <aside class="sidebar" id="sidebar" aria-label="工作空间导航">
+        <div class="sidebar-scroll">
         <!-- The logotype: a mount emblem (a picture sitting on a card, the page's
              own object in its smallest form) beside TOUKO set in the wordmark
              face at its heaviest weight with pair-by-pair optical spacing. -->
@@ -121,19 +128,86 @@
         <nav id="library-nav" class="workspace-list" aria-label="统一图库">
           <p class="sidebar-hint">连接多个仓库后，会在这里合并成一个图库。</p>
         </nav>
-        <div class="sidebar-section-label">分类</div>
-        <nav
-          id="collection-filters"
-          class="collection-nav"
-          aria-label="按分类筛选"
-        >
-          <p class="sidebar-hint">归档图片后，分类会列在这里。</p>
-        </nav>
-        <div class="sidebar-section-label">标签</div>
-        <div id="tag-filters" class="tag-filters" aria-label="按标签筛选">
-          <p class="sidebar-hint">归档图片后，标签会列在这里。</p>
+        <div class="sidebar-section-label">
+          <button
+            type="button"
+            class="filter-toggle"
+            id="collection-toggle"
+            aria-expanded="true"
+            aria-controls="collection-panel"
+          >
+            <span>分类</span><span class="filter-toggle-mark" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div id="collection-panel" class="filter-panel">
+          <nav
+            id="collection-filters"
+            class="collection-nav"
+            aria-label="按分类筛选"
+          >
+            <p class="sidebar-hint">归档图片后，分类会列在这里。</p>
+          </nav>
+          <div id="collection-pager" class="filter-pager" hidden>
+            <button
+              type="button"
+              class="filter-page-button"
+              id="collection-prev"
+              aria-label="上一页分类"
+            >
+              上一页
+            </button>
+            <span id="collection-page" class="filter-page-status" role="status"
+              >第 1 / 1 页</span
+            >
+            <button
+              type="button"
+              class="filter-page-button"
+              id="collection-next"
+              aria-label="下一页分类"
+            >
+              下一页
+            </button>
+          </div>
+        </div>
+        <div class="sidebar-section-label">
+          <button
+            type="button"
+            class="filter-toggle"
+            id="tag-toggle"
+            aria-expanded="true"
+            aria-controls="tag-panel"
+          >
+            <span>标签</span><span class="filter-toggle-mark" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div id="tag-panel" class="filter-panel">
+          <div id="tag-filters" class="tag-filters" aria-label="按标签筛选">
+            <p class="sidebar-hint">归档图片后，标签会列在这里。</p>
+          </div>
+          <div id="tag-pager" class="filter-pager" hidden>
+            <button
+              type="button"
+              class="filter-page-button"
+              id="tag-prev"
+              aria-label="上一页标签"
+            >
+              上一页
+            </button>
+            <span id="tag-page" class="filter-page-status" role="status"
+              >第 1 / 1 页</span
+            >
+            <button
+              type="button"
+              class="filter-page-button"
+              id="tag-next"
+              aria-label="下一页标签"
+            >
+              下一页
+            </button>
+          </div>
         </div>
         <div id="filter-trail" class="breadcrumb" hidden></div>
+        </div>
         <div class="sidebar-bottom">
           <div class="repo-card">
             <div class="repo-card-label">
@@ -146,6 +220,15 @@
               连接 / 切换仓库
             </button>
           </div>
+          <button
+            type="button"
+            class="text-button sidebar-settings"
+            id="open-settings"
+            aria-haspopup="dialog"
+            aria-controls="settings-dialog"
+          >
+            <svg class="icon"><use href="#i-settings" /></svg><span>设置</span>
+          </button>
         </div>
       </aside>
       <main class="main">
@@ -356,6 +439,231 @@
       </main>
     </div>
     <div id="toast" class="toast" role="status" hidden></div>
+
+    <dialog
+      id="settings-dialog"
+      class="dialog settings-dialog"
+      aria-labelledby="settings-heading"
+    >
+      <div class="dialog-header">
+        <h2 id="settings-heading">设置</h2>
+        <button
+          type="button"
+          class="icon-button"
+          data-close
+          aria-label="关闭设置"
+        >
+          <svg class="icon"><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <form id="settings-form">
+        <div class="dialog-body">
+          <section
+            class="settings-section"
+            aria-labelledby="settings-appearance-heading"
+          >
+            <h3 id="settings-appearance-heading">显示与外观</h3>
+            <label class="display-setting" for="ui-scale">
+              <span
+                >界面大小
+                <output id="ui-scale-value" for="ui-scale">100%</output></span
+              >
+              <input
+                id="ui-scale"
+                type="range"
+                min="75"
+                max="200"
+                step="5"
+                value="100"
+                aria-describedby="ui-scale-help"
+              />
+            </label>
+            <p id="ui-scale-help" class="field-help">
+              整体调整按钮、间距和图片卡片。Ctrl + / Ctrl − 调整。
+            </p>
+            <label class="display-setting" for="font-scale">
+              <span
+                >字体大小
+                <output id="font-scale-value" for="font-scale">100%</output></span
+              >
+              <input
+                id="font-scale"
+                type="range"
+                min="75"
+                max="200"
+                step="5"
+                value="100"
+                aria-describedby="font-scale-help"
+              />
+            </label>
+            <p id="font-scale-help" class="field-help">
+              单独调整文字大小。按住 Ctrl 滚动滚轮，上滚放大，下滚缩小。
+            </p>
+            <p class="field-help">
+              范围 75%–200%。Ctrl 0 恢复两项默认值；macOS 也可用
+              Command。设置保存在本机，不进入图库提交。
+            </p>
+            <p id="display-save-status" class="field-help" role="status">
+              已保存到本机
+            </p>
+            <div
+              id="display-error"
+              class="notice error"
+              role="alert"
+              hidden
+            ></div>
+          </section>
+          <section
+            class="settings-section"
+            aria-labelledby="settings-cloudflare-heading"
+          >
+            <h3 id="settings-cloudflare-heading">Cloudflare R2（可选）</h3>
+            <p class="field-help">
+              Cloudflare 镜像把已提交的图片额外复制到一个 R2
+              存储桶，供自定义域或公开地址访问。GitHub 仍是唯一发布来源；不开启时所有原有功能保持不变。
+            </p>
+            <p id="settings-no-repo" class="notice warning" hidden>
+              当前没有可配置的 GitHub 仓库成员。Cloudflare
+              只适用于 GitHub 仓库；本地仓库不支持镜像。
+            </p>
+            <label id="settings-member-field"
+              >工作区 / 成员<span class="select-field"
+                ><select id="settings-member"></select></span>
+              <small
+                >配置按成员独立保存。统一图库中请先切换到要配置的仓库；保存不会影响其他成员。</small
+              >
+            </label>
+            <div id="cloudflare-private-warning" class="notice warning" hidden>
+              当前成员是私有 GitHub 仓库。启用 Cloudflare
+              会把已同步的图片通过 R2 公开地址暴露给任何拿到链接的人；请仅在明确需要公开时启用。
+            </div>
+            <label class="settings-check">
+              <input type="checkbox" id="cloudflare-enabled" />
+              启用 Cloudflare R2 镜像
+            </label>
+            <label
+              >R2 Endpoint<input
+                id="cloudflare-endpoint"
+                type="url"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="https://&lt;ACCOUNT_ID&gt;.r2.cloudflarestorage.com"
+              /><small
+                >S3 API 地址，必须使用 HTTPS，不要附加查询参数或路径。</small
+              ></label
+            >
+            <div class="form-grid">
+              <label
+                >Bucket<input
+                  id="cloudflare-bucket"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="touko-imgs"
+                /><small>建议使用独立存储桶（例如 touko-imgs）。</small></label
+              >
+              <label
+                >公开访问地址<input
+                  id="cloudflare-public-base-url"
+                  type="url"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="https://img.example.com"
+                /><small
+                  >显式填写，例如绑定的自定义域；TOUKO 不会从 Endpoint
+                  推断域名。</small
+                ></label
+              >
+            </div>
+            <p class="field-help">
+              请先在 Cloudflare 为该存储桶绑定自定义域，并确认 DNS、证书与缓存策略已生效。`r2.dev` 公共开发地址只有在实际验证可访问后才使用；自定义域验证通过后，可在 Cloudflare 关闭 `r2.dev` 公共访问，避免留下第二个公开入口。TOUKO 不会自动开启、关闭或改动 Cloudflare 配置。
+            </p>
+            <div class="form-grid">
+              <div class="secret-group">
+                <label for="cloudflare-access-key-id">Access Key ID</label>
+                <span class="secret-field"
+                  ><input
+                    id="cloudflare-access-key-id"
+                    type="password"
+                    spellcheck="false"
+                    autocomplete="new-password"
+                    aria-describedby="cloudflare-credentials-status" /><button
+                    type="button"
+                    class="text-button secret-toggle"
+                    id="cloudflare-access-key-id-toggle"
+                    aria-pressed="false"
+                    aria-controls="cloudflare-access-key-id"
+                    aria-label="显示 Access Key ID"
+                  >
+                    显示</button
+                  ></span
+                >
+              </div>
+              <div class="secret-group">
+                <label for="cloudflare-secret-access-key">Secret Access Key</label>
+                <span class="secret-field"
+                  ><input
+                    id="cloudflare-secret-access-key"
+                    type="password"
+                    spellcheck="false"
+                    autocomplete="new-password"
+                    aria-describedby="cloudflare-credentials-status" /><button
+                    type="button"
+                    class="text-button secret-toggle"
+                    id="cloudflare-secret-access-key-toggle"
+                    aria-pressed="false"
+                    aria-controls="cloudflare-secret-access-key"
+                    aria-label="显示 Secret Access Key"
+                  >
+                    显示</button
+                  ></span
+                >
+              </div>
+            </div>
+            <p
+              id="cloudflare-credentials-status"
+              class="field-help credentials-state"
+              role="status"
+            >
+              尚未读取凭据状态。
+            </p>
+            <p class="field-help">
+              两个凭据字段同时留空会保留本机已保存的凭据；只填写其中一个会被拒绝。打开设置或切换工作空间时会自动填入当前生效的凭据（默认隐藏，可用「显示」查看）。凭据保存在本机受限状态目录（权限 0600），也可由 TOUKO_R2_ACCESS_KEY_ID / TOUKO_R2_SECRET_ACCESS_KEY 环境变量提供；不会进入 Git。
+            </p>
+            <p class="field-help">
+              保存只写入本机配置，不会上传图片、提交 GitHub 或修改远端。已有图片需要在「同步 Cloudflare」中显式同步后才会出现在 R2；之后的新提交会尝试自动镜像。
+            </p>
+            <p
+              id="cloudflare-settings-status"
+              class="field-help"
+              role="status"
+            ></p>
+            <div
+              id="settings-error"
+              class="notice error"
+              role="alert"
+              hidden
+            ></div>
+          </section>
+        </div>
+        <div class="dialog-footer settings-footer">
+          <button type="button" class="text-button" id="reset-display">
+            恢复默认显示
+          </button>
+          <span class="muted">设置只保存在本机</span>
+          <button type="button" class="button secondary" data-close>
+            完成
+          </button>
+          <button
+            type="submit"
+            class="button primary"
+            id="cloudflare-save"
+            data-mutation
+          >
+            保存 Cloudflare 设置
+          </button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="upload-dialog" class="dialog upload-dialog" aria-labelledby="upload-heading">
       <div class="dialog-header">

@@ -22,6 +22,10 @@ import (
 
 func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
+	if path == "/api/appearance" {
+		s.appearanceAPI(w, r)
+		return
+	}
 	// Login commands never take workMu: starting returns immediately and
 	// cancelling joins a background process without blocking gallery state.
 	if isLoginEndpoint(path) {
@@ -30,7 +34,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	}
 	method := "POST"
 	switch path {
-	case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries":
+	case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries", "/api/cloudflare/config":
 		method = "GET"
 	}
 	var selector, action string
@@ -55,13 +59,13 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		switch path {
-		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify", "/api/cloudflare/sync":
+		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify", "/api/cloudflare/sync", "/api/cloudflare/config", "/api/cloudflare/credentials":
 		default:
 			s.fail(w, 404, "usage", "unknown API endpoint")
 			return
 		}
 	}
-	if path == "/api/libraries" && r.Method == "POST" {
+	if (path == "/api/libraries" || path == "/api/cloudflare/config") && r.Method == "POST" {
 		method = "POST"
 	}
 	if r.Method != method {
@@ -203,6 +207,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 	case path == "/api/cloudflare/sync":
 		result, err = s.cloudflareSync(w, r)
+	case path == "/api/cloudflare/config":
+		result, err = s.cloudflareConfig(w, r)
+	case path == "/api/cloudflare/credentials":
+		result, err = s.cloudflareCredentials(w, r)
 	default:
 		if err = decodeJSON(w, r, &struct{}{}); err == nil {
 			var git repository.Git

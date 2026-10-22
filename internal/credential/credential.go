@@ -1,4 +1,5 @@
-// Package credential resolves runtime GitHub credentials without persisting them.
+// Package credential resolves runtime GitHub credentials without persisting
+// them, and owns the optional, workspace-private Cloudflare R2 credential file.
 package credential
 
 import (

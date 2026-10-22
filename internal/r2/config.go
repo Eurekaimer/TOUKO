@@ -28,11 +28,11 @@ func configurationInvalid(cause error) error {
 // Validate checks the configured fields. It never contacts Cloudflare and
 // never reads credentials. Region selection is fixed to "auto".
 func (c Config) Validate() error {
-	if _, err := parseEndpoint(c.Endpoint); err != nil {
-		return configurationInvalid(err)
+	if err := ValidateEndpoint(c.Endpoint); err != nil {
+		return err
 	}
-	if err := validateBucket(c.Bucket); err != nil {
-		return configurationInvalid(err)
+	if err := ValidateBucket(c.Bucket); err != nil {
+		return err
 	}
 	if err := delivery.ValidateCloudflareBaseURL(c.PublicBaseURL); err != nil {
 		return configurationInvalid(err)
@@ -60,6 +60,24 @@ func (c Config) TargetID() string {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+// ValidateEndpoint checks the S3 endpoint shape without contacting Cloudflare.
+// The error is a configuration error, so callers classify it like Validate.
+func ValidateEndpoint(raw string) error {
+	if _, err := parseEndpoint(raw); err != nil {
+		return configurationInvalid(err)
+	}
+	return nil
+}
+
+// ValidateBucket checks the bucket name shape. Server-side naming rules stay a
+// remote concern reported by the R2 error classifier.
+func ValidateBucket(bucket string) error {
+	if err := validateBucket(bucket); err != nil {
+		return configurationInvalid(err)
+	}
+	return nil
 }
 
 func parseEndpoint(raw string) (*url.URL, error) {

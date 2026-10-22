@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/index"
 	"github.com/Eurekaimer/TOUKO/internal/r2"
@@ -16,9 +17,11 @@ import (
 )
 
 type Service struct {
-	Dir           string
-	Store         *index.Store
-	NewCloudflare func(context.Context, r2.Config) (r2.Mirror, error)
+	Dir   string
+	Store *index.Store
+	// NewCloudflare builds the mirror from an already resolved workspace
+	// credential pair. Tests inject a fake; production uses NewCloudflareMirror.
+	NewCloudflare func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error)
 }
 
 func StateDir(explicit string) (string, error) {

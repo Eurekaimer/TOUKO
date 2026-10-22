@@ -77,6 +77,12 @@
 
 /* --- Tokens ------------------------------------------------------------- */
 :root {
+  --ui-scale: 1;
+  --font-scale: 1;
+  --viewport-width: calc(100vw / var(--ui-scale));
+  --viewport-height: calc(100dvh / var(--ui-scale));
+  container: interface / inline-size;
+  zoom: var(--ui-scale);
   /* Paper, and the two materials that sit on it. */
   --page: #f7f3ea;
   --mount: #e5dcc9;
@@ -134,7 +140,7 @@
   --fs-body: 1rem; /* 16px — Chinese reading copy */
   --fs-lg: 1.1875rem; /* 19px — picture titles */
   --fs-h2: 1.5rem; /* 24px — section and dialog titles */
-  --fs-hero: clamp(2.75rem, 6.4vw, 5rem); /* 44–80px — the headline */
+  --fs-hero: clamp(2.75rem, calc(var(--viewport-width) * 0.064), 5rem);
 
   --lh-hero: 0.94;
   --lh-tight: 1.24;
@@ -159,7 +165,7 @@
   color: var(--ink);
   background: var(--page);
   font-family: var(--font-ui);
-  font-size: var(--fs-body);
+  font-size: calc(100% * var(--font-scale));
   line-height: var(--lh-body);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -270,7 +276,7 @@ summary {
   top: 12px;
 }
 .workspace {
-  min-height: 100vh;
+  min-height: var(--viewport-height);
 }
 
 /* --- The logotype ------------------------------------------------------ *
@@ -363,9 +369,20 @@ summary {
   flex-direction: column;
   width: var(--rail-width);
   padding: var(--space-6) var(--space-5) var(--space-5);
-  overflow: auto;
+  overflow: hidden;
   background: var(--mount);
   border-right: 1px solid var(--mount-line);
+}
+/* Only the navigation/filter body scrolls. The repo card and settings gear
+ * stay pinned to the bottom-left edge even when the lists are long. */
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-inline-end: -12px;
+  padding-inline-end: 12px;
+  scrollbar-gutter: stable;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .sidebar-section-label {
   margin: var(--space-6) 0 var(--space-2);
@@ -544,8 +561,9 @@ summary {
   font-size: var(--fs-xs);
 }
 .sidebar-bottom {
-  margin-top: auto;
-  padding-top: var(--space-7);
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding-top: var(--space-4);
 }
 .repo-card {
   padding-top: var(--space-4);
@@ -1331,7 +1349,7 @@ progress {
   left: calc(50% + var(--rail-width) / 2);
   z-index: 100;
   transform: translateX(-50%);
-  max-width: min(560px, 84vw);
+  max-width: min(560px, calc(var(--viewport-width) * 0.84));
   padding: 12px 18px;
   color: var(--page);
   background: var(--ink);
@@ -1346,8 +1364,8 @@ progress {
 
 /* --- Dialogs: the same sheet, lifted ---------------------------------- */
 .dialog {
-  width: min(640px, calc(100vw - 40px));
-  max-height: calc(100dvh - 48px);
+  width: min(640px, calc(var(--viewport-width) - 40px));
+  max-height: calc(var(--viewport-height) - 48px);
   padding: 0;
   overflow: auto;
   color: var(--ink);
@@ -1467,7 +1485,7 @@ progress {
 }
 .dialog .form-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
   gap: 0 var(--space-5);
 }
 .field-help {
@@ -1647,11 +1665,11 @@ progress {
 
 /* Preview */
 .preview-dialog {
-  width: min(1040px, calc(100vw - 40px));
+  width: min(1040px, calc(var(--viewport-width) - 40px));
 }
 .preview-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
 }
 .preview-image-wrap {
   position: relative;
@@ -1665,7 +1683,7 @@ progress {
 }
 .preview-image-wrap img {
   max-width: 100%;
-  max-height: 64vh;
+  max-height: calc(var(--viewport-height) * 0.64);
   object-fit: contain;
   border-radius: var(--radius-photo);
 }
@@ -1680,7 +1698,7 @@ progress {
   font-size: var(--fs-micro);
 }
 .preview-details {
-  max-height: calc(100dvh - 140px);
+  max-height: calc(var(--viewport-height) - 140px);
   padding: var(--space-5);
   overflow: auto;
 }
@@ -1772,7 +1790,7 @@ progress {
 
 /* Pending */
 .pending-dialog {
-  width: min(580px, calc(100vw - 40px));
+  width: min(580px, calc(var(--viewport-width) - 40px));
 }
 .pending-dialog h2 > span {
   margin-left: 8px;
@@ -2022,7 +2040,7 @@ progress {
 
 /* Confirm and result */
 .confirm-dialog {
-  width: min(460px, calc(100vw - 40px));
+  width: min(460px, calc(var(--viewport-width) - 40px));
 }
 .confirm-dialog .dialog-body > p {
   margin: 0;
@@ -2035,7 +2053,7 @@ progress {
   margin-top: var(--space-4);
 }
 .result-dialog {
-  width: min(520px, calc(100vw - 40px));
+  width: min(520px, calc(var(--viewport-width) - 40px));
 }
 .result-dialog .dialog-body p {
   margin-top: 0;
@@ -2064,23 +2082,23 @@ progress {
 }
 
 /* --- Responsive -------------------------------------------------------- */
-@media (min-width: 768px) {
+@container interface (min-width: 768px) {
   .gallery-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
-@media (min-width: 1120px) {
+@container interface (min-width: 1120px) {
   .gallery-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
-@media (min-width: 1680px) {
+@container interface (min-width: 1680px) {
   .gallery-grid {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
-@media (max-width: 1280px) {
-  :root {
+@container interface (max-width: 1280px) {
+  body {
     --rail-width: 232px;
     --gap-x: 24px;
     --gap-y: 32px;
@@ -2092,13 +2110,13 @@ progress {
     padding: var(--space-6) var(--space-5) 0;
   }
 }
-@media (max-width: 1080px) {
+@container interface (max-width: 1080px) {
   .head-indicator {
     display: none;
   }
 }
-@media (max-width: 900px) {
-  :root {
+@container interface (max-width: 900px) {
+  body {
     --gap-x: 20px;
     --gap-y: 28px;
   }
@@ -2106,7 +2124,7 @@ progress {
     top: 54px;
     inset: 54px auto 0 0;
     width: 268px;
-    max-width: 84vw;
+    max-width: calc(var(--viewport-width) * 0.84);
     padding: var(--space-5) var(--space-5) var(--space-5);
     border-right: 1px solid var(--mount-line);
     box-shadow: var(--shadow-lift);
@@ -2158,11 +2176,11 @@ progress {
     overflow: visible;
   }
 }
-@media (max-width: 700px) {
-  :root {
+@container interface (max-width: 700px) {
+  body {
     --gap-x: 16px;
     --gap-y: 26px;
-    --fs-hero: clamp(2.5rem, 11.5vw, 3.25rem);
+    --fs-hero: clamp(2.5rem, calc(var(--viewport-width) * 0.115), 3.25rem);
     --space-7: 36px;
     --space-8: 48px;
   }
@@ -2333,12 +2351,12 @@ progress {
     left: 50%;
     bottom: var(--space-4);
     width: max-content;
-    max-width: calc(100vw - 32px);
+    max-width: calc(var(--viewport-width) - 32px);
     padding: 11px 15px;
   }
   .dialog {
-    width: calc(100vw - 24px);
-    max-height: calc(100dvh - 24px);
+    width: calc(var(--viewport-width) - 24px);
+    max-height: calc(var(--viewport-height) - 24px);
   }
   .dialog-header {
     padding: 14px var(--space-4);
@@ -2387,7 +2405,7 @@ progress {
     padding: var(--space-4) var(--space-4) var(--space-6);
   }
   .preview-image-wrap img {
-    max-height: 42vh;
+    max-height: calc(var(--viewport-height) * 0.42);
   }
   .preview-details {
     padding: var(--space-4);
@@ -2403,7 +2421,7 @@ progress {
     gap: 6px;
   }
 }
-@media (max-width: 480px) {
+@container interface (max-width: 480px) {
   .gallery-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2580,4 +2598,170 @@ progress {
 .library-members .workspace-link.member::before {
   content: "└";
   color: var(--line-strong);
+}
+
+.dialog .display-setting input[type="range"] {
+  padding: 0;
+  border: 0;
+  accent-color: var(--coral);
+}
+.display-setting > span {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.display-setting output {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Filter disclosure and paging ------------------------------------- */
+.sidebar-section-label .filter-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 22px;
+  color: inherit;
+  font-size: inherit;
+  text-align: left;
+}
+.sidebar-section-label .filter-toggle:hover {
+  color: var(--ink);
+}
+.filter-toggle-mark {
+  width: 7px;
+  height: 7px;
+  margin-right: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+}
+.filter-toggle[aria-expanded="false"] .filter-toggle-mark {
+  transform: rotate(-45deg);
+}
+.filter-panel {
+  display: grid;
+  gap: 2px;
+}
+.filter-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+.filter-page-button {
+  padding: 2px 4px;
+  color: var(--coral-strong);
+  font-size: var(--fs-micro);
+  border-radius: 4px;
+}
+.filter-page-button:hover:not(:disabled) {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.filter-page-status {
+  color: var(--muted);
+  font-size: var(--fs-micro);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sidebar-settings {
+  width: 100%;
+  margin-top: var(--space-3);
+  font-size: var(--fs-xs);
+}
+.sidebar-settings .icon {
+  width: 15px;
+  height: 15px;
+}
+
+/* --- Settings sheet ---------------------------------------------------- */
+.settings-dialog {
+  width: min(720px, calc(var(--viewport-width) - 40px));
+}
+.settings-section {
+  padding-bottom: var(--space-4);
+}
+.settings-section + .settings-section {
+  margin-top: var(--space-2);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--line);
+}
+.settings-section h3 {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  font-style: oblique 7deg;
+  font-weight: 400;
+}
+.dialog .settings-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+  margin: var(--space-3) 0 var(--space-4);
+  font-size: var(--fs-sm);
+}
+.settings-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--coral);
+}
+.credentials-state.saved {
+  color: var(--coral-strong);
+}
+.dialog .secret-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: var(--space-4);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+.dialog .secret-group > label {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+.secret-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.secret-field input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.secret-toggle {
+  flex: 0 0 auto;
+  min-width: 44px;
+  justify-content: center;
+  padding: 0 4px;
+}
+.secret-toggle[aria-pressed="true"] {
+  color: var(--ink);
+}
+.settings-footer {
+  flex-wrap: wrap;
+}
+.settings-footer .button.primary {
+  margin-left: auto;
+}
+@media (max-width: 620px) {
+  .settings-footer .button,
+  .settings-footer .text-button {
+    flex: 1 1 auto;
+  }
+  .settings-footer .muted {
+    order: 5;
+    flex-basis: 100%;
+  }
+}
+.settings-section > .notice {
+  margin: 0 0 var(--space-4);
 }

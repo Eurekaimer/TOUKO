@@ -217,7 +217,7 @@ func (s *Service) CloudflareSync(ctx context.Context, r repository.Git, opts Clo
 		return cloudflareUnavailable(cloudflareCodeConfigurationInvalid, nil), cloudflareDeliveryError(cloudflareCodeConfigurationInvalid)
 	}
 	if len(uploads) == 0 && len(deletes) == 0 {
-		return cloudflareEmptyResult(ctx, opts.DryRun)
+		return cloudflareEmptyResult(ctx, s.Dir, opts.DryRun)
 	}
 	mirror, err := s.cloudflareMirror(ctx, cfg)
 	if err != nil {
@@ -289,7 +289,7 @@ func (s *Service) cloudflarePublication(ctx context.Context, r repository.Git, s
 		return &result
 	}
 	if len(uploads) == 0 && len(deletes) == 0 {
-		result, _ := cloudflareEmptyResult(ctx, false)
+		result, _ := cloudflareEmptyResult(ctx, s.Dir, false)
 		return &result
 	}
 	mirror, err := s.cloudflareMirror(ctx, cfg)
@@ -320,8 +320,8 @@ func cloudflareResultShell(dryRun bool) CloudflareResult {
 	return CloudflareResult{Status: status, DryRun: dryRun, Items: []CloudflareItem{}}
 }
 
-func cloudflareEmptyResult(ctx context.Context, dryRun bool) (CloudflareResult, error) {
-	if _, _, err := credential.ResolveR2(ctx); err != nil {
+func cloudflareEmptyResult(ctx context.Context, dir string, dryRun bool) (CloudflareResult, error) {
+	if _, err := credential.ResolveR2(ctx, dir); err != nil {
 		if ctx.Err() != nil {
 			return cloudflareUnavailable(cloudflareAdapterCode(err), nil), err
 		}
@@ -367,6 +367,10 @@ func cloudflareCompleted(result CloudflareResult, cause error, dryRun bool) (Clo
 func cloudflareConfigCode(err error) string {
 	if err == nil {
 		return ""
+	}
+	var settings *CloudflareConfigError
+	if errors.As(err, &settings) {
+		return settings.Code
 	}
 	switch r2.ErrorCode(err) {
 	case cloudflareCodeConfigurationInvalid:
@@ -418,11 +422,25 @@ func cloudflareSourceID(location repository.Location) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// NewCloudflareMirror is the production mirror factory. Credentials are always
+// resolved by the workspace-scoped Service before this point, so the adapter
+// never reads the process environment on its own.
+func NewCloudflareMirror(_ context.Context, cfg r2.Config, pair credential.R2Pair) (r2.Mirror, error) {
+	return r2.New(cfg, pair.AccessKeyID, pair.SecretAccessKey)
+}
+
 func (s *Service) cloudflareMirror(ctx context.Context, cfg r2.Config) (r2.Mirror, error) {
 	if s.NewCloudflare == nil {
 		return nil, fmt.Errorf("%w: Cloudflare mirror factory is not configured", domain.ErrDeliveryUnavailable)
 	}
-	mirror, err := s.NewCloudflare(ctx, cfg)
+	pair, err := credential.ResolveR2(ctx, s.Dir)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, &r2.Error{Op: "config", Code: cloudflareCodeCredentialsMissing, Cause: err}
+	}
+	mirror, err := s.NewCloudflare(ctx, cfg, pair)
 	if err != nil {
 		return nil, err
 	}
@@ -1157,7 +1175,7 @@ func (s *Service) CloudflareURL(ctx context.Context, selector string) (string, e
 	if st.Manifest == nil {
 		return "", cloudflareDeliveryError(cloudflareCodeNotPublished)
 	}
-	if _, _, err := credential.ResolveR2(ctx); err != nil {
+	if _, err := credential.ResolveR2(ctx, s.Dir); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "", err
 		}
@@ -1250,7 +1268,7 @@ func (s *Service) CloudflareStatus(ctx context.Context, st index.State, views []
 		status.ErrorCode = cloudflareCodeLocalRepository
 		return status
 	}
-	if _, _, err := credential.ResolveR2(ctx); err != nil {
+	if _, err := credential.ResolveR2(ctx, s.Dir); err != nil {
 		status.ErrorCode = cloudflareCodeCredentialsMissing
 		return status
 	}

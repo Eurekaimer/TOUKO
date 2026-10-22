@@ -17,7 +17,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
-	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 )
 
@@ -168,28 +167,6 @@ func NewWithClient(cfg Config, accessKeyID, secretAccessKey string, client *http
 		options.ClientLogMode = 0
 	})
 	return &Client{api: api, bucket: cfg.Bucket}, nil
-}
-
-// FromEnvironment resolves only the dedicated TOUKO R2 environment variables
-// and builds a mirror. It never consults AWS profiles, IMDS, gh or .env files.
-func FromEnvironment(ctx context.Context, cfg Config) (Mirror, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, classify("config", "", err)
-	}
-	if !cfg.Enabled {
-		return nil, configFailure(errors.New("cloudflare mirror is disabled"))
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, configFailure(err)
-	}
-	accessKeyID, secretAccessKey, err := credential.ResolveR2(ctx)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, classify("config", "", ctxErr)
-		}
-		return nil, &Error{Op: "config", Code: "credentials_missing", Cause: err}
-	}
-	return New(cfg, accessKeyID, secretAccessKey)
 }
 
 func (c *Client) HeadObject(ctx context.Context, key string) (ObjectInfo, bool, error) {

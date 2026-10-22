@@ -20,6 +20,10 @@ const filters = {
   source: "",
   sort: "newest",
 };
+// Categories and tags live in a long sidebar list. Keep them in small pages so
+// the filters stay reachable without turning the sidebar into a scroll well.
+const FILTER_PAGE_SIZE = 12;
+const filterPages = { collection: 0, tag: 0 };
 // Asset IDs are only unique inside one repository, so every identity in the UI
 // is the owning workspace plus the asset ID.
 const selected = new Set();
@@ -73,6 +77,449 @@ let mountedGalleryCount = 0;
 let gallerySignature = "";
 let searchTimer;
 let galleryMoreObserver = null;
+const appearance = { ui_scale: 100, font_scale: 100 };
+let appearanceSaving = false;
+let appearanceDirty = false;
+let fontWheelDelta = 0;
+let fontWheelTime = 0;
+
+function applyAppearance() {
+  const root = document.documentElement;
+  root.style.setProperty("--ui-scale", appearance.ui_scale / 100);
+  root.style.setProperty("--font-scale", appearance.font_scale / 100);
+  for (const [field, id] of [["ui_scale", "ui-scale"], ["font_scale", "font-scale"]]) {
+    $(id).value = appearance[field];
+    $(`${id}-value`).value = `${appearance[field]}%`;
+    $(id).setAttribute("aria-valuetext", `${appearance[field]}%`);
+  }
+  hideCursorHint();
+}
+
+async function loadAppearance() {
+  const saved = await apiRoot("appearance");
+  rootCSRF = saved.csrf;
+  appearance.ui_scale = saved.ui_scale;
+  appearance.font_scale = saved.font_scale;
+  applyAppearance();
+}
+
+async function persistAppearance() {
+  appearanceDirty = true;
+  if (appearanceSaving) return;
+  appearanceSaving = true;
+  clearError("display-error");
+  $("display-save-status").textContent = "正在保存…";
+  try {
+    while (appearanceDirty) {
+      appearanceDirty = false;
+      const snapshot = { ...appearance };
+      const response = await fetch("/api/appearance", {
+        method: "POST",
+        keepalive: true,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Touko-CSRF": await ensureRootCSRF(),
+        },
+        body: JSON.stringify(snapshot),
+      });
+      const data = await response.json();
+      if (!response.ok) throw responseError(data, response.status);
+    }
+    $("display-save-status").textContent = "已保存到本机";
+  } catch (error) {
+    $("display-save-status").textContent = "当前显示已调整，但未能保存";
+    showError("display-error", networkError(error));
+    toast("显示设置未能保存；详情见「设置」。");
+  } finally {
+    appearanceSaving = false;
+  }
+}
+
+function changeAppearance(field, value) {
+  const next = Math.max(75, Math.min(200, Math.round(value / 5) * 5));
+  if (appearance[field] === next) return;
+  appearance[field] = next;
+  applyAppearance();
+  void persistAppearance();
+}
+
+function resetAppearance() {
+  appearance.ui_scale = appearance.font_scale = 100;
+  fontWheelDelta = 0;
+  applyAppearance();
+  void persistAppearance();
+}
+
+function zoomKey(event) {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.isComposing) return false;
+  if (["+", "=", "-"].includes(event.key) || ["NumpadAdd", "NumpadSubtract"].includes(event.code)) {
+    event.preventDefault();
+    const direction = event.key === "-" || event.code === "NumpadSubtract" ? -1 : 1;
+    changeAppearance("ui_scale", appearance.ui_scale + direction * 10);
+    return true;
+  }
+  if (event.key === "0") {
+    event.preventDefault();
+    resetAppearance();
+    return true;
+  }
+  return false;
+}
+
+function zoomFontWheel(event) {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || !event.deltaY || !event.cancelable) return;
+  event.preventDefault();
+  const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1);
+  if (event.timeStamp - fontWheelTime > 200 || Math.sign(delta) !== Math.sign(fontWheelDelta))
+    fontWheelDelta = 0;
+  fontWheelTime = event.timeStamp;
+  fontWheelDelta += delta;
+  const steps = Math.trunc(fontWheelDelta / 50);
+  if (!steps) return;
+  fontWheelDelta -= steps * 50;
+  changeAppearance("font_scale", appearance.font_scale - steps * 5);
+}
+
+// --- Settings: appearance plus per-member Cloudflare configuration -------
+// The settings dialog owns two independent surfaces. Appearance already has
+// its own root endpoint and autosave; Cloudflare is member-scoped, so the
+// dialog always names the exact workspace it reads and writes.
+const settings = {
+  memberID: "",
+  formMemberID: "",
+  loadToken: 0,
+  loading: false,
+  ready: false,
+  saving: false,
+  // Only used to avoid re-posting an unchanged autofilled pair. Kept in memory
+  // for the dialog lifetime; nothing is written to storage or logs.
+  loadedAccessKeyID: "",
+  loadedSecretAccessKey: "",
+};
+const cloudflareFieldIDs = [
+  "cloudflare-enabled",
+  "cloudflare-endpoint",
+  "cloudflare-bucket",
+  "cloudflare-public-base-url",
+  "cloudflare-access-key-id",
+  "cloudflare-secret-access-key",
+];
+const cloudflareSecretFields = [
+  {
+    input: "cloudflare-access-key-id",
+    toggle: "cloudflare-access-key-id-toggle",
+    label: "Access Key ID",
+  },
+  {
+    input: "cloudflare-secret-access-key",
+    toggle: "cloudflare-secret-access-key-toggle",
+    label: "Secret Access Key",
+  },
+];
+function setSecretVisibility(field, visible) {
+  const input = $(field.input);
+  const toggle = $(field.toggle);
+  input.type = visible ? "text" : "password";
+  toggle.setAttribute("aria-pressed", String(visible));
+  toggle.setAttribute("aria-label", `${visible ? "隐藏" : "显示"} ${field.label}`);
+  toggle.textContent = visible ? "隐藏" : "显示";
+}
+function resetSecretVisibility() {
+  for (const field of cloudflareSecretFields) setSecretVisibility(field, false);
+}
+function settingsMembers() {
+  return (view?.members || []).filter(
+    (member) => member.location?.backend === "github",
+  );
+}
+function currentSettingsMember() {
+  return memberByID(settings.memberID) || settingsMembers()[0] || null;
+}
+function clearCloudflareSecrets() {
+  $("cloudflare-access-key-id").value = "";
+  $("cloudflare-secret-access-key").value = "";
+  settings.loadedAccessKeyID = "";
+  settings.loadedSecretAccessKey = "";
+  resetSecretVisibility();
+}
+function cloudflareFormMatches(member) {
+  return !!member && settings.ready && settings.formMemberID === member.id;
+}
+function syncSettingsControls() {
+  const member = currentSettingsMember();
+  const locked =
+    busy || settings.saving || settings.loading || !cloudflareFormMatches(member);
+  for (const id of cloudflareFieldIDs) {
+    const field = $(id);
+    if (field) field.disabled = locked;
+  }
+  for (const field of cloudflareSecretFields) {
+    $(field.toggle).disabled = locked;
+  }
+  const select = $("settings-member");
+  if (select)
+    select.disabled = busy || settings.saving || settingsMembers().length < 2;
+  const save = $("cloudflare-save");
+  if (save) save.disabled = locked;
+}
+function fillSettingsMembers() {
+  const members = settingsMembers();
+  const select = $("settings-member");
+  const previous = settings.memberID;
+  const next = members.some((member) => member.id === previous)
+    ? previous
+    : members[0]?.id || "";
+  select.replaceChildren(
+    ...members.map(
+      (member) =>
+        new Option(
+          `${memberName(member.id)}${member.location.private ? "（私有）" : "（公开）"}`,
+          member.id,
+        ),
+    ),
+  );
+  select.value = next;
+  settings.memberID = next;
+  $("settings-member-field").hidden = !members.length;
+  $("settings-no-repo").hidden = !!members.length;
+  syncSettingsControls();
+}
+function updatePrivateWarning() {
+  const warning = $("cloudflare-private-warning");
+  warning.hidden = !currentSettingsMember()?.location?.private;
+}
+function clearCloudflareForm(message = "尚未读取凭据状态。") {
+  $("cloudflare-enabled").checked = false;
+  $("cloudflare-endpoint").value = "";
+  $("cloudflare-bucket").value = "";
+  $("cloudflare-public-base-url").value = "";
+  clearCloudflareSecrets();
+  $("cloudflare-credentials-status").textContent = message;
+  $("cloudflare-credentials-status").classList.remove("saved");
+  settings.formMemberID = "";
+  settings.ready = false;
+}
+function fillCloudflareForm(config) {
+  const value = config && typeof config === "object" ? config : {};
+  $("cloudflare-enabled").checked = !!value.enabled;
+  $("cloudflare-endpoint").value = value.endpoint || "";
+  $("cloudflare-bucket").value = value.bucket || "";
+  $("cloudflare-public-base-url").value = value.public_base_url || "";
+  clearCloudflareSecrets();
+  $("cloudflare-credentials-status").classList.remove("saved");
+}
+// fillCloudflareCredentials copies the pair returned by the member-scoped
+// credentials endpoint into the password fields. The response is validated
+// strictly so a partial pair is never displayed; values stay in memory only.
+function fillCloudflareCredentials(payload) {
+  const value = payload && typeof payload === "object" ? payload : {};
+  const accessKeyID =
+    typeof value.access_key_id === "string" ? value.access_key_id : "";
+  const secretAccessKey =
+    typeof value.secret_access_key === "string" ? value.secret_access_key : "";
+  const source =
+    value.source === "saved" || value.source === "environment"
+      ? value.source
+      : "none";
+  const status = $("cloudflare-credentials-status");
+  status.classList.remove("saved");
+  const complete = !!accessKeyID && !!secretAccessKey;
+  const empty = !accessKeyID && !secretAccessKey;
+  const valid = source === "none" ? empty : complete;
+  if (!valid) {
+    clearCloudflareSecrets();
+    status.textContent = "无法读取已保存的凭据；两个字段留空将保留现有配置。";
+    return false;
+  }
+  $("cloudflare-access-key-id").value = accessKeyID;
+  $("cloudflare-secret-access-key").value = secretAccessKey;
+  settings.loadedAccessKeyID = accessKeyID;
+  settings.loadedSecretAccessKey = secretAccessKey;
+  if (source === "saved") {
+    status.textContent =
+      "已填入本机保存的凭据（默认隐藏）。两个字段留空保存会保留现有配置。";
+  } else if (source === "environment") {
+    status.textContent =
+      "当前凭据来自环境变量（默认隐藏）。两个字段留空保存不会改动环境变量。";
+  } else {
+    status.textContent =
+      "尚未配置凭据；填写 Access Key ID 与 Secret Access Key 后保存。";
+    return true;
+  }
+  status.classList.add("saved");
+  return true;
+}
+async function loadCloudflareSettings() {
+  const member = currentSettingsMember();
+  const token = ++settings.loadToken;
+  // A new target must never inherit fields from the previous member. Clear the
+  // form synchronously, before the request can race a save click.
+  settings.loading = true;
+  clearCloudflareForm("正在读取本机凭据状态…");
+  clearError("settings-error");
+  updatePrivateWarning();
+  syncSettingsControls();
+  $("cloudflare-settings-status").textContent = "";
+  if (!member) {
+    settings.loading = false;
+    $("cloudflare-credentials-status").textContent =
+      "没有可配置的 GitHub 仓库成员。";
+    syncSettingsControls();
+    return;
+  }
+  $("cloudflare-settings-status").textContent = "正在读取本机配置…";
+  try {
+    const config = await apiMember(member, "cloudflare/config");
+    if (token !== settings.loadToken) return;
+    // The config response is secret-free by contract. The pair is read with a
+    // second, member-scoped POST so both requests share one stale-load token.
+    fillCloudflareForm(config);
+    $("cloudflare-credentials-status").textContent = "正在读取已保存的凭据…";
+    try {
+      const credentials = await apiMember(member, "cloudflare/credentials", {});
+      if (token !== settings.loadToken) return;
+      if (!fillCloudflareCredentials(credentials))
+        showError("settings-error", new Error("本地服务返回了无效的凭据响应。"));
+    } catch (error) {
+      if (token !== settings.loadToken) return;
+      // Never leave values from a previous member or an older load behind.
+      clearCloudflareSecrets();
+      $("cloudflare-credentials-status").textContent = config?.credentials_configured
+        ? "已配置凭据，但无法读取；两个字段留空将保留现有配置。"
+        : "无法读取凭据状态；两个字段留空将保留现有配置。";
+      showError("settings-error", networkError(error));
+    }
+    if (token !== settings.loadToken) return;
+    settings.formMemberID = member.id;
+    settings.ready = true;
+    $("cloudflare-settings-status").textContent = config?.enabled
+      ? "已启用。保存配置不会上传图片；已有图片需要运行「同步 Cloudflare」。"
+      : "当前未启用。保存配置不会上传图片，也不会影响 GitHub 发布。";
+  } catch (error) {
+    if (token !== settings.loadToken) return;
+    clearCloudflareForm("无法读取凭据状态。");
+    $("cloudflare-settings-status").textContent =
+      "读取失败；保存已禁用，请关闭设置后重试。";
+    showError("settings-error", networkError(error));
+  } finally {
+    if (token === settings.loadToken) {
+      settings.loading = false;
+      syncSettingsControls();
+    }
+  }
+}
+function openSettings() {
+  if (!view) {
+    toast("请等待图库读取完成。");
+    return;
+  }
+  const previewMember = currentKey ? memberForAsset(viewForKey(currentKey)) : null;
+  settings.memberID =
+    previewMember?.location?.backend === "github" ? previewMember.id : "";
+  settings.formMemberID = "";
+  settings.ready = false;
+  settings.loading = false;
+  clearCloudflareSecrets();
+  clearError("settings-error");
+  $("cloudflare-settings-status").textContent = "";
+  fillSettingsMembers();
+  closeNavigation();
+  showDialog("settings-dialog", "ui-scale");
+  void loadCloudflareSettings();
+}
+async function saveCloudflareSettings(event) {
+  event.preventDefault();
+  if (busy || settings.saving || settings.loading) return;
+  const member = currentSettingsMember();
+  if (!member) {
+    showError(
+      "settings-error",
+      new Error("当前没有可保存的 GitHub 仓库成员。"),
+    );
+    return;
+  }
+  // Fields are only valid for the member whose GET completed. A member switch
+  // clears readiness synchronously, so an older form can never post to it.
+  if (!cloudflareFormMatches(member)) {
+    showError(
+      "settings-error",
+      new Error("配置尚未读取完成；请等待读取成功后再保存。"),
+    );
+    return;
+  }
+  const enabled = $("cloudflare-enabled").checked;
+  const endpoint = $("cloudflare-endpoint").value.trim();
+  const bucket = $("cloudflare-bucket").value.trim();
+  const publicBaseURL = $("cloudflare-public-base-url").value.trim();
+  if (enabled && (!endpoint || !bucket || !publicBaseURL)) {
+    showError(
+      "settings-error",
+      new Error("启用 Cloudflare 时必须填写 Endpoint、Bucket 与公开访问地址。"),
+    );
+    return;
+  }
+  const accessKeyID = $("cloudflare-access-key-id").value.trim();
+  const secretAccessKey = $("cloudflare-secret-access-key").value.trim();
+  if (!!accessKeyID !== !!secretAccessKey) {
+    showError(
+      "settings-error",
+      new Error(
+        "Access Key ID 与 Secret Access Key 必须同时填写，或同时留空以保留已保存的凭据。",
+      ),
+    );
+    return;
+  }
+  // The fields are filled from the authoritative read. Posting an unchanged
+  // pair would persist environment-provided credentials or rewrite the saved
+  // file for a config-only edit, so send the documented empty pair instead.
+  const unchangedPair =
+    accessKeyID === settings.loadedAccessKeyID &&
+    secretAccessKey === settings.loadedSecretAccessKey;
+  clearError("settings-error");
+  settings.saving = true;
+  syncSettingsControls();
+  $("cloudflare-settings-status").textContent = "正在保存…";
+  try {
+    await apiMember(member, "cloudflare/config", {
+      enabled,
+      endpoint,
+      bucket,
+      public_base_url: publicBaseURL,
+      access_key_id: unchangedPair ? "" : accessKeyID,
+      secret_access_key: unchangedPair ? "" : secretAccessKey,
+    });
+  } catch (error) {
+    // The request settled, so never leave typed or autofilled secrets in the
+    // page, including when the server rejected the configuration.
+    clearCloudflareSecrets();
+    settings.saving = false;
+    syncSettingsControls();
+    $("cloudflare-settings-status").textContent = "";
+    showError("settings-error", networkError(error));
+    return;
+  }
+  clearCloudflareSecrets();
+  // Keep saving=true while state and the saved configuration are re-read so a
+  // second save cannot race the refresh.
+  let refreshError = null;
+  try {
+    await refreshState();
+  } catch (error) {
+    refreshError = error;
+  }
+  fillSettingsMembers();
+  await loadCloudflareSettings();
+  settings.saving = false;
+  syncSettingsControls();
+  $("cloudflare-settings-status").textContent = settings.ready
+    ? "已保存到本机。保存不会上传图片；已有图片请运行「同步 Cloudflare」，新提交会自动尝试镜像。"
+    : "已保存到本机，但重新读取配置失败；请关闭设置后重试。";
+  if (refreshError)
+    showError(
+      "settings-error",
+      new Error(`配置已保存，但刷新图库状态失败：${refreshError.message}`),
+    );
+}
 
 // Metadata is always text, never interpolated HTML. The only SVG references are
 // our own fixed symbols in index.html; uploaded bytes cannot introduce markup.
@@ -370,7 +817,8 @@ function showDialog(id, focus) {
   if (focus) $(focus).focus();
 }
 function hideDialog(dialog) {
-  if (!busy) dialog.close();
+  if (busy || (dialog.id === "settings-dialog" && settings.saving)) return;
+  dialog.close();
 }
 function closeNavigation() {
   hideCursorHint();
@@ -430,6 +878,7 @@ function updateActions() {
   // recomputed here so a pending/failed Cloudflare receipt never leaves copy
   // enabled just because the busy state ended.
   updateDeliveryControls();
+  syncSettingsControls();
 }
 function renderWorkspace() {
   const { assets, changes, members } = view;
@@ -551,11 +1000,32 @@ function counts(field) {
       result.set(name, (result.get(name) || 0) + 1);
   return [...result].sort(([a], [b]) => a.localeCompare(b, "zh-CN"));
 }
-function renderFilters() {
-  const collections = counts("collections");
-  const tags = counts("tags");
-  $("collection-filters").replaceChildren();
-  for (const [name, count] of collections) {
+function ensureFilterPage(kind, entries) {
+  const active = kind === "collection" ? filters.collection : filters.tag;
+  const index = active ? entries.findIndex(([name]) => name === active) : -1;
+  const pages = Math.max(1, Math.ceil(entries.length / FILTER_PAGE_SIZE));
+  const page = index >= 0 ? Math.floor(index / FILTER_PAGE_SIZE) : filterPages[kind];
+  filterPages[kind] = Math.max(0, Math.min(page, pages - 1));
+}
+function filterPageItems(kind, entries) {
+  const pages = Math.max(1, Math.ceil(entries.length / FILTER_PAGE_SIZE));
+  filterPages[kind] = Math.max(0, Math.min(filterPages[kind], pages - 1));
+  const start = filterPages[kind] * FILTER_PAGE_SIZE;
+  return entries.slice(start, start + FILTER_PAGE_SIZE);
+}
+function updateFilterPager(kind, total) {
+  const pages = Math.max(1, Math.ceil(total / FILTER_PAGE_SIZE));
+  const pager = $(`${kind}-pager`);
+  if (!pager) return;
+  pager.hidden = pages <= 1;
+  $(`${kind}-page`).textContent = `第 ${filterPages[kind] + 1} / ${pages} 页`;
+  $(`${kind}-prev`).disabled = filterPages[kind] <= 0;
+  $(`${kind}-next`).disabled = filterPages[kind] >= pages - 1;
+}
+function renderCollectionFilters(collections) {
+  const target = $("collection-filters");
+  target.replaceChildren();
+  for (const [name, count] of filterPageItems("collection", collections)) {
     const item = button(
       "",
       `collection-button${filters.collection === name ? " active" : ""}`,
@@ -575,14 +1045,16 @@ function renderFilters() {
       leader,
       element("span", "count", count),
     );
-    $("collection-filters").append(item);
+    target.append(item);
   }
   if (!collections.length)
-    $("collection-filters").append(
-      element("p", "sidebar-hint", "归档图片后，分类会列在这里。"),
-    );
-  $("tag-filters").replaceChildren();
-  for (const [name, count] of tags) {
+    target.append(element("p", "sidebar-hint", "归档图片后，分类会列在这里。"));
+  updateFilterPager("collection", collections.length);
+}
+function renderTagFilters(tags) {
+  const target = $("tag-filters");
+  target.replaceChildren();
+  for (const [name, count] of filterPageItems("tag", tags)) {
     const item = button(
       name,
       `tag-filter${filters.tag === name ? " active" : ""}`,
@@ -595,12 +1067,23 @@ function renderFilters() {
     );
     item.setAttribute("aria-pressed", String(filters.tag === name));
     item.append(element("span", "", count));
-    $("tag-filters").append(item);
+    target.append(item);
   }
   if (!tags.length)
-    $("tag-filters").append(
-      element("p", "sidebar-hint", "归档图片后，标签会列在这里。"),
-    );
+    target.append(element("p", "sidebar-hint", "归档图片后，标签会列在这里。"));
+  updateFilterPager("tag", tags.length);
+}
+function renderFilters() {
+  const collections = counts("collections");
+  const tags = counts("tags");
+  ensureFilterPage("collection", collections);
+  ensureFilterPage("tag", tags);
+  renderCollectionFilters(collections);
+  renderTagFilters(tags);
+}
+function renderFilterPage(kind) {
+  if (kind === "collection") renderCollectionFilters(counts("collections"));
+  else renderTagFilters(counts("tags"));
 }
 function assetPath(asset) {
   if (asset.path) return asset.path;
@@ -2633,7 +3116,8 @@ function bindEvents() {
     );
   document.querySelectorAll("dialog").forEach((dialog) => {
     dialog.addEventListener("cancel", (event) => {
-      if (busy) event.preventDefault();
+      if (busy || (dialog.id === "settings-dialog" && settings.saving))
+        event.preventDefault();
     });
     dialog.addEventListener("close", () => {
       if (dialog.id === "upload-dialog") {
@@ -2645,6 +3129,14 @@ function bindEvents() {
         invalidateGitHubRequests();
         stopLoginPolling();
         void cancelAuthLogin({ silent: true });
+      }
+      if (dialog.id === "settings-dialog") {
+        settings.loadToken++;
+        settings.loading = false;
+        settings.formMemberID = "";
+        settings.ready = false;
+        clearCloudflareSecrets();
+        clearError("settings-error");
       }
       const origin = focusOrigins.get(dialog);
       if (origin?.isConnected) origin.focus();
@@ -2663,6 +3155,42 @@ function bindEvents() {
   $("open-repo").addEventListener("click", openRepository);
   $("open-upload").addEventListener("click", () => openUpload());
   $("open-import").addEventListener("click", openImport);
+  $("open-settings").addEventListener("click", openSettings);
+  $("reset-display").addEventListener("click", resetAppearance);
+  for (const kind of ["collection", "tag"]) {
+    $(`${kind}-toggle`).addEventListener("click", () => {
+      const toggle = $(`${kind}-toggle`);
+      const panel = $(`${kind}-panel`);
+      const expanded = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", String(!expanded));
+      panel.hidden = expanded;
+    });
+    $(`${kind}-prev`).addEventListener("click", () => {
+      filterPages[kind]--;
+      renderFilterPage(kind);
+    });
+    $(`${kind}-next`).addEventListener("click", () => {
+      filterPages[kind]++;
+      renderFilterPage(kind);
+    });
+  }
+  for (const field of cloudflareSecretFields) {
+    $(field.toggle).addEventListener("click", () => {
+      const input = $(field.input);
+      setSecretVisibility(field, input.type === "password");
+    });
+  }
+  $("settings-member").addEventListener("change", () => {
+    settings.memberID = $("settings-member").value;
+    clearCloudflareSecrets();
+    clearError("settings-error");
+    void loadCloudflareSettings();
+  });
+  $("settings-form").addEventListener("submit", saveCloudflareSettings);
+  for (const [field, id] of [["ui_scale", "ui-scale"], ["font_scale", "font-scale"]]) {
+    $(id).addEventListener("input", () => changeAppearance(field, Number($(id).value)));
+  }
+  document.addEventListener("wheel", zoomFontWheel, { passive: false });
   $("upload-paste").addEventListener("click", () => void pasteUpload());
   $("search").addEventListener("input", () => {
     filters.query = $("search").value;
@@ -2910,6 +3438,7 @@ function bindEvents() {
     void importFiles(candidates);
   });
   document.addEventListener("keydown", (event) => {
+    if (zoomKey(event)) return;
     const pasteRequest =
       (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
     if (pasteRequest && $("upload-dialog").open && !busy && !clipboardBusy) {
@@ -3152,6 +3681,13 @@ function bindEvents() {
   $("repo-branches").addEventListener("change", updateRepositoryControls);
 }
 
+try {
+  await loadAppearance();
+} catch (error) {
+  showError("display-error", error);
+  $("display-save-status").textContent = "未能读取本机显示设置";
+  toast("未能读取显示设置；暂用 100%，详情见「设置」。");
+}
 bindEvents();
 document.querySelector(".brand").href = `${viewPrefix}/`;
 try {
