@@ -201,6 +201,38 @@ jsDelivr 对 GitHub 包有体积上限，超过后整个包返回 403。此时�
 
 预览会根据内容哈希返回 ETag 和 immutable 缓存。再次查看同一张图片时，浏览器可以复用缓存或收到 304，不必重新读取 Git 对象。
 
+### 可选 Cloudflare R2
+
+R2 凭据只从进程环境读取，不复用 GitHub 登录、AWS profile 或 `AWS_*`，也不自动加载 `.env`：
+
+```sh
+export TOUKO_R2_ACCESS_KEY_ID='你的 R2 access key ID'
+export TOUKO_R2_SECRET_ACCESS_KEY='你的 R2 secret access key'
+```
+
+在对应工作区已有的 `config.json` 中保留仓库定位字段，加入可选块；不要把凭据写入文件：
+
+```json
+{
+  "backend": "github",
+  "branch": "main",
+  "owner": "Eurekaimer",
+  "name": "TOUKO-WEBP-01",
+  "private": false,
+  "cloudflare": {
+    "enabled": true,
+    "endpoint": "https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
+    "bucket": "touko-images",
+    "public_base_url": "https://img.eurekaimer.icu"
+  }
+}
+```
+
+未配置、`null` 或 `enabled:false` 不启用 R2。endpoint 只接受无路径的 HTTPS 地址；public base 可带安全路径前缀。region 固定 `auto`，权限仅需该 bucket 的对象读写，不需要建桶、列桶或管理 DNS 的权限。显式为私有 GitHub 启用公开分发意味着主动公开图片字节。
+
+R2 origin 存在不代表自定义域名、DNS 或 CDN 缓存已配置正确；TOUKO 不管理 purge、DNS 或计费。
+
+
 ## 性能基线
 
 以下数据来自本机一次可重复测量：Linux x86_64、20 逻辑 CPU、32 GB 内存、Go 1.27.1、本地 Git 后端，3 次重复取中位数。实际时间会随机器和缓存状态变化。

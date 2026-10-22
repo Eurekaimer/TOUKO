@@ -10,6 +10,11 @@
 /scratch/
 /tmp/
 
+# Local environment files; only the example stays tracked.
+.env
+.env.*
+!.env.example
+
 # Local builds, release bundles and benchmark/profile output.
 /touko
 /touko-desktop

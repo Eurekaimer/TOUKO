@@ -2,7 +2,7 @@
 
 本文按生产源码逐文件解释函数和方法，包含非导出的关键 helper；不把测试辅助函数算作产品 API。适合在阅读 [代码导读](code-guide.md) 后，带着具体符号搜索这里，再回源码逐行理解。实际操作顺序见 [使用教程](usage.md)。格式、状态和发布契约分别见 [repository-format.md](repository-format.md)、[local-state.md](local-state.md)、[publication.md](publication.md)。
 
-本文描述代码职责和失败语义，不是检查执行记录，也不表示已用真实 GitHub token 完成线上验收。CLI 与本地 Webview 共用业务核心；当前没有 R2、缩略图服务或插件系统。delivery 只推导链接，不负责上传到 CDN、探测链接或清除 CDN 缓存。
+本文描述代码职责和失败语义，不是检查执行记录，也不表示已用真实 GitHub token 完成了线上验收。CLI 与本地 Webview 共用业务核心；可选 R2 adapter 不改变 GitHub publication 协议，没有缩略图服务或插件系统。GitHub/jsDelivr delivery 仍为纯链接推导，不负责清除 CDN 缓存。
 
 ## 1. 如何用这份导航
 
@@ -732,3 +732,18 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | --- | --- | --- |
 | `Open` | ctx、target（URL 或本地路径）→ 启动结果。 | `touko serve` 打开页面与桌面托盘的两个“打开”项共用；只负责把目标交给系统默认处理程序，不猜测应用、不等待处理程序加载完。 |
 | `launcher` | target → 平台命令与参数。 | darwin `open`、windows `rundll32 url.dll,FileProtocolHandler`、其余 `xdg-open`。 |
+
+## Cloudflare 可选配置与 R2 adapter
+
+| 符号 | 契约 |
+| --- | --- |
+| `app.(*Service).CloudflareConfig` | 从已有 config 提取可选子对象并严格解码；disabled 不取凭据、不建 client、不写文件，坏配置只由 Cloudflare 路径报告。 |
+| `credential.ResolveR2` | 只读 `TOUKO_R2_ACCESS_KEY_ID` / `TOUKO_R2_SECRET_ACCESS_KEY`；错误仅提变量名，取消可识别。 |
+| `delivery.ValidateCloudflareBaseURL`、`BuildCloudflareURL` | 共用私有 base parser，校验 HTTPS 与安全 prefix/key，逐段编码；不改变原 `BuildURL` 的 public GitHub 限制。 |
+| `r2.Config.Validate`、`NormalizedEndpoint`、`TargetID` | 验证四字段；target 为规范 endpoint 与 bucket 的 JSON 数组 SHA-256，域名和凭据不参加 identity。 |
+| `r2.New`、`NewWithClient`、`FromEnvironment` | 构造 bucket-scoped SDK client；注入 HTTP client 时复制并禁 redirect，无 AWS 默认凭据链。 |
+| `r2.(*Client).HeadObject` | HEAD 不存在时再确认 bucket；403、网络等错误不伪装成缺失。 |
+| `r2.(*Client).PutObject` | 条件单对象 PUT，保留 bytes/MIME/size/ownership metadata，再 HEAD 确认匹配。 |
+| `r2.(*Client).DeleteObject` | 幂等删除已缺失的 key，bucket/权限/网络故障仍报告。 |
+| `r2.(*Error).Error`、`Unwrap`、`ErrorCode` | 对外安全摘要；内部 cause 保留取消/超时识别，不输出 URL、XML、Authorization 或 secret。 |
+

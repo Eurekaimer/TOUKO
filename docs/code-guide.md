@@ -2,7 +2,7 @@
 
 这篇教程面向会编程、但没有参与本轮实现的读者。目标不是记住目录，而是能回答三个问题：**一条命令到底改了什么？中途失败留下什么？修改某个功能时，哪些边界不能破坏？**
 
-当前实现管理 PNG/JPEG/GIF/WebP，提供 CLI 和本地浏览器 Webview：以 Git 保存图片和完整元数据，以 SQLite schema2 保存 committed cache，以独立 `workspace.json` 耐久保存暂存修改及发布日志。后端保留本地 Git 与 GitHub Git Data API 写入，GitHub 常规读取使用本地 clone；没有缩略图服务、R2、插件框架或自动冲突合并。Webview 复用业务核心，并为多个仓库隔离工作区。
+当前实现管理 PNG/JPEG/GIF/WebP，提供 CLI 和本地浏览器 Webview：以 Git 保存图片和完整元数据，以 SQLite schema2 保存 committed cache，以独立 `workspace.json` 耐久保存暂存修改及发布日志。后端保留本地 Git 与 GitHub Git Data API 写入，GitHub 常规读取使用本地 clone；可选 R2 adapter 独立于 Git publication，没有缩略图服务、插件框架或自动冲突合并。Webview 复用业务核心，并为多个仓库隔离工作区。
 
 本文的函数名以源码为准，不依赖容易变化的行号。逐函数查询见 [函数参考](function-reference.md)，日常操作和 GitHub 接入见 [使用教程](usage.md)。本文中的命令是供你执行的练习，**不是已经运行过的验收记录，也没有虚构运行输出**。GitHub HTTP 测试不等于使用真实 token 完成了线上验收。
 
@@ -154,6 +154,8 @@ schema1 打开时先验证并耐久复制旧 changes/base/publication，之后�
 - `github` 处理 header、HTTP status、流式 base64、Git Data API 字段映射和 token 脱敏。recursive tree 返回 `truncated:true` 就失败，不能更新一个不完整缓存。
 - `delivery.BuildURL` 接收 Location、**安全真实仓库相对路径**和 provider，只为 public GitHub 推导 branch URL；不再要求 canonical 哈希目录或后缀。调用方应传 `ObjectPath(asset)`。local/private 返回 `ErrDeliveryUnavailable`。URL 不进 Asset JSON，推导成功不表示 CDN 已传播或 HTTP 可用。
 - `cli` 的 runtime 装配 service/backend，把 flags 变为 options，区分 stdout/stderr，返回退出码。它不应重新实现引用计数或 publication recovery。
+- `r2` 封装 bucket-scoped AWS S3 SDK，固定 region `auto`，禁重定向及 SDK 隐式重试。`Config` 只含 enabled/endpoint/bucket/public_base_url；`app.CloudflareConfig` 仅严格解析旧 config 的可选子对象，不改变 Location、workspace key 或 metadata。
+- `credential.ResolveR2` 只读两个 `TOUKO_R2_*` 变量；客户端与凭据惰性装配，`app.Open` 不创建 R2 client。所有 R2 错误只输出受控 code、操作、安全 key 和 HTTP status，不拼 SDK 原始错误。
 
 ## 4. 顺着命令追踪状态：逐步调用链
 
