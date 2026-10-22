@@ -55,7 +55,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		switch path {
-		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify":
+		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify", "/api/cloudflare/sync":
 		default:
 			s.fail(w, 404, "usage", "unknown API endpoint")
 			return
@@ -187,8 +187,22 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 				// Reset needs a backend only for publication recovery. Merely opening a
 				// local repository would incorrectly make ordinary offline reset fail.
 				err = s.service.Reset(r.Context(), &lazyGit{server: s})
+				if err == nil {
+					// Reset already succeeded. A mirror warning is informational and must
+					// never turn it into a failed response.
+					if st, views, readErr := s.service.ReadView(r.Context()); readErr == nil {
+						if status := s.service.CloudflareStatus(r.Context(), st, views); status != nil {
+							result = struct {
+								OK         bool                  `json:"ok"`
+								Cloudflare *app.CloudflareStatus `json:"cloudflare,omitempty"`
+							}{true, status}
+						}
+					}
+				}
 			}
 		}
+	case path == "/api/cloudflare/sync":
+		result, err = s.cloudflareSync(w, r)
 	default:
 		if err = decodeJSON(w, r, &struct{}{}); err == nil {
 			var git repository.Git
@@ -339,7 +353,13 @@ func (s *Server) state(ctx context.Context) (any, error) {
 		publication = map[string]any{"base_head": st.Publication.BaseHead, "candidate_head": st.Publication.CandidateHead, "candidate_tree": st.Publication.CandidateTree}
 	}
 	available, clonePath := s.CloneStatus(ctx)
-	return map[string]any{"csrf": s.csrf, "location": location, "initialized": st.Manifest != nil, "head": st.Head, "base_head": st.BaseHead, "assets": assets, "changes": changes, "publication": publication, "auth": s.authenticationState(), "local_read": map[string]any{"available": available, "path": clonePath}, "workspace": s.workspaceID}, nil
+	result := map[string]any{"csrf": s.csrf, "location": location, "initialized": st.Manifest != nil, "head": st.Head, "base_head": st.BaseHead, "assets": assets, "changes": changes, "publication": publication, "auth": s.authenticationState(), "local_read": map[string]any{"available": available, "path": clonePath}, "workspace": s.workspaceID}
+	// Derive the optional mirror status from this exact ReadView; disabled or
+	// unconfigured workspaces must not gain a new JSON key.
+	if cloudflare := s.service.CloudflareStatus(ctx, st, assets); cloudflare != nil {
+		result["cloudflare"] = cloudflare
+	}
+	return result, nil
 }
 func (s *Server) selectRepository(w http.ResponseWriter, r *http.Request) (any, error) {
 	var input struct {
@@ -412,8 +432,15 @@ func (s *Server) selectRepository(w http.ResponseWriter, r *http.Request) (any, 
 }
 func (s *Server) assetURL(r *http.Request, selector string) (any, error) {
 	provider := r.URL.Query().Get("provider")
+	if provider == "cloudflare" {
+		url, err := s.service.CloudflareURL(r.Context(), selector)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"url": url, "committed": true}, nil
+	}
 	if provider != "github" && provider != "jsdelivr" {
-		return nil, usage("provider must be github or jsdelivr")
+		return nil, usage("provider must be github, jsdelivr or cloudflare")
 	}
 	location, err := s.location(r.Context())
 	if err != nil {

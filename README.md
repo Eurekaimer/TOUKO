@@ -15,7 +15,7 @@
 
 </div>
 
-TOUKO 是一个以 Git 仓库为数据源的图片库。图片和元数据都存在仓库里，GitHub 是数据源，jsDelivr 只负责可选的公开分发。本地 SQLite 用来加速读取，删掉后可以从仓库重建。
+TOUKO 是一个以 Git 仓库为数据源的图片库。图片和元数据都存在仓库里，GitHub 是数据源，jsDelivr 提供默认公开分发；可选 Cloudflare R2 镜像只在 GitHub 发布成功后同步。本地 SQLite 用来加速读取，删掉后可以从仓库重建。
 
 ## 名字
 
@@ -194,7 +194,7 @@ GitHub 仓库保存图片，jsDelivr 提供可选分发：
 
 ```text
 https://cdn.jsdelivr.net/gh/OWNER/REPO@BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
-https://raw.githubusercontent.com/OWNER/REPO/BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
+https://raw.githubusercontent.com/OWNER/REPO/refs/heads/BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
 ```
 
 jsDelivr 对 GitHub 包有体积上限，超过后整个包返回 403。此时可以改用 raw 直链，内容相同。TOUKO 按容量把图片分配到多个仓库，并记录每个 Asset 实际所在的仓库。
@@ -283,7 +283,7 @@ python3 scripts/plot-benchmark.py \
 
 ## 边界
 
-预览不是缩略图服务，本地和私有仓库不会生成公网链接。`rm` 只从最新树移除文件，Git 历史仍然保留。Linux/Wayland 已验证；Windows 与 macOS 已由发布流程构建并通过 CLI 冒烟测试，但 GUI、托盘和剪贴板路径尚未实机验收。
+预览不是缩略图服务。本地仓库不生成公网链接；私有 GitHub 默认不生成，只有显式开启 Cloudflare 才可通过该 provider 公开分发。`rm` 只从最新树移除文件，Git 历史仍然保留。Linux/Wayland 已验证；Windows 与 macOS 已由发布流程构建并通过 CLI 冒烟测试，但 GUI、托盘和剪贴板路径尚未实机验收。
 
 ## 致谢
 

@@ -176,18 +176,26 @@ func (s *Server) jsonStatus(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func (s *Server) fail(w http.ResponseWriter, status int, code, message string) {
+	s.failExtra(w, status, code, message, nil)
+}
+func (s *Server) failExtra(w http.ResponseWriter, status int, code, message string, extra map[string]any) {
 	owner := s.authOwner()
 	owner.authMu.Lock()
 	token, authToken := owner.token, owner.authToken
 	owner.authMu.Unlock()
-	for _, secret := range []string{token, authToken, os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN")} {
+	secrets := []string{token, authToken, os.Getenv("GITHUB_TOKEN"), os.Getenv("GH_TOKEN"), os.Getenv("TOUKO_R2_ACCESS_KEY_ID"), os.Getenv("TOUKO_R2_SECRET_ACCESS_KEY")}
+	for _, secret := range secrets {
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "[redacted]")
 		}
 	}
+	body := map[string]any{"error": map[string]string{"code": code, "message": message}}
+	for key, value := range extra {
+		body[key] = value
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 type requestError struct {
@@ -205,7 +213,10 @@ func errorDetail(err error) (int, string, string) {
 	var input *requestError
 	var limit *http.MaxBytesError
 	var api *github.APIError
+	var mirror *app.CloudflareSyncError
 	switch {
+	case errors.As(err, &mirror):
+		return 502, "cloudflare_sync_failed", err.Error()
 	case errors.As(err, &input):
 		return input.status, "usage", input.message
 	case errors.As(err, &limit):
@@ -245,6 +256,11 @@ func errorDetail(err error) (int, string, string) {
 }
 func (s *Server) respondError(w http.ResponseWriter, err error) {
 	status, code, message := errorDetail(err)
+	var mirror *app.CloudflareSyncError
+	if errors.As(err, &mirror) {
+		s.failExtra(w, status, code, message, map[string]any{"cloudflare": mirror.Result})
+		return
+	}
 	s.fail(w, status, code, message)
 }
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) error {

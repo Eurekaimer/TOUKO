@@ -267,6 +267,9 @@
                 <button type="button" class="button subtle" id="reindex" data-mutation>
                   重建索引
                 </button>
+                <button type="button" class="button subtle" id="cloudflare-sync-all" data-mutation hidden>
+                  <svg class="icon"><use href="#i-sync" /></svg>同步 Cloudflare
+                </button>
                 <button type="button" class="button subtle" id="open-import">
                   导入旧图库 / PicGo
                 </button>
@@ -555,7 +558,8 @@
               <span class="select-field"
                 ><select id="url-provider">
                   <option value="jsdelivr">jsDelivr（图床推荐）</option>
-                  <option value="github">GitHub Raw（直连）</option></select
+                  <option value="github">GitHub Raw（直连）</option>
+                  <option value="cloudflare" hidden disabled>Cloudflare R2</option></select
                 ></span
               ><button type="button" class="button secondary" id="copy-url">
                 <svg class="icon"><use href="#i-copy" /></svg>复制链接
@@ -564,10 +568,24 @@
                 <svg class="icon"><use href="#i-copy" /></svg>复制 Markdown
               </button>
             </div>
-            <p class="field-help">
+            <p class="field-help" id="delivery-help">
               jsDelivr 有 CDN 缓存与 20 MB 单文件限制，适合公开图床；GitHub Raw
               没有缓存、按原样返回文件，适合临时检查。两种链接都指向同一个已提交对象。
             </p>
+            <p class="field-help" id="cloudflare-help" hidden>
+              Cloudflare 链接指向 R2 镜像；只有状态「已同步」且服务端核对存在的图片可以复制。
+              镜像失败不影响 GitHub 发布，可稍后重试。
+            </p>
+            <p id="cloudflare-status" class="field-help" role="status" hidden></p>
+            <button
+              type="button"
+              class="button subtle small-button"
+              id="cloudflare-sync"
+              data-mutation
+              hidden
+            >
+              <svg class="icon"><use href="#i-sync" /></svg>同步 Cloudflare
+            </button>
             <input
               id="delivery-url"
               readonly

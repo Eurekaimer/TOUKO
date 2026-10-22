@@ -401,19 +401,20 @@ type libraryAsset struct {
 }
 
 type libraryMemberState struct {
-	ID          string               `json:"id"`
-	URL         string               `json:"url"`
-	CSRF        string               `json:"csrf"`
-	Location    *repository.Location `json:"location"`
-	Initialized bool                 `json:"initialized"`
-	Head        string               `json:"head"`
-	BaseHead    string               `json:"base_head"`
-	Assets      []app.AssetView      `json:"assets"`
-	Changes     []domain.Change      `json:"changes"`
-	Publication any                  `json:"publication"`
-	LocalRead   any                  `json:"local_read"`
-	Capacity    *app.Capacity        `json:"capacity"`
-	Error       string               `json:"error,omitempty"`
+	ID          string                `json:"id"`
+	URL         string                `json:"url"`
+	CSRF        string                `json:"csrf"`
+	Location    *repository.Location  `json:"location"`
+	Initialized bool                  `json:"initialized"`
+	Head        string                `json:"head"`
+	BaseHead    string                `json:"base_head"`
+	Assets      []app.AssetView       `json:"assets"`
+	Changes     []domain.Change       `json:"changes"`
+	Publication any                   `json:"publication"`
+	LocalRead   any                   `json:"local_read"`
+	Capacity    *app.Capacity         `json:"capacity"`
+	Cloudflare  *app.CloudflareStatus `json:"cloudflare,omitempty"`
+	Error       string                `json:"error,omitempty"`
 }
 
 // memberState reads one member without inventing a shared head or location. An
@@ -451,6 +452,7 @@ func (m *workspaceSet) memberState(ctx context.Context, id string) (libraryMembe
 	member.Changes, _ = state["changes"].([]domain.Change)
 	member.Publication = state["publication"]
 	member.LocalRead = state["local_read"]
+	member.Cloudflare, _ = state["cloudflare"].(*app.CloudflareStatus)
 	if member.Initialized && member.Publication == nil {
 		if reader, readErr := server.reader(ctx); readErr == nil {
 			if capacity, capacityErr := server.service.PreviewPrepared(ctx, reader, nil, app.DefaultCapacityBytes); capacityErr == nil {

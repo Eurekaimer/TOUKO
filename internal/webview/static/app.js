@@ -157,6 +157,12 @@ function responseError(data, status) {
   // login (401) from a real permission failure (403) instead of matching text.
   error.code = code || "";
   error.status = status;
+  // A partial Cloudflare sync is a 502 envelope that still carries the
+  // structured per-object result; keep it for member summaries without
+  // treating the failure as a successful mirror.
+  if (data?.cloudflare && typeof data.cloudflare === "object") {
+    error.cloudflare = data.cloudflare;
+  }
   return error;
 }
 // A refused connection is not a server error: the window may still be starting,
@@ -319,6 +325,7 @@ function normalize(raw) {
       publication: raw.publication,
       local_read: raw.local_read,
       capacity: null,
+      cloudflare: raw.cloudflare,
       error: null,
     },
   ];
@@ -411,8 +418,18 @@ function updateActions() {
     busy || !(view.changes.length || view.members.some((entry) => entry.publication));
   $("reset-staged").disabled =
     busy || !(view.changes.length || view.members.some((entry) => entry.publication));
-  $("retry-operation").hidden = !operationRetry || busy;
+  $("retry-operation").hidden = busy || !operationRetry?.failed.length;
   $("remove-selected").disabled = busy || !selected.size;
+  const cloudflare = cloudflareEnabledMembers();
+  const cloudflareSync = $("cloudflare-sync-all");
+  if (cloudflareSync) {
+    cloudflareSync.hidden = !cloudflare.length;
+    cloudflareSync.disabled = busy || !cloudflare.length;
+  }
+  // setBusy(false) re-enables every dialog button; eligibility must be
+  // recomputed here so a pending/failed Cloudflare receipt never leaves copy
+  // enabled just because the busy state ended.
+  updateDeliveryControls();
 }
 function renderWorkspace() {
   const { assets, changes, members } = view;
@@ -669,6 +686,12 @@ function hideCursorHint(delay = 0) {
 }
 async function copyCardMarkdown(key, event) {
   if (busy) return;
+  const entry = viewForKey(key);
+  if (!entry) return;
+  // Card copies share the detail provider control. Resolve the owning member
+  // first so a provider left selected on another member can never be used for
+  // a repository that does not offer it.
+  configureProviders(memberForAsset(entry));
   showCursorHint(event, "正在复制 Markdown…", "pending");
   try {
     const delivered = await copyReference(true, key);
@@ -873,6 +896,7 @@ function updateSelectionUI() {
   $("gallery").classList.toggle("has-selection", selected.size > 0);
   $("selection-bar").hidden = selected.size === 0;
   $("selected-count").textContent = `已选 ${selected.size} 张`;
+  $("remove-selected").disabled = busy || !selected.size;
   const checked = views.filter((entry) => selected.has(keyOf(entry))).length;
   $("select-visible").checked = !!views.length && checked === views.length;
   $("select-visible").indeterminate = checked > 0 && checked < views.length;
@@ -1002,17 +1026,20 @@ function openPreview(key) {
       element("dd", "", value),
     );
   }
-  const publicGitHub =
-    member?.location?.backend === "github" && !member.location.private;
-  $("delivery-controls").hidden = !publicGitHub;
-  $("delivery-unavailable").hidden = publicGitHub;
+  const location = member?.location;
+  const publicGitHub = location?.backend === "github" && !location.private;
+  const cloudflare = location?.backend === "github" && !!member.cloudflare?.enabled;
+  // A private GitHub repository still has no GitHub/jsDelivr URL, but an
+  // explicitly enabled Cloudflare mirror is a deliberate public surface.
+  const showDelivery = publicGitHub || (location?.backend === "github" && !!location.private && cloudflare);
+  $("delivery-controls").hidden = !showDelivery;
+  $("delivery-unavailable").hidden = showDelivery;
   $("delivery-url").hidden = true;
   $("delivery-url").value = "";
-  $("delivery-note").textContent =
-    entry.state === "added"
-      ? "还没发布：这个地址要等提交之后才能访问。"
-      : "链接跟随分支；jsDelivr 的缓存传播可能有延迟。";
+  configureProviders(member);
+  $("delivery-note").textContent = deliveryNote(entry, $("url-provider").value);
   clearError("edit-error");
+  updateDeliveryControls();
   showDialog("preview-dialog");
 }
 function pendingGroups() {
@@ -2262,6 +2289,185 @@ function selectedImportMember() {
   const id = $("import-member").value;
   return memberByID(id) || view.members.find((member) => member.initialized) || null;
 }
+// --- Optional Cloudflare mirror -------------------------------------------
+// The server owns every eligibility decision (committed asset, matching
+// receipt, live HEAD). The page only mirrors those states so a pending or
+// failed mirror disables Cloudflare copying instead of silently falling back
+// to another provider.
+const cloudflareCodes = {
+  credentials_missing: "缺少 R2 凭据",
+  configuration_invalid: "配置无效",
+  bucket_unavailable: "存储桶不可用",
+  access_denied: "没有访问权限",
+  not_found: "对象不存在",
+  precondition_failed: "对象写入竞争，请重试",
+  network: "网络错误",
+  timeout: "请求超时",
+  canceled: "操作已取消",
+  object_conflict: "对象归属冲突",
+  mirror_state_invalid: "本地镜像记录损坏",
+  mirror_state_write_failed: "镜像记录写入失败",
+  source_changed: "GitHub 状态已变化，删除已延后",
+  source_unavailable: "无法确认 GitHub 状态",
+  hash_mismatch: "内容校验不一致",
+  deferred_put_failure: "上传未完成，删除已延后",
+  not_published: "尚未提交",
+  not_synced: "尚未同步",
+  local_repository: "本地仓库不支持 Cloudflare",
+};
+function cloudflareReason(code) {
+  return cloudflareCodes[code] || code || "未知原因";
+}
+function cloudflareEnabledMembers() {
+  return (view?.members || []).filter(
+    (member) => member.location?.backend === "github" && member.cloudflare?.enabled,
+  );
+}
+function cloudflareEntryStatus(member, entry) {
+  const status = member?.cloudflare;
+  if (!status?.enabled || !entry) return null;
+  if (!status.configured || status.error_code)
+    return {
+      state: "failed",
+      reason: status.error_code || "configuration_invalid",
+      configured: false,
+    };
+  if (entry.state === "added") return { state: "pending", reason: "not_published" };
+  return status.assets?.[entry.asset.id] || { state: "pending", reason: "not_synced" };
+}
+function cloudflareReady(member, entry) {
+  const status = cloudflareEntryStatus(member, entry);
+  return !!status && status.state === "synced";
+}
+function cloudflareStatusText(member, status) {
+  const cloudflare = member.cloudflare;
+  let text;
+  if (cloudflare.error_code) {
+    const reason = cloudflareReason(cloudflare.error_code);
+    if (cloudflare.error_code === "not_published")
+      text = `Cloudflare：未同步（${reason}）`;
+    else if (cloudflare.error_code === "mirror_state_invalid")
+      text = `Cloudflare：同步失败（${reason}）`;
+    else text = `Cloudflare：配置不可用（${reason}）`;
+  } else if (!cloudflare.configured) {
+    text = "Cloudflare：配置不可用（配置无效）";
+  } else if (status.state === "synced") {
+    text = "Cloudflare：已同步";
+  } else if (status.state === "failed") {
+    text = `Cloudflare：同步失败（${cloudflareReason(status.reason || "not_synced")}）`;
+  } else {
+    text = `Cloudflare：未同步（${cloudflareReason(status.reason || "not_synced")}）`;
+  }
+  if (cloudflare.pending_deletes > 0)
+    text += `；另有 ${cloudflare.pending_deletes} 个待删除对象，请运行同步`;
+  return text;
+}
+function cloudflareResultNote(result) {
+  if (!result || typeof result !== "object") return "";
+  if (result.status === "synced" && !result.failed && !result.pending) return "";
+  if (result.status === "dry_run") return "";
+  return "GitHub 已发布；Cloudflare 镜像未完成，请单独「同步 Cloudflare」";
+}
+function cloudflareResultSummary(result) {
+  if (!result || typeof result !== "object") return "完成";
+  const detail = `上传 ${result.uploaded ?? 0} · 跳过 ${result.skipped ?? 0} · 删除 ${result.deleted ?? 0}`;
+  if (result.status === "synced" && !result.failed && !result.pending)
+    return `Cloudflare 已同步（${detail}）`;
+  if (result.status === "dry_run") return `Cloudflare 预检（${detail}）`;
+  const reason = result.error_code ? cloudflareReason(result.error_code) : "";
+  const label = result.status === "unavailable" ? "不可用" : "未完成";
+  return `Cloudflare ${label}${reason ? `（${reason}）` : ""}；失败 ${result.failed ?? 0}，待处理 ${result.pending ?? 0}`;
+}
+function cloudflareNeedsRepair() {
+  return (view?.members || []).some((member) => {
+    const status = member.cloudflare;
+    if (!status?.enabled) return false;
+    if (!status.configured || status.error_code || status.pending_deletes > 0) return true;
+    return Object.values(status.assets || {}).some((asset) => asset.state !== "synced");
+  });
+}
+function deliveryNote(entry, provider) {
+  if (provider === "cloudflare")
+    return "Cloudflare 链接来自 R2 镜像；只有状态「已同步」且服务端校验通过的图片可以复制。";
+  return entry?.state === "added"
+    ? "还没发布：这个地址要等提交之后才能访问。"
+    : "链接跟随分支；jsDelivr 的缓存传播可能有延迟。";
+}
+// configureProviders keeps jsDelivr first and default for public GitHub, shows
+// Cloudflare only when that member explicitly enabled it, and removes both
+// GitHub providers for a private repository whose only public surface is R2.
+function configureProviders(member) {
+  const select = $("url-provider");
+  if (!select) return;
+  const location = member?.location;
+  const github = location?.backend === "github";
+  const publicGitHub = !!github && !location.private;
+  const cloudflare = !!github && !!member.cloudflare?.enabled;
+  const available = { jsdelivr: publicGitHub, github: publicGitHub, cloudflare };
+  for (const option of select.options) {
+    const usable = !!available[option.value];
+    option.hidden = !usable;
+    option.disabled = !usable;
+  }
+  if (!available[select.value]) {
+    select.value = publicGitHub ? "jsdelivr" : cloudflare ? "cloudflare" : "";
+  }
+}
+function updateDeliveryControls() {
+  const select = $("url-provider");
+  const copyURL = $("copy-url");
+  const copyMarkdown = $("copy-markdown");
+  if (!select || !copyURL || !copyMarkdown) return;
+  const entry = currentKey ? viewForKey(currentKey) : null;
+  const member = entry ? memberForAsset(entry) : null;
+  const statusHost = $("cloudflare-status");
+  const detailSync = $("cloudflare-sync");
+  const cloudflareHelp = $("cloudflare-help");
+  const deliveryHelp = $("delivery-help");
+  if (!member) {
+    copyURL.disabled = busy;
+    copyMarkdown.disabled = busy;
+    if (statusHost) {
+      statusHost.hidden = true;
+      statusHost.textContent = "";
+    }
+    if (detailSync) detailSync.hidden = true;
+    if (cloudflareHelp) cloudflareHelp.hidden = true;
+    return;
+  }
+  configureProviders(member);
+  const publicGitHub = member.location?.backend === "github" && !member.location.private;
+  const status = cloudflareEntryStatus(member, entry);
+  const selectedCloudflare = select.value === "cloudflare";
+  const blocked = selectedCloudflare && !cloudflareReady(member, entry);
+  copyURL.disabled = busy || blocked;
+  copyMarkdown.disabled = busy || blocked;
+  if (deliveryHelp) deliveryHelp.hidden = !publicGitHub;
+  if (cloudflareHelp) cloudflareHelp.hidden = !status;
+  if (statusHost) {
+    statusHost.hidden = !status;
+    statusHost.textContent = status ? cloudflareStatusText(member, status) : "";
+  }
+  if (detailSync) {
+    detailSync.hidden = !status;
+    detailSync.disabled = busy || !status;
+  }
+}
+async function syncCloudflareMembers(members, options = {}) {
+  const targets = (members || []).filter(
+    (member) => member?.location?.backend === "github" && member.cloudflare?.enabled,
+  );
+  if (!targets.length) {
+    toast("没有启用 Cloudflare 的 GitHub 仓库成员。");
+    return null;
+  }
+  return runMemberOperation("cloudflare/sync", {
+    members: targets,
+    run: (member) => apiMember(member, "cloudflare/sync", { dry_run: false }),
+    success: options.success || "Cloudflare 同步完成",
+    describe: (result) => cloudflareResultSummary(result),
+  });
+}
 // deliveryText resolves the delivery URL once and returns the exact text plus
 // whether it is committed, so every copy path shares the same escaping rules.
 async function deliveryText(markdown, key = currentKey) {
@@ -2270,6 +2476,7 @@ async function deliveryText(markdown, key = currentKey) {
   const member = memberForAsset(entry);
   if (!member) throw new Error("找不到图片所属的仓库成员。");
   const provider = $("url-provider").value;
+  if (!provider) throw new Error("当前仓库没有可用的公开链接。");
   const value = await apiMember(member, `assets/${entry.asset.id}/url?provider=${provider}`);
   const alt = (entry.asset.title || entry.asset.original_name)
     .replace(/[\r\n\u2028\u2029]+/g, " ")
@@ -2296,12 +2503,18 @@ async function copyReference(markdown, key = currentKey) {
       delivered = value;
       return value.text;
     });
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        "text/plain": pending.then((text) => new Blob([text], { type: "text/plain" })),
-      }),
+    const content = pending.then((text) => new Blob([text], { type: "text/plain" }));
+    const [reference, clipboard] = await Promise.allSettled([
+      pending,
+      (async () => navigator.clipboard.write([
+        new ClipboardItem({
+          "text/plain": content,
+        }),
+      ]))(),
+      content,
     ]);
-    await pending;
+    if (reference.status === "rejected") throw reference.reason;
+    if (clipboard.status === "rejected") throw clipboard.reason;
     return delivered;
   }
   const delivered = await deliveryText(markdown, key);
@@ -2315,14 +2528,36 @@ async function copyDelivery(markdown) {
     $("delivery-url").hidden = false;
     $("delivery-url").value = delivered.text;
     $("delivery-url").setAttribute("aria-label", markdown ? "图片 Markdown" : "图片公开链接");
-    $("delivery-note").textContent = delivered.committed
-      ? "图片已提交。链接跟随分支，CDN 传播可能有延迟。"
-      : "还没发布：这个地址要等提交之后才能访问。";
+    $("delivery-note").textContent = $("url-provider").value === "cloudflare"
+      ? "链接来自已同步并经过服务端核对的 R2 对象；自定义域 CDN 缓存可能有延迟。"
+      : delivered.committed
+        ? "图片已提交。链接跟随分支，CDN 传播可能有延迟。"
+        : "还没发布：这个地址要等提交之后才能访问。";
     toast(delivered.committed
       ? `已复制${markdown ? " Markdown" : "图片链接"}`
       : "已复制，但图片还没发布，提交后才能访问。");
   } catch (error) {
     // A failed request or a rejected clipboard write must never claim success.
+    // A Cloudflare URL request re-validates the live R2 object; when that HEAD
+    // fails the server downgrades the receipt, so reload the view before
+    // leaving the controls enabled. Never substitute another provider's URL.
+    if ($("url-provider").value === "cloudflare") {
+      $("delivery-url").hidden = true;
+      $("delivery-url").value = "";
+      try {
+        await refreshState();
+      } catch {
+        // Keep the original error; the next refresh will retry the state.
+      }
+      updateDeliveryControls();
+      const entry = viewForKey(currentKey);
+      const member = entry ? memberForAsset(entry) : null;
+      if (!cloudflareReady(member, entry)) {
+        showError("edit-error", error);
+        toast("Cloudflare 链接不可用，未复制；请先同步 Cloudflare。");
+        return;
+      }
+    }
     try {
       const delivered = await deliveryText(markdown);
       $("delivery-url").hidden = false;
@@ -2342,7 +2577,9 @@ async function memberOperation(action, members, options = {}) {
   const failed = [];
   for (const member of members) {
     try {
-      if (member.error) throw new Error(member.error);
+      // Capacity can report a stale local clone after successful publication.
+      // Mirror repair reads the authoritative API and must not require a clone refresh.
+      if (member.error && action !== "cloudflare/sync") throw new Error(member.error);
       if (options.skipUninitialized && !member.initialized)
         throw new Error("尚未初始化");
       const value = await options.run(member);
@@ -2573,6 +2810,37 @@ function bindEvents() {
   });
   $("copy-url").addEventListener("click", () => copyDelivery(false));
   $("copy-markdown").addEventListener("click", () => copyDelivery(true));
+  $("url-provider").addEventListener("change", () => {
+    // A URL generated for the previous provider must not linger as if it
+    // belonged to the newly selected one.
+    $("delivery-url").hidden = true;
+    $("delivery-url").value = "";
+    clearError("edit-error");
+    const entry = currentKey ? viewForKey(currentKey) : null;
+    if (entry) $("delivery-note").textContent = deliveryNote(entry, $("url-provider").value);
+    updateDeliveryControls();
+  });
+  $("cloudflare-sync").addEventListener("click", async () => {
+    const entry = currentKey ? viewForKey(currentKey) : null;
+    const member = entry ? memberForAsset(entry) : null;
+    if (!member || busy) return;
+    const value = await syncCloudflareMembers([member], {
+      success: "Cloudflare 同步完成",
+    });
+    if (value?.failed.length) {
+      const details = value.results
+        .filter((row) => !row.ok)
+        .map((row) => `${memberName(row.workspace)}：${row.error}`)
+        .join("\n");
+      showError("edit-error", new Error(details || "Cloudflare 同步未完成，请重试。"));
+    }
+  });
+  $("cloudflare-sync-all").addEventListener("click", async () => {
+    if (busy) return;
+    await syncCloudflareMembers(cloudflareEnabledMembers(), {
+      success: "Cloudflare 同步完成",
+    });
+  });
   $("upload-webp").addEventListener("change", () => {
     $("upload-webp-quality").disabled = !$("upload-webp").checked;
   });
@@ -2677,12 +2945,20 @@ function bindEvents() {
       members: pending,
       run: (member) => apiMember(member, "commit", { message }),
       success: "有待发布修改的成员已提交",
-      describe: (result) => `HEAD ${String(result.head || "").slice(0, 8)}`,
+      describe: (result) => {
+        const head = `HEAD ${String(result.head || "").slice(0, 8)}`;
+        const note = cloudflareResultNote(result.cloudflare);
+        return note ? `${head} · ${note}` : head;
+      },
     });
     if (!value) return;
     if (!value.failed.length) {
       $("commit-message").value = "";
       $("pending-dialog").close();
+      // A mirror failure never turns publication into a failed member and is
+      // never retried by re-committing; point at the separate sync action.
+      if (value.results.some((row) => row.ok && cloudflareResultNote(row.value?.cloudflare)))
+        toast("GitHub 已发布；Cloudflare 镜像未完成，请用「同步 Cloudflare」重试（不会重复提交）。");
     }
   });
   $("retry-operation").addEventListener("click", async () => {
@@ -2706,7 +2982,9 @@ function bindEvents() {
       run: (member) =>
         action === "commit"
           ? apiMember(member, "commit", { message })
-          : apiMember(member, action, {}),
+          : action === "cloudflare/sync"
+            ? apiMember(member, "cloudflare/sync", { dry_run: false })
+            : apiMember(member, action, {}),
     });
     if (value && !value.failed.length) operationRetry = null;
     renderOperationResults();
@@ -2727,6 +3005,10 @@ function bindEvents() {
         if (value && !value.failed.length) {
           $("confirm-dialog").close();
           $("pending-dialog").close();
+          // Reset already succeeded; the optional mirror may still have
+          // pending deletes or failed objects and needs its own sync.
+          if (cloudflareNeedsRepair())
+            toast("待发布修改已清空；Cloudflare 镜像仍需同步，请用「同步 Cloudflare」。");
         }
       },
     ),

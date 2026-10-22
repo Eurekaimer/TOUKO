@@ -107,6 +107,25 @@ Windows 安装组件后若重检仍未发现 gh，请退出并重新打开 TOUKO
 
 GitHub 写入失败必须显示实际错误并保留 staging，不应该显示“成功”。发生发布结果未知时先同步恢复，不反复点提交制造第二个候选。
 
+### C2. 可选 Cloudflare 分发
+
+按 [R2 配置](../README.md#可选-cloudflare-r2) 修改图片所属工作区的 config，并在启动程序的进程中设置两个 R2 环境变量。网页不接收 endpoint 或凭据。未配置时界面仍默认 jsDelivr，单击卡片复制 Markdown、GitHub Raw 和本地预览不变。
+
+启用后详情显示 Cloudflare 状态与单成员重试；仓库操作区的“同步 Cloudflare”按成员执行，删光图片后也保留入口。pending、失败、配置错误和 staged add 禁止 Cloudflare 复制；同步成功后复制仍会实时 HEAD。失效对象不产生文本，也不悄悄改用另一个 provider。私有 GitHub 只有显式开启 Cloudflare 时才允许这一种公开分发；旧两个 provider 仍被禁用，本地仓库不开放。
+
+浏览器拒绝剪贴板权限时，只在服务器成功验证链接后显示可选中文本，不声称自动写入成功。链接请求与 ClipboardItem 的 promise 都会完成/处理；HEAD 失败不会留下未处理 rejection。按钮会在 busy 结束和选择变化后重新计算可用性。
+
+GitHub 成功、R2 失败时，成员 publication 仍显示成功并附镜像警告，不加入“重试 commit”的失败列表。单独重试 Cloudflare，不重复发布；镜像修复直读权威 API，不要求先刷新本地 clone，也不被旧 clone 的容量提示阻塞。多成员部分失败仅重试失败成员，各成员的配置、receipt 和状态独立。
+
+| API | 契约 |
+| --- | --- |
+| `GET /api/state` | 可选 `cloudflare:{enabled,configured,error_code?,pending_deletes,assets}`；assets 按 UUID 映射 `state/reason?`。disabled 时无此 key；配置/台账错误不让 gallery 失败，不发 R2 网络请求。library 的每个 member 独立携带该字段。 |
+| `GET /api/assets/<uuid>/url?provider=cloudflare` | `{url,committed:true}`；无匹配 receipt 或实时 HEAD 失败返回 HTTP 400 `delivery_unavailable`。旧 provider 的 prospective JSON 不变。 |
+| `POST /api/cloudflare/sync` | JSON `{"dry_run":false}`，沿用 Host/Origin/CSRF 与工作区锁；未知字段拒绝。成功 200；部分失败 502 `cloudflare_sync_failed`，error envelope 附 `cloudflare` 结果；前置未配置 400、冲突/busy 409。 |
+
+统一图库从 `/w/<member>/api/cloudflare/sync` 逐成员调用，没有新增 `/l/<id>/api/cloudflare/...` 聚合写接口。R2 的 403 不会触发 GitHub 登录。reset 成功后仅附本地镜像警告，不把已完成的 reset 改报失败。
+
+
 ### D. 同图去重与删除
 
 1. 同一 namespace 再次上传 logo，提交。两个 UUID 不同，但 canonical object path 相同。

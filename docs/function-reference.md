@@ -752,4 +752,6 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `app.(*Service).CloudflareURL` | committed Asset + 匹配 target/source/object 的 synced receipt + 实时 HEAD 才返回链接；失败失效 receipt，不把 staged add 当已发布。 |
 | `app.(*Service).CloudflareStatus` | 使用调用者同一 ReadView、可选本地台账和凭据就绪检查；不构造 client、不访问网络。 |
 | `app.(*CloudflareSyncError).Error`、`Unwrap` | 可见受控同步摘要与结构化部分结果；隐藏 cause，保留取消/超时识别。 |
+| `webview.(*Server).cloudflareSync` | 严格解码 dry_run，沿用安全路由与 workMu，经 lazyGit 访问权威 backend 并复用 Service reconcile。 |
+| `webview.(*Server).failExtra` | 在原 error envelope 附受控 Cloudflare 部分结果；最终 message 脱敏同时覆盖 GitHub 和两个 R2 环境值。 |
 
