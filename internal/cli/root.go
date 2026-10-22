@@ -68,15 +68,19 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	code, exit := errorCode(err)
 	if r.json || requestsJSON(args) {
-		_ = json.NewEncoder(stderr).Encode(struct {
+		envelope := struct {
 			Error struct {
 				Code    string `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
-		}{Error: struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		}{code, err.Error()}})
+			Cloudflare *app.CloudflareResult `json:"cloudflare,omitempty"`
+		}{}
+		envelope.Error.Code, envelope.Error.Message = code, err.Error()
+		var mirrorError *app.CloudflareSyncError
+		if errors.As(err, &mirrorError) {
+			envelope.Cloudflare = &mirrorError.Result
+		}
+		_ = json.NewEncoder(stderr).Encode(envelope)
 	} else {
 		_, _ = fmt.Fprintln(stderr, "Error:", err)
 	}
@@ -104,6 +108,10 @@ func errorCode(err error) (string, int) {
 	var badUsage *usageError
 	if errors.As(err, &badUsage) {
 		return "usage", 2
+	}
+	var mirrorError *app.CloudflareSyncError
+	if errors.As(err, &mirrorError) {
+		return "cloudflare_sync_failed", 1
 	}
 	for _, entry := range []struct {
 		err  error
@@ -207,6 +215,7 @@ func (r *runtime) command() *cobra.Command {
 	root.PersistentFlags().BoolVar(&r.json, "json", false, "Write JSON output")
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.AddCommand(r.repoCommand(), r.syncCommand(), r.reindexCommand(), r.importCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand(), r.authCommand(), r.urlCommand(), r.serveCommand())
+	root.AddCommand(r.cloudflareCommand())
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Show version and source commit", Args: arguments(cobra.NoArgs), RunE: func(cmd *cobra.Command, args []string) error {
 		if r.json {
 			return r.encode(struct {
@@ -292,7 +301,7 @@ func (r *runtime) resetCommand() *cobra.Command {
 		if err := s.Reset(cmd.Context(), git); err != nil {
 			return err
 		}
-		return r.mutationResult()
+		return r.resetResult(cmd.Context(), s)
 	}}
 	cmd.Flags().BoolVar(&staged, "staged", false, "Discard staged changes without changing the repository")
 	return cmd

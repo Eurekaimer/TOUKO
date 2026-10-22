@@ -248,5 +248,8 @@ func (r *runtime) printSync(result app.SyncResult) error {
 		return r.encode(result)
 	}
 	_, err := fmt.Fprintf(r.stdout, "HEAD %s\nAssets %d\n", result.Head, result.AssetCount)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.printCloudflare(result.Cloudflare)
 }

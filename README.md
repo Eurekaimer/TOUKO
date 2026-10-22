@@ -230,6 +230,16 @@ export TOUKO_R2_SECRET_ACCESS_KEY='你的 R2 secret access key'
 
 未配置、`null` 或 `enabled:false` 不启用 R2。endpoint 只接受无路径的 HTTPS 地址；public base 可带安全路径前缀。region 固定 `auto`，权限仅需该 bucket 的对象读写，不需要建桶、列桶或管理 DNS 的权限。显式为私有 GitHub 启用公开分发意味着主动公开图片字节。
 
+启用后，GitHub 发布确认并耐久记账才镜像本批新增图片；R2 失败不回滚 GitHub。已有图库与失败任务使用：
+
+```sh
+touko cloudflare sync --dry-run
+touko cloudflare sync
+touko url ASSET_ID --provider cloudflare
+```
+
+默认仍是 jsDelivr。Cloudflare 只返回有 receipt 且实时 HEAD 匹配的已提交图片链接；暂存新图不可复制。普通 `sync` 不做 R2 全量 backfill；镜像失败只重试 `cloudflare sync`，不要重复发布 GitHub。
+
 R2 origin 存在不代表自定义域名、DNS 或 CDN 缓存已配置正确；TOUKO 不管理 purge、DNS 或计费。
 
 

@@ -64,11 +64,25 @@ func (r *runtime) urlCommand() *cobra.Command {
 	var provider string
 	cmd := &cobra.Command{Use: "url SELECTOR", Short: "Derive a delivery URL for a public GitHub image", Args: arguments(cobra.ExactArgs(1)), RunE: func(cmd *cobra.Command, args []string) error {
 		p := delivery.Provider(provider)
-		if p != delivery.JSDelivr && p != delivery.GitHub {
-			return usage("--provider must be jsdelivr or github")
+		if p != delivery.JSDelivr && p != delivery.GitHub && p != delivery.Cloudflare {
+			return usage("--provider must be jsdelivr, github or cloudflare")
 		}
 		s, err := r.service(cmd.Context())
 		if err != nil {
+			return err
+		}
+		if p == delivery.Cloudflare {
+			link, err := s.CloudflareURL(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if r.json {
+				return r.encode(struct {
+					URL       string `json:"url"`
+					Committed bool   `json:"committed"`
+				}{link, true})
+			}
+			_, err = fmt.Fprintln(r.stdout, link)
 			return err
 		}
 		location, err := s.Location(cmd.Context())
@@ -98,6 +112,6 @@ func (r *runtime) urlCommand() *cobra.Command {
 		_, err = fmt.Fprintln(r.stdout, link)
 		return err
 	}}
-	cmd.Flags().StringVar(&provider, "provider", "jsdelivr", "Delivery provider: jsdelivr or github")
+	cmd.Flags().StringVar(&provider, "provider", "jsdelivr", "Delivery provider: jsdelivr, github or cloudflare")
 	return cmd
 }

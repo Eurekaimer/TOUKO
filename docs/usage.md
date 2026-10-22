@@ -240,7 +240,7 @@ LEGACY_STATE="$HOME/.local/share/touko-legacy"
 
 **旧 schema1 例外：** 旧版本把 stage/journal 存在 `index.db` 中，必须先用当前版本打开健康旧索引完成自动迁移，才有独立耐久工作区。迁移失败保留旧源；若迁移前旧 DB 已删除/损坏且无备份，远端不能恢复唯一未发布数据，`reindex` 会拒绝猜空。即使迁移后，也不要删除 `workspace.json`、暂存文件或整个 state-dir，不要在服务运行中手动删除 DB/WAL/SHM；备份应保留整个 state。
 
-GitHub 接入与历史公开仓库验收记录见 [专用指南](github.md)。local/private repo 的 URL/Markdown 不可用是正确行为，不输出假公网链接；公开仓库验收不代表私有仓库等尚未实测分支也通过。
+GitHub 接入与历史公开仓库验收记录见 [专用指南](github.md)。GitHub/jsDelivr URL 与 `add --output markdown` 仍拒绝 local/private；显式启用的私有 GitHub 可单独用 Cloudflare，等于主动公开图片字节。
 
 ## 9. JSON 与退出码
 
@@ -260,6 +260,25 @@ stdout 只放命令结果；错误在 stderr。`--json` 错误形状为 `{"error
 | url | `{"url":"...","committed":true/false}` |
 
 AssetView 为 `{"asset":Asset,"state":"committed|added|modified"}`。空数组是 `[]`，不是 null。flags 可放在参数后。
+
+### Cloudflare backfill 与修复
+
+先按 [R2 配置](../README.md#可选-cloudflare-r2) 在对应工作区 config 加块，并在启动 CLI/桌面/WebView 的进程中设置两个 R2 环境变量：
+
+```sh
+touko --state-dir /path/to/workspace cloudflare sync --dry-run
+touko --state-dir /path/to/workspace cloudflare sync
+touko --state-dir /path/to/workspace url "$ID" --provider cloudflare
+```
+
+`cloudflare sync` 读取最新权威 GitHub snapshot，补齐全部已提交的受管 placements，并修复该 target 台账已知的失败上传/删除；不发布暂存、不改 Git ref、clone 或 committed cache。重复执行先 HEAD，匹配就 skip，不重写对象。普通 `sync` 不 backfill R2；有 publication journal 时先普通 `sync` 恢复，dry-run 也不会替你清 journal。
+
+dry-run 仅只读 HEAD，逐项报告 `would_upload/would_delete/exists/failed`，不写台账或远端；计划上传不计入 uploaded。实际结果含 `status,dry_run,uploaded,skipped,deleted,pending,failed,items,error_code?`。部分失败 exit 1、stdout 为空，stderr JSON 为原 error envelope 加 `cloudflare` 结果，code 为 `cloudflare_sync_failed`；配置/链接不可用仍是 `delivery_unavailable`。busy/conflict 的原映射不变。
+
+默认 provider 和 `add --output markdown` 仍是 jsDelivr。Cloudflare 不提供 prospective staged URL：必须 Asset 已 committed、有匹配 receipt，复制时再通过 R2 HEAD；无 receipt 或远端对象丢失时拒绝链接，提示同步修复。GitHub/jsDelivr 继续无网络推导。
+
+GitHub 发布成功、镜像失败时 commit 仍 exit 0；JSON 附 optional `cloudflare`，人类输出保留 `Committed` 行并在 stderr 提示 `GitHub: OK; Cloudflare: mirror failed; run touko cloudflare sync`。不要重新 commit 已发布批次；单独重试镜像。disabled 时成功 JSON 不加字段，也无额外输出。reset 成功后仅附本地可选镜像状态，不把已完成 reset 改报失败。
+
 
 ## 10. 开发时如何验证自己的修改
 

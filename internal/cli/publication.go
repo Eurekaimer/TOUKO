@@ -29,10 +29,16 @@ func (r *runtime) commitCommand() *cobra.Command {
 		}
 		if result.ChangeCount == 0 {
 			_, err = fmt.Fprintln(r.stdout, "nothing staged")
-			return err
+			if err != nil {
+				return err
+			}
+			return r.printCloudflare(result.Cloudflare)
 		}
 		_, err = fmt.Fprintf(r.stdout, "Committed %s (%d changes, %d assets)\n", result.Head, result.ChangeCount, result.AssetCount)
-		return err
+		if err != nil {
+			return err
+		}
+		return r.printCloudflare(result.Cloudflare)
 	}}
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Commit message")
 	return cmd
