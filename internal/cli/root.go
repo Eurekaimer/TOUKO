@@ -15,6 +15,7 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/github"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
+	"github.com/Eurekaimer/TOUKO/internal/r2"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/spf13/cobra"
 )
@@ -143,6 +144,9 @@ func (r *runtime) service(ctx context.Context) (*app.Service, error) {
 	s, err := app.Open(ctx, dir)
 	if err != nil {
 		return nil, err
+	}
+	if s.NewCloudflare == nil {
+		s.NewCloudflare = r2.FromEnvironment
 	}
 	r.opened = s
 	return s, nil

@@ -34,5 +34,7 @@ func (s *Service) SyncWith(ctx context.Context, prepare func(context.Context, bo
 	if err != nil {
 		return result, err
 	}
-	return s.syncLocked(ctx, git)
+	refreshed, err := s.syncLocked(ctx, git)
+	refreshed.Cloudflare = result.Cloudflare
+	return refreshed, err
 }

@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -548,5 +549,42 @@ func TestResetWithoutJournalWorksOffline(t *testing.T) {
 	}
 	if _, err = os.Stat(staging.PayloadPath(s.Dir, asset.Namespace, asset.Object)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("unreferenced staged payload retained", err)
+	}
+}
+
+func TestCloudflareUnavailableStillPublishes(t *testing.T) {
+	ctx, r, s := realRepository(t)
+	config := `{"backend":"github","owner":"owner","name":"gallery","branch":"main","cloudflare":{"enabled":true,"endpoint":"https://acct.r2.cloudflarestorage.com","bucket":"images","public_base_url":"https://img.example.test"}}`
+	if err := os.WriteFile(filepath.Join(s.Dir, "config.json"), []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	asset := stageImage(t, ctx, s)
+	result := mustCommit(t, ctx, s, r)
+	head, err := r.Head(ctx)
+	if err != nil || head != result.Head {
+		t.Fatal(head, result.Head, err)
+	}
+	snapshot, err := repository.ReadSnapshot(ctx, r, head)
+	if err != nil || snapshot.Assets[asset.ID].Object != asset.Object {
+		t.Fatal(snapshot, err)
+	}
+	state, err := s.Store.Load(ctx)
+	if err != nil || len(state.Changes) != 0 || state.Publication != nil {
+		t.Fatal(state, err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Cloudflare *struct {
+			Status string `json:"status"`
+		} `json:"cloudflare"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Cloudflare == nil || body.Cloudflare.Status != "unavailable" {
+		t.Fatalf("published without explicit unavailable mirror result: %s", data)
 	}
 }

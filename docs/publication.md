@@ -31,3 +31,16 @@ Without a journal, GitHub `reset --staged` discards local changes without HTTP r
 `rm` followed by commit removes metadata from the latest HEAD and removes an image only when its final reference to the **entire resolved path** is gone. This includes canonical and imported/custom paths, not merely namespace/hash pairs. Unmanaged files are not garbage-collected. History and CDN caches are **not** purged. No thumbnail subsystem exists.
 
 Local Git uses strict expected-old-SHA `update-ref` CAS. GitHub only supplies non-force fast-forward protection; see the GitHub guide for its external rewrite limitation.
+
+## Optional Cloudflare mirror
+
+GitHub publication remains the success boundary. The only automatic mirror hook runs in `finalizeCandidate`, after candidate/descendant validation, repository-identity checks and successful `Store.Save`, before existing payload cleanup. It uploads only durable Add placements still matching the final snapshot (including explicitly imported images), retries known incomplete work, and reconciles known unreferenced keys. Metadata edits and ordinary clone/cache sync do not backfill the old gallery. Local Git does not auto-mirror.
+
+R2 failure is an optional `cloudflare` result, not a rollback or a second GitHub publication. Original cache/cleanup failures still use their original error paths. Recovery uses the same finalizer; `SyncWith` retains its mirror result through the subsequent clone refresh.
+
+One reconcile engine serves publication and explicit full backfill. Before remote work it durably writes every PUT/delete intent (W1); it processes keys serially, then saves results once (W2). A crash before W2 can replay W1 by HEAD, adopting matching owned objects without retransmission. Source blobs are fixed by Git SHA and streamed through unconverted image ingest into private temporary files.
+
+Creation uses `If-None-Match:*`; replacement of a valid same-repository/source object uses its observed ETag with `If-Match`. Foreign or untagged keys are conflicts, never overwritten. All PUT/adopt work precedes deletion; an unfinished PUT defers every delete. Deletion requires no final Asset reference, a fresh authoritative source HEAD, and confirmed ownership metadata. Deleted tombstones remain known so a late timed-out PUT can be cleaned on a later explicit sync.
+
+No bucket listing or bucket-wide pruning occurs. R2 does not document conditional DELETE: external same-key writes still have a check-to-delete window. This is not a cross-system transaction or a linearizability guarantee. GitHub remains authoritative; reconcile can repair the latest referenced placement.
+

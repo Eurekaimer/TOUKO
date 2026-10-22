@@ -225,7 +225,7 @@ CLI commitCommand → Service.Commit
   → Store.SavePublication(B,C,tree)
   → publishJournal → validateCandidate → 再读 Head → UpdateRef(B,C)
   → finalizeCandidate → 确认 C 已在当前分支祖先链
-  → Store.Save(新快照 + 清 stage/journal) → cleanup
+  → Store.Save(新快照 + 清 stage/journal) → optional Cloudflare mirror → cleanup
 ```
 
 **规划阶段。** `PlanCommit(base, ChangeSet)` 先检查 base HEAD，再复制 Asset map 并应用所有 normalized changes，生成 `FinalAssets`。随后比较 before/after 的完整 placement 引用集合，生成 metadata writes、new/reused objects 和 deletions，稳定排序输出。它没有 IO；相同输入不取决于网络、时钟或随机数。

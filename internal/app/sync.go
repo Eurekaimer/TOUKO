@@ -12,6 +12,7 @@ import (
 type SyncResult struct {
 	Head       domain.RepositoryHead `json:"head"`
 	AssetCount int                   `json:"asset_count"`
+	Cloudflare *CloudflareResult     `json:"cloudflare,omitempty"`
 }
 
 func sameRepository(st index.State, snap repository.Snapshot) error {

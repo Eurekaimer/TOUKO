@@ -20,6 +20,7 @@ type CommitResult struct {
 	Head        domain.RepositoryHead `json:"head"`
 	ChangeCount int                   `json:"change_count"`
 	AssetCount  int                   `json:"asset_count"`
+	Cloudflare  *CloudflareResult     `json:"cloudflare,omitempty"`
 }
 
 func stagedChanges(st index.State) domain.ChangeSet {
@@ -44,11 +45,11 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 	count := len(st.Changes)
 	if st.Publication != nil {
 		result, err := s.recoverPublication(ctx, r, st, true)
-		return CommitResult{Head: result.Head, ChangeCount: count, AssetCount: result.AssetCount}, err
+		return CommitResult{Head: result.Head, ChangeCount: count, AssetCount: result.AssetCount, Cloudflare: result.Cloudflare}, err
 	}
 	if len(st.Changes) == 0 {
 		result, err := s.syncLocked(ctx, r)
-		return CommitResult{Head: result.Head, AssetCount: result.AssetCount}, err
+		return CommitResult{Head: result.Head, AssetCount: result.AssetCount, Cloudflare: result.Cloudflare}, err
 	}
 	if err = mutable(st); err != nil {
 		return CommitResult{}, err
@@ -125,7 +126,7 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 		return CommitResult{}, err
 	}
 	result, err := s.publishJournal(ctx, r, st)
-	return CommitResult{Head: result.Head, ChangeCount: count, AssetCount: result.AssetCount}, err
+	return CommitResult{Head: result.Head, ChangeCount: count, AssetCount: result.AssetCount, Cloudflare: result.Cloudflare}, err
 }
 
 type stagedReader struct {
@@ -278,6 +279,7 @@ func (s *Service) finalizeCandidate(ctx context.Context, r repository.Git, st in
 	if err = s.Store.Save(ctx, next); err != nil {
 		return result, fmt.Errorf("published head %s; local index update failed; run sync: %w", head, err)
 	}
+	result.Cloudflare = s.cloudflarePublication(ctx, r, st, snap)
 	if err = s.cleanup(ctx, next); err != nil {
 		return result, fmt.Errorf("published head %s; local payload cleanup failed: %w", head, err)
 	}

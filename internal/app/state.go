@@ -10,13 +10,15 @@ import (
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/index"
+	"github.com/Eurekaimer/TOUKO/internal/r2"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/gofrs/flock"
 )
 
 type Service struct {
-	Dir   string
-	Store *index.Store
+	Dir           string
+	Store         *index.Store
+	NewCloudflare func(context.Context, r2.Config) (r2.Mirror, error)
 }
 
 func StateDir(explicit string) (string, error) {

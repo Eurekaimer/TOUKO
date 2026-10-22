@@ -22,6 +22,7 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/app"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/github"
+	"github.com/Eurekaimer/TOUKO/internal/r2"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 )
 
@@ -89,6 +90,9 @@ func newServer(service *app.Service, token, origin string) (*Server, error) {
 	var nonce [32]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, err
+	}
+	if service.NewCloudflare == nil {
+		service.NewCloudflare = r2.FromEnvironment
 	}
 	return &Server{service: service, token: token, origin: origin, host: u.Host, csrf: hex.EncodeToString(nonce[:])}, nil
 }

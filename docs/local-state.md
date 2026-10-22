@@ -31,3 +31,12 @@ For GitHub repositories, `<state-dir>/clone` is a shallow selected-branch clone 
 `verify` checks the **current local clone** without fetch; its success does not prove the latest remote branch was checked. Previews prefer local images and do not refresh the clone. Original explicit paths are read from immutable cached-tree Git blobs, not blindly from mutable checkout filenames. Missing local immutable data may require the existing API fallback; do not promise every preview works offline. A missing clone can be recreated by explicit sync; removing it never discards durable stage, but eliminates local read availability until restored.
 
 Web routes `/w/<workspace-key>/` bind separate Server/Service instances. The existing root state remains `default`; additional repositories live under `<state-root>/workspaces/<stable-key>/`, each with its own config/cache/clone/workspace/payloads. Connecting or navigating another workspace does not replace a shared Service pointer or discard the former workspace's unpublished work. CLI selects a single state directory per invocation.
+
+## Optional Cloudflare receipts
+
+`cloudflare/<target-id>.json` is independent of SQLite, `workspace.json` and remote metadata. Target ID is SHA-256 of the JSON array `[normalized HTTPS endpoint,bucket]`; changing public delivery domain or credentials keeps the same receipts, while changing endpoint/bucket selects another ledger and never deletes from the old target.
+
+Ledger version 1 stores repository/source identities and sorted entries (`key,object,etag,state,error_code?`). Only a matching `synced` entry is a receipt. `pending/failed/delete_pending/delete_failed` retain repair work; `deleted` is a lightweight tombstone. Error values are an explicit controlled-code allowlist, never network messages or credentials.
+
+Ledger reads are strict and bounded to 64 MiB; writes use private 0700 directories, 0600 temporary files, file sync/close and the existing platform durable rename. Reindex leaves this optional directory intact. A corrupt ledger stops that target's R2 mutations but does not break GitHub publication, reset or gallery reads; the damaged file is not overwritten. Preserve a backup and restore it, or back up and move that one optional file outside the workspace before rebuilding receipts. Losing it permits current-asset backfill but cannot safely discover unknown historical orphans; TOUKO never scans or prunes a bucket to guess them.
+

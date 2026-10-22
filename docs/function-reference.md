@@ -746,4 +746,10 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `r2.(*Client).PutObject` | 条件单对象 PUT，保留 bytes/MIME/size/ownership metadata，再 HEAD 确认匹配。 |
 | `r2.(*Client).DeleteObject` | 幂等删除已缺失的 key，bucket/权限/网络故障仍报告。 |
 | `r2.(*Error).Error`、`Unwrap`、`ErrorCode` | 对外安全摘要；内部 cause 保留取消/超时识别，不输出 URL、XML、Authorization 或 secret。 |
+| `index.LoadMirror`、`SaveMirror` | 独立 version1 台账，64 MiB 严格读取、target/identity/key/object/state/code 校验，按 key 排序并用现有 durableRename 耐久替换；缺文件无 receipt。 |
+| `app.(*Service).CloudflareSync` | 持 workspace 锁读取权威固定 Git snapshot，全量补镜像及已知删除；dry-run 只读，不发布 stage、不改 cache/ref/clone/journal。 |
+| `app.(*Service).cloudflarePublication` | finalizer 的唯一自动 hook：成功 Save 后只选本批仍在最终集合的 Add placements，并重试已知意图；故障仅返回 optional mirror result。 |
+| `app.(*Service).CloudflareURL` | committed Asset + 匹配 target/source/object 的 synced receipt + 实时 HEAD 才返回链接；失败失效 receipt，不把 staged add 当已发布。 |
+| `app.(*Service).CloudflareStatus` | 使用调用者同一 ReadView、可选本地台账和凭据就绪检查；不构造 client、不访问网络。 |
+| `app.(*CloudflareSyncError).Error`、`Unwrap` | 可见受控同步摘要与结构化部分结果；隐藏 cause，保留取消/超时识别。 |
 
