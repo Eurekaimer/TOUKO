@@ -47,6 +47,7 @@ func TestLegacyImageDeliveryRoutes(t *testing.T) {
 	}{
 		{"img/旧图 无后缀", "img/%E6%97%A7%E5%9B%BE%20%E6%97%A0%E5%90%8E%E7%BC%80"},
 		{"uploads/a #?%.png", "uploads/a%20%23%3F%25.png"},
+		{"images/灯子+(1)%20.webp", "images/%E7%81%AF%E5%AD%90+%281%29%2520.webp"},
 	} {
 		for provider, prefix := range map[Provider]string{
 			GitHub:   "https://raw.githubusercontent.com/owner/gallery/refs/heads/feature%2Fdemo/",

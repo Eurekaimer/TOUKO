@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -225,6 +226,55 @@ func TestGalleryLifecycleAndImmutablePreview(t *testing.T) {
 	f.request("POST", "/api/sync", map[string]any{}, 200)
 	f.request("GET", "/api/assets/"+id+"/image", nil, 404)
 	f.request("POST", "/api/verify", map[string]any{}, 200)
+}
+
+func TestDeliveryDisabledCompatibility(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
+			t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "invalid key")
+			t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "invalid\nsecret")
+			f := newFixture(t)
+			f.setup()
+			if disabled {
+				location, err := f.service.Location(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := json.Marshal(location)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = append(bytes.TrimSuffix(data, []byte("}")), []byte(`,"cloudflare":{"enabled":false}}`)...)
+				if err = os.WriteFile(filepath.Join(f.service.Dir, "config.json"), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			id, image := f.add()
+			f.request("GET", "/api/assets/"+id+"/url", nil, 400)
+			f.request("GET", "/api/assets/"+id+"/url?provider=jsdelivr", nil, 400)
+			commit := f.request("POST", "/api/commit", map[string]string{"message": "compatibility"}, 200)
+			state := f.request("GET", "/api/state", nil, 200)
+			for _, response := range []*httptest.ResponseRecorder{commit, state} {
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
+					t.Fatal(err)
+				}
+				if _, exists := fields["cloudflare"]; exists {
+					t.Fatal("disabled mirror changed old JSON", response.Body.String())
+				}
+			}
+			if got := f.request("GET", "/api/assets/"+id+"/image", nil, 200); !bytes.Equal(got.Body.Bytes(), image) {
+				t.Fatal("committed preview changed")
+			}
+			f.request("POST", "/api/sync", map[string]any{}, 200)
+			f.request("POST", "/api/remove", map[string]any{"selectors": []string{id}}, 200)
+			f.request("POST", "/api/commit", map[string]string{"message": "remove"}, 200)
+			f.request("GET", "/api/assets/"+id+"/image", nil, 404)
+			if _, err := os.Stat(filepath.Join(f.service.Dir, "cloudflare")); !os.IsNotExist(err) {
+				t.Fatalf("disabled mirror created ledger: %v", err)
+			}
+		})
+	}
 }
 
 func TestPreviewRevalidatesWithoutReadingBytes(t *testing.T) {

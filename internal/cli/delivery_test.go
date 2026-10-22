@@ -75,6 +75,14 @@ func TestMarkdownAndProspectiveURL(t *testing.T) {
 	if e = json.Unmarshal([]byte(out), &got); e != nil || exit != 0 || got.Committed || !strings.HasPrefix(got.URL, "https://raw.githubusercontent.com/example/gallery/refs/heads/feature%2Fdemo/") || stderr != "" {
 		t.Fatal(exit, out, stderr, e)
 	}
+	exit, out, stderr = deliveryRun(t, dir, nil, "url", views[0].Asset.ID.String(), "--json")
+	var fields map[string]json.RawMessage
+	if e = json.Unmarshal([]byte(out), &fields); e != nil || exit != 0 || stderr != "" || len(fields) != 2 {
+		t.Fatal(exit, out, stderr, e)
+	}
+	if e = json.Unmarshal(fields["url"], &got.URL); e != nil || !strings.HasPrefix(got.URL, "https://cdn.jsdelivr.net/gh/example/gallery@feature%2Fdemo/") || string(fields["committed"]) != "false" {
+		t.Fatal(out, e)
+	}
 }
 func TestMarkdownPreflightPreservesStage(t *testing.T) {
 	dir := deliveryState(t, true)
