@@ -738,14 +738,19 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | 符号 | 契约 |
 | --- | --- |
 | `app.(*Service).CloudflareConfig` | 从已有 config 提取可选子对象并严格解码；disabled 不取凭据、不建 client、不写文件，坏配置只由 Cloudflare 路径报告。 |
-| `credential.ResolveR2` | 只读 `TOUKO_R2_ACCESS_KEY_ID` / `TOUKO_R2_SECRET_ACCESS_KEY`；错误仅提变量名，取消可识别。 |
+| `app.(*Service).CloudflareSettings` | 返回 disabled 也保留的 target 字段与 workspace 凭据就绪；不验证远端、不返回凭据、不发网络。 |
+| `app.(*Service).CloudflareCredentials` | 设置掩码回填使用：先 `credential.LoadR2` 读当前工作区保存的 pair，仅在没有文件时使用完整有效的环境 pair；两者绝不混用，未配置返回空值与 `source:"none"`，不访问网络。 |
+| `app.(*Service).UpdateCloudflareSettings` | 校验 input，持 workspace 锁先存私有凭据再原子替换 config.json 的 cloudflare 块；其他顶层字段按 raw JSON 保留，两块凭据都空则保留已存 pair，只填一个拒绝；保存不触发 sync/upload。 |
+| `credential.ResolveR2`、`EnvironmentR2`、`LoadR2`、`SaveR2`、`ValidateR2Pair` | `ResolveR2` 中完整环境 pair 整体覆盖工作区私有 `cloudflare/credentials.json`（目录 0700、文件 0600、原子替换）；只设一个变量报错而不混用，错误不提值，取消可识别。`EnvironmentR2` 只读进程环境并报告完整 pair 是否可用，供设置回填判断来源。 |
 | `delivery.ValidateCloudflareBaseURL`、`BuildCloudflareURL` | 共用私有 base parser，校验 HTTPS 与安全 prefix/key，逐段编码；不改变原 `BuildURL` 的 public GitHub 限制。 |
 | `r2.Config.Validate`、`NormalizedEndpoint`、`TargetID` | 验证四字段；target 为规范 endpoint 与 bucket 的 JSON 数组 SHA-256，域名和凭据不参加 identity。 |
-| `r2.New`、`NewWithClient`、`FromEnvironment` | 构造 bucket-scoped SDK client；注入 HTTP client 时复制并禁 redirect，无 AWS 默认凭据链。 |
+| `r2.New`、`NewWithClient`、`app.NewCloudflareMirror` | 用调用方已解析的 workspace 凭据构造 bucket-scoped SDK client；注入 HTTP client 时复制并禁 redirect，无 AWS 默认凭据链，adapter 不自行读环境。 |
+| `r2.ValidateEndpoint`、`ValidateBucket` | 独立校验 endpoint/bucket 形状，供 `Config.Validate` 与设置保存共用，结果仍是 controlled configuration error。 |
 | `r2.(*Client).HeadObject` | HEAD 不存在时再确认 bucket；403、网络等错误不伪装成缺失。 |
 | `r2.(*Client).PutObject` | 条件单对象 PUT，保留 bytes/MIME/size/ownership metadata，再 HEAD 确认匹配。 |
 | `r2.(*Client).DeleteObject` | 幂等删除已缺失的 key，bucket/权限/网络故障仍报告。 |
 | `r2.(*Error).Error`、`Unwrap`、`ErrorCode` | 对外安全摘要；内部 cause 保留取消/超时识别，不输出 URL、XML、Authorization 或 secret。 |
+| `atomicfile.Write` | 同目录临时文件写入、chmod、sync/close 后 rename，供设置 config 与 R2 凭据的原子替换共用。 |
 | `index.LoadMirror`、`SaveMirror` | 独立 version1 台账，64 MiB 严格读取、target/identity/key/object/state/code 校验，按 key 排序并用现有 durableRename 耐久替换；缺文件无 receipt。 |
 | `app.(*Service).CloudflareSync` | 持 workspace 锁读取权威固定 Git snapshot，全量补镜像及已知删除；dry-run 只读，不发布 stage、不改 cache/ref/clone/journal。 |
 | `app.(*Service).cloudflarePublication` | finalizer 的唯一自动 hook：成功 Save 后只选本批仍在最终集合的 Add placements，并重试已知意图；故障仅返回 optional mirror result。 |
@@ -753,5 +758,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `app.(*Service).CloudflareStatus` | 使用调用者同一 ReadView、可选本地台账和凭据就绪检查；不构造 client、不访问网络。 |
 | `app.(*CloudflareSyncError).Error`、`Unwrap` | 可见受控同步摘要与结构化部分结果；隐藏 cause，保留取消/超时识别。 |
 | `webview.(*Server).cloudflareSync` | 严格解码 dry_run，沿用安全路由与 workMu，经 lazyGit 访问权威 backend 并复用 Service reconcile。 |
-| `webview.(*Server).failExtra` | 在原 error envelope 附受控 Cloudflare 部分结果；最终 message 脱敏同时覆盖 GitHub 和两个 R2 环境值。 |
+| `webview.(*Server).cloudflareConfig` | GET/POST 当前成员 `/api/cloudflare/config`；沿用 Host/Origin/CSRF 与 workMu，GET 永不返回凭据，POST 只返回同一 readiness view；invalid settings 为 400 `configuration_invalid`。 |
+| `webview.(*Server).cloudflareCredentials` | 仅 POST 当前成员 `/api/cloudflare/credentials`，严格空对象 body；返回 `{access_key_id,secret_access_key,source}` 供设置掩码回填，沿用 Host/Origin/CSRF、`no-store` 与 workMu；GET 为 405，损坏的保存文件只返回受控错误。 |
+| `webview.(*Server).failExtra` | 在原 error envelope 附受控 Cloudflare 部分结果；最终 message 脱敏覆盖 GitHub 凭据、R2 环境值和当前工作区已保存的 R2 pair。 |
 

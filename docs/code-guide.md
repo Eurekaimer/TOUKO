@@ -155,7 +155,7 @@ schema1 打开时先验证并耐久复制旧 changes/base/publication，之后�
 - `delivery.BuildURL` 接收 Location、**安全真实仓库相对路径**和 provider，只为 public GitHub 推导 branch URL；不再要求 canonical 哈希目录或后缀。调用方应传 `ObjectPath(asset)`。local/private 返回 `ErrDeliveryUnavailable`。URL 不进 Asset JSON，推导成功不表示 CDN 已传播或 HTTP 可用。
 - `cli` 的 runtime 装配 service/backend，把 flags 变为 options，区分 stdout/stderr，返回退出码。它不应重新实现引用计数或 publication recovery。
 - `r2` 封装 bucket-scoped AWS S3 SDK，固定 region `auto`，禁重定向及 SDK 隐式重试。`Config` 只含 enabled/endpoint/bucket/public_base_url；`app.CloudflareConfig` 仅严格解析旧 config 的可选子对象，不改变 Location、workspace key 或 metadata。
-- `credential.ResolveR2` 只读两个 `TOUKO_R2_*` 变量；客户端与凭据惰性装配，`app.Open` 不创建 R2 client。所有 R2 错误只输出受控 code、操作、安全 key 和 HTTP status，不拼 SDK 原始错误。
+- `credential.ResolveR2(ctx, dir)` 优先读取完整的两个 `TOUKO_R2_*` 变量；未设置时读取对应工作区的私有 `cloudflare/credentials.json`，不混用两种来源。GUI 设置可保存该密钥对；`GET /api/cloudflare/config` 只报告是否就绪，设置界面的掩码回填使用仅 POST、严格空 body、沿用 Host/Origin/CSRF 与 `no-store` 的 `/api/cloudflare/credentials`，它优先 `LoadR2` 的工作区 pair，仅在无保存文件时使用完整环境 pair，未配置返回 `source:none`。客户端与凭据惰性装配，`app.Open` 不创建 R2 client。所有 R2 错误只输出受控 code、操作、安全 key 和 HTTP status，不拼 SDK 原始错误。
 
 ## 4. 顺着命令追踪状态：逐步调用链
 
@@ -511,7 +511,7 @@ JSON `publication` 存在不一定表示远程失败，也可能是远程已成�
 这是一份由 Go binary 内嵌的本地网页，不是独立云服务，也不依赖 Node 打包。启动与真实仓库操作见 [Webview 教程](webview.md)。
 
 1. **进程边界**：`serveCommand → webview.Listen` 只绑定 `127.0.0.1`，以实际端口构造 Origin，默认打开浏览器（`--no-open` 禁用）；打开失败报 stderr 而服务继续。`Host.Close` 停止服务、等待 handler，再关闭额外 workspace 的 Service；根 Service 由调用方最后关闭，避免发布收尾与 SQLite Close 竞争。
-2. **HTTP 边界**：先读 `Server.ServeHTTP` 的 Host、Origin、Fetch Metadata 和 CSRF 检查，再读 `api`。每仓库 Server 有独立 Service 与 CSRF；`workspaceSet.serve` 将 `/w/<id>/` 请求绑定其自身实例，不修改共享 service 指针。静态白名单不能下载 state-dir；没有 token 输入/输出接口。
+2. **HTTP 边界**：先读 `Server.ServeHTTP` 的 Host、Origin、Fetch Metadata 和 CSRF 检查，再读 `api`。每仓库 Server 有独立 Service 与 CSRF；`workspaceSet.serve` 将 `/w/<id>/` 请求绑定其自身实例，不修改共享 service 指针。静态白名单不能下载 state-dir。GitHub token 不通过网页输入/输出；R2 设置允许提交密钥，但读取和保存响应均不回显密钥。
 3. **一致视图与认证**：`GET /api/state → ReadView → Store.Load` 组合 cache 与 durable stage；返回 `local_read` 说明 clone 可用性。`workMu` 串行本服务状态操作，文件锁阻止 CLI 并发修改。所有workspace共享root身份缓存和登录会话；`GET /api/auth` 刷新 Resolve 与 login，`/api/repos` 分页列仓库，`/api/branches?repository=OWNER/REPO` 列真实分支。`GET /api/auth/login` 只读状态，登录POST验证root CSRF；后台gh授权不占workMu，Host退出时取消并join。未登录/401可在用户主动连接时自动授权一次，403或限流不能反复弹窗。普通gallery/本地图像不调用GitHub列表API，连接仍只用真实下拉结果构造Location。
 4. **前端状态**：`workspace` 是服务器快照，filters 增加真实目录，selected 是 UUID，uploadFiles 是待传 File/ObjectURL。刷新仍恢复 stage，因为它在 `workspace.json`，不在 SQLite/localStorage。`workspacePrefix/apiURL` 使 API、上传、原图请求跟随 `/w/<id>/`；连接返回 url 后直接导航，不刷新旧 workspace。旧工作区修改保留。仓库/分支下拉各有递增 sequence：切换仓库先清空旧分支，晚到的旧响应被丢弃，避免把仓库 A 的分支提交给仓库 B。
 5. **上传与导入**：上传 XHR 传 directory/metadata/files，服务端私有临时目录流式 spool 后只调用一次 Add。`openImport → POST /api/import → ImportLegacy` 在固定已初始化快照扫描原图片，返回 imported/skipped，不搬图；必须显式 commit 才写 Git metadata。输入/校验失败不部分 stage，不自动重试或发布。

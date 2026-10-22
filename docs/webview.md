@@ -95,6 +95,15 @@ Windows 安装组件后若重检仍未发现 gh，请退出并重新打开 TOUKO
 3. 用左侧分类、标签、搜索和“全部路径目录”缩小范围；搜索也匹配真实仓库路径，目录筛选包含子目录，详情显示实际路径。清除筛选后完整图库应恢复。标签/分类可设置多个，分类为平级关系，不创建独立空相册实体。
 4. 刷新浏览器，staging 修改应仍在，不能只保存在浏览器内存。
 5. 多次编辑同一个新增 Asset 仍是一条 add，不应变成多个重复记录。
+6. 标签/分类列表可折叠，收起后不占用侧栏高度；筛选状态在折叠前后保持。
+7. 分类、标签分别按每页 12 条分页，翻页不改变当前筛选或图片选择。列表独立滚动，滚动条与文字之间预留间距，仓库信息与设置入口固定在侧栏底部。
+
+### B2. 设置、外观与 Cloudflare
+
+1. 左下角标准齿轮按钮打开设置；原有界面/字体缩放控件移入“显示与外观”分区。缩放仍保存在本机外观配置，不影响仓库内容。
+2. “Cloudflare R2”分区显示当前成员工作区的 endpoint、bucket、public base、启用开关与凭据就绪状态；已保存凭据只通过同源、CSRF 保护的 `POST /api/cloudflare/credentials` 回填到掩码输入框，默认不显示明文，只有显式“显示”操作才展示。
+3. 保存 settings 只落盘本机配置，不触发同步；关闭开关再打开时 endpoint/bucket/public base 不应丢失。
+4. 私有 GitHub 工作区在该分区显示公开分发警告：启用 Cloudflare 等于主动公开图片字节。
 
 ### C. 发布与真实远端检查
 
@@ -109,7 +118,7 @@ GitHub 写入失败必须显示实际错误并保留 staging，不应该显示�
 
 ### C2. 可选 Cloudflare 分发
 
-按 [R2 配置](../README.md#可选-cloudflare-r2) 修改图片所属工作区的 config，并在启动程序的进程中设置两个 R2 环境变量。网页不接收 endpoint 或凭据。未配置时界面仍默认 jsDelivr，单击卡片复制 Markdown、GitHub Raw 和本地预览不变。
+左下角齿轮打开设置，其中 Cloudflare 分区按**当前成员工作区**读写 endpoint、bucket、public base 与 R2 密钥对，也可用于暂时关闭镜像。保存只写该工作区的 `config.json` 的 cloudflare 块和 `cloudflare/credentials.json`（明文、目录 0700、文件 0600，不是系统钥匙串或加密存储），不触发同步、上传或 GitHub 操作；关闭 `enabled` 不需要先有凭据、也不会因旧 target 值无效而失败；重新打开时已保存的字段仍在，启用时才校验三项 target。两个凭据输入框都留空表示保留已保存的密钥对；只填一个会被拒绝。进程环境中的完整 `TOUKO_R2_ACCESS_KEY_ID`/`TOUKO_R2_SECRET_ACCESS_KEY` 密钥对会整体覆盖文件值作为同步/上传的有效凭据。`GET /api/cloudflare/config` 仍只返回 `credentials_configured` 表示凭据就绪，绝不返回密钥；设置界面的掩码回填单独使用 POST-only 的 `POST /api/cloudflare/credentials`（body 恰为 `{}`，沿用精确 Host/Origin/CSRF、no-store 与工作区锁），返回 `{access_key_id,secret_access_key,source}`，`source` 为 `saved`、`environment` 或 `none`。它优先返回当前工作区已保存的 pair，只有该工作区没有保存文件时才使用完整有效的环境 pair，绝不混用；未配置时返回空值。具体配置也可按 [R2 配置](../README.md#可选-cloudflare-r2) 手写在 config。未配置时界面仍默认 jsDelivr，单击卡片复制 Markdown、GitHub Raw 和本地预览不变。
 
 启用后详情显示 Cloudflare 状态与单成员重试；仓库操作区的“同步 Cloudflare”按成员执行，删光图片后也保留入口。pending、失败、配置错误和 staged add 禁止 Cloudflare 复制；同步成功后复制仍会实时 HEAD。失效对象不产生文本，也不悄悄改用另一个 provider。私有 GitHub 只有显式开启 Cloudflare 时才允许这一种公开分发；旧两个 provider 仍被禁用，本地仓库不开放。
 
@@ -121,6 +130,9 @@ GitHub 成功、R2 失败时，成员 publication 仍显示成功并附镜像警
 | --- | --- |
 | `GET /api/state` | 可选 `cloudflare:{enabled,configured,error_code?,pending_deletes,assets}`；assets 按 UUID 映射 `state/reason?`。disabled 时无此 key；配置/台账错误不让 gallery 失败，不发 R2 网络请求。library 的每个 member 独立携带该字段。 |
 | `GET /api/assets/<uuid>/url?provider=cloudflare` | `{url,committed:true}`；无匹配 receipt 或实时 HEAD 失败返回 HTTP 400 `delivery_unavailable`。旧 provider 的 prospective JSON 不变。 |
+| `GET /api/cloudflare/config` | `{enabled,endpoint,bucket,public_base_url,credentials_configured}`，仅当前成员的 workspace 配置；永不返回凭据。disabled 仍返回已保存的 target 字段，凭据缺失不影响读取。 |
+| `POST /api/cloudflare/config` | body 恰为 `{enabled,endpoint,bucket,public_base_url,access_key_id,secret_access_key}`，未知字段拒绝；返回同 GET view。两块凭据都留空保留已保存 pair，只填一个返回 400 `configuration_invalid`；`enabled:true` 要求三个 target 字段有效。保存不触发同步/上传，沿用 Host/Origin/CSRF 与工作区锁；响应永不回显凭据。 |
+| `POST /api/cloudflare/credentials` | 仅用于设置界面掩码回填，body 必须恰为 `{}`，未知字段、`null`、数组或额外 JSON 都返回 400；GET 返回 405。返回当前成员工作区的 `{access_key_id,secret_access_key,source}`，`source` 为 `saved`、`environment` 或 `none`。已保存 pair 优先；仅在没有保存文件时使用完整有效的环境 pair，绝不混用，未配置返回空值和 `none`。沿用 Host/Origin/CSRF、`no-store` 与工作区锁；凭据文件损坏时返回受控错误，不回显文件内容。 |
 | `POST /api/cloudflare/sync` | JSON `{"dry_run":false}`，沿用 Host/Origin/CSRF 与工作区锁；未知字段拒绝。成功 200；部分失败 502 `cloudflare_sync_failed`，error envelope 附 `cloudflare` 结果；前置未配置 400、冲突/busy 409。 |
 
 统一图库从 `/w/<member>/api/cloudflare/sync` 逐成员调用，没有新增 `/l/<id>/api/cloudflare/...` 聚合写接口。R2 的 403 不会触发 GitHub 登录。reset 成功后仅附本地镜像警告，不把已完成的 reset 改报失败。

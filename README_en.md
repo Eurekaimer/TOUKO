@@ -1,273 +1,133 @@
 <div align="center">
 
-<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2FEurekaimer%2FTOUKO-WEBP-01%40main%2Fobjects%2Fdefault%2Fsha256%2Ffa%2F93%2Ffa93a8ca741cfa57253de4eed814435452ee5fce2863932f0112f7e94455041a.webp&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
+<img src="https://socialify.dev/Eurekaimer/TOUKO/image?custom_language=Go&font=Raleway&forks=1&language=1&logo=https%3A%2F%2Fimg.eurekaimer.icu%2Fobjects%2Fdefault%2Fsha256%2Ffa%2F93%2Ffa93a8ca741cfa57253de4eed814435452ee5fce2863932f0112f7e94455041a.webp&name=1&owner=1&pattern=Circuit+Board&pulls=1&stargazers=1&theme=Light" alt="TOUKO" width="640" />
 
 # TOUKO
 
-Keep your pictures in your own Git repository.
-
-Content-addressed · Git-style staging · Local-first reads · Multi-repository libraries
+Keep your pictures in a Git repository you own.
 
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-9c5238)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-1b2a3d)](#install)
-[![Docs](https://img.shields.io/badge/docs-8%20guides-7f3f59)](docs/webview.md)
 
-[English](README_en.md) · [简体中文](README.md)
+[简体中文](README.md) · [English](README_en.md)
 
 </div>
 
----
+TOUKO is an image library backed by a Git repository. Image bytes and metadata live in the repository, GitHub hosts it, and jsDelivr serves the default public URLs. An optional Cloudflare R2 mirror can serve the same bytes from your own domain. The local SQLite database is a read cache; delete it and the library rebuilds from the repository.
 
-TOUKO is an image library that uses a Git repository as its database. Instead of handing your pictures to a hosting service, it writes every image and every piece of metadata into a repository you own. GitHub is the single source of truth, and jsDelivr is only an optional delivery layer.
+Uploads go to a staging area first. `commit` writes one Git commit. File names come from content hashes, so identical bytes are stored once. Each asset records its title, tags, collections, MIME type, size and SHA-256, which keeps old images findable and verifiable.
 
-## The name
+## Features
 
-TOUKO is named after Nanami Touko from Bloom Into You (やがて君になる).
-
-> 好きって、なんだろう。
-> 好きって、なに？
->
-> Nanami Touko
-
-She spends the whole story asking what "liking" something means, and who she is. A picture raises similar questions: who owns it, where it lives, who can fetch it, and what deletion means. TOUKO records those answers in Git. Every change has history, and every file is named after its content.
-
-## Why not another PicGo
-
-PicGo and PicList solve "upload, then copy the link". TOUKO solves "in a year, can I still find this picture and know it is the exact bytes I uploaded".
-
-| | Conventional uploaders | TOUKO |
-| --- | --- | --- |
-| State | Remote folder + local config | The Git repository itself, fully reconstructible |
-| Deduplication | Usually none | Content addressing; identical bytes share one object |
-| Publishing | Upload per file | Stage first, publish as one commit, keep the scene on failure |
-| New machine | Reconfigure | `repo use` + `sync` restores everything |
-| Deletion | Delete a file | Defined deletion, history still auditable |
-| Scale | One repository | One logical library across repositories, spread by capacity |
-
-## How it works
-
-- The repository is the database. Assets, objects, titles, tags, collections, MIME types, dimensions and content hashes live remotely; local SQLite is only a rebuildable cache.
-- A file is named by the SHA-256 of its bytes. Identical pictures deduplicate naturally, and a link cannot point at an overwritten image.
-- Uploads, edits and removals enter a staging area. Only `commit` writes a Git commit, so a failure never leaves half a gallery behind.
-- Once a local shallow clone exists, previews do not contact the remote. Creating the first clone still needs a network connection; `sync` explicitly refreshes it.
-- Several repositories can appear as one browsing and upload surface. Each repository keeps its own staging, commits and recovery, and uploads are assigned by remaining capacity.
-- `rm` removes a picture from the latest tree and verifies the result. Git history remains; truly erasing it requires rewriting history, which TOUKO does not offer.
-
-## Formats and space
-
-TOUKO accepts PNG, JPEG, GIF and WebP. PNG/JPEG uploads can opt into WebP conversion, but the original is replaced only when the encoded bytes are smaller. GIF and existing WebP inputs keep their original bytes, so animation and already-compressed data are never silently degraded.
-
-Conversion happens before staging. The object hash, size, extension and repository metadata therefore describe the bytes that were actually stored. Each image is limited to 100 MB; conversion is limited to 50 megapixels.
-
-Migrating the 194 images actually referenced by the blog and notes to a new gallery at quality 85 produced:
-
-| Item | Result |
-| --- | ---: |
-| Original files | 78.24 MiB |
-| Stored objects | 16.87 MiB |
-| Saved | 61.37 MiB (78.4%) |
-| Converted to WebP | 171 |
-| Kept in the original format | 23 |
-
-This is one migration of an existing corpus, not a fixed promise for every gallery. The 23 unchanged images stayed in their original format because WebP encoding made them larger; conversion replaces bytes only when the result is smaller. Smaller objects also reduce CDN transfer and browser cache usage.
-
-## Interface
-
-<div align="center">
-  <img src="docs/images/webview-gallery.png" alt="TOUKO gallery interface" width="820" />
-</div>
-
-Cream paper and deep navy, LXGW WenKai for Chinese and Monaspace Radon for Latin text. A single click on a card copies its Markdown and reports the result beside the pointer. Drag and drop, clipboard paste, filtering by collection, tag, directory or content hash, and per-repository source filtering are supported.
-
-The gallery mounts 60 cards first and appends more as the sentinel approaches the viewport. Offscreen cards skip layout and paint. Filtering, scrolling and selecting remain responsive with 1000 images; see [Performance baseline](#performance-baseline).
+- Content-addressed images and metadata, published as one atomic commit
+- Separate staging, commit and sync steps; `rm` only removes from the latest tree, Git history stays
+- Multi-repository galleries, each with its own staging and publication flow
+- Web and desktop interface: drag or paste uploads, search, filters by tag, collection and directory, Markdown copy
+- Optional Cloudflare R2 mirror, written only after GitHub confirms the publication
+- Settings panel for interface and font scaling, Cloudflare configuration and locally stored R2 keys
+- Collapsible tags and collections, 12 entries per page
 
 ## Install
 
-### Platforms and runtime dependencies
+Builds cover Linux (amd64/arm64), Windows amd64 and macOS (amd64/arm64). Download `v0.2.0` from [Releases](https://github.com/Eurekaimer/TOUKO/releases), verify the `.sha256`, then unpack.
 
-| Target | v0.1.1 status |
-| --- | --- |
-| Linux amd64 | Desktop verified on Wayland + GTK3 + WebKitGTK 4.1; the release pipeline builds CLI and desktop |
-| Linux arm64 | Release pipeline builds CLI and desktop; no GUI acceptance run yet |
-| Windows amd64 | Release pipeline builds CLI and desktop; no GUI acceptance run yet |
-| macOS amd64 | Release pipeline builds CLI and `.app`; no GUI acceptance run yet |
-| macOS arm64 | Release pipeline builds CLI and `.app`; no GUI acceptance run yet |
-
-The Linux verification covers one Wayland session, not every distribution, desktop environment or architecture. Windows and macOS artifacts are built on native runners and pass CLI smoke tests, but this round has not exercised their graphical sessions; the window, tray and clipboard behaviour still need real-machine confirmation.
-
-Both executables require Git with SHA-1 repository and `show-ref --exists` support (Git 2.46+ recommended). The desktop uses the system WebView: GTK3 and WebKitGTK 4.1 on Linux, with Ayatana AppIndicator and a tray host for the tray; WebView2 Runtime on Windows; WKWebView on macOS. Install [GitHub CLI (gh)](https://cli.github.com/) once for graphical GitHub login; no gh commands are needed afterwards. Advanced users can instead provide `GITHUB_TOKEN` / `GH_TOKEN`.
-
-The release matrix is linux/{amd64,arm64}, windows/amd64 and darwin/{amd64,arm64}. Every target uses the common root name `touko_0.1.1_${GOOS}_${GOARCH}`: a `.zip` on Windows and a `.tar.gz` elsewhere, each with a same-name `.sha256`. All archives contain README, `docs/` and LICENSE. The CLI is `bin/touko` (`bin\touko.exe` on Windows); the desktop is `bin/touko-desktop[.exe]` on Linux and Windows; macOS ships a real `TOUKO.app` with Info.plist and an `.icns` icon whose entry point is `TOUKO.app/Contents/MacOS/touko-desktop`, with no second desktop copy. Linux archives also keep the desktop entry and hicolor icons.
-
-### Release installation
-
-Download the public `v0.1.1` prerelease from [GitHub Releases](https://github.com/Eurekaimer/TOUKO/releases); repository maintainer access is not required. All five targets build and run CLI smoke checks on native runners. This prerelease invites real-machine testing, especially of the Windows/macOS window, clipboard and tray; those GUI behaviours are not claimed as fully verified.
-
-Download an archive and its `.sha256`, verify both, then extract. Linux:
+Linux:
 
 ```sh
-sha256sum -c touko_0.1.1_linux_amd64.sha256
-tar -xzf touko_0.1.1_linux_amd64.tar.gz
-sudo install -m755 touko_0.1.1_linux_amd64/bin/touko touko_0.1.1_linux_amd64/bin/touko-desktop /usr/local/bin/
-sudo cp -R touko_0.1.1_linux_amd64/share/. /usr/local/share/
+sha256sum -c touko_0.2.0_linux_amd64.sha256
+tar -xzf touko_0.2.0_linux_amd64.tar.gz
+sudo install -m755 touko_0.2.0_linux_amd64/bin/touko touko_0.2.0_linux_amd64/bin/touko-desktop /usr/local/bin/
+sudo cp -R touko_0.2.0_linux_amd64/share/. /usr/local/share/
 touko version
-touko-desktop --version
 ```
 
-For Linux arm64, replace `amd64` in the filenames with `arm64`. Prebuilt artifacts do not require Go. The extracted `bin/touko-desktop` also runs in place; desktop entries and icons only appear in system menus after installation into XDG paths. A missing system WebView makes the desktop fail explicitly; the CLI remains independently usable.
+On Windows, unpack the `.zip` and run `bin\touko-desktop.exe`; it needs the WebView2 Runtime. On macOS, copy `TOUKO.app` to Applications; if Gatekeeper blocks the first launch, open it from the context menu.
 
-Windows (PowerShell):
+The Linux desktop needs GTK3, WebKitGTK 4.1 and a tray host. Browser-based GitHub login needs [GitHub CLI](https://cli.github.com/) installed once. Both programs need Git 2.46 or newer.
 
-```powershell
-Expand-Archive .\touko_0.1.1_windows_amd64.zip -DestinationPath .
-cd .\touko_0.1.1_windows_amd64
-Get-FileHash ..\touko_0.1.1_windows_amd64.zip -Algorithm SHA256
-Get-Content ..\touko_0.1.1_windows_amd64.sha256
-.\bin\touko.exe version --json
-```
-
-The hex digest from `Get-FileHash` must match the value in the `.sha256` file. To open the desktop, double-click `bin\touko-desktop.exe` under the package root. With a working tray, closing the window hides it; use the tray menu to quit. Without a tray, closing the window exits. The Windows desktop needs the WebView2 Runtime.
-
-Select GitHub in the connection dialog. When logged out, TOUKO starts browser authorization once, displays a one-time code and refreshes identity and repositories after GitHub CLI authorization completes. The browser-login button can also start a new login. If gh is missing, the Install login component button opens its official installation page; install it once and check again without learning command-line syntax. An existing gh session is reused.
-
-On Windows, if gh is installed but still reported missing, quit and reopen TOUKO so it inherits the PATH updated by the installer.
-
-Login cannot grant repository write access the account does not have; read-only access, organization restrictions and branch protection need repository-administrator action. Explicit environment tokens take precedence over gh: fix their permissions or remove them and restart rather than expecting browser login to override them. Only the one-time device code reaches the page, never an access token. TOUKO keeps credentials out of workspace files; gh manages its own credential storage.
-
-For a first test, use an independent state directory and a newly created local gallery repository; do not operate on your everyday repository:
-
-```powershell
-$state = Join-Path $env:TEMP "touko-test-state"
-$repo = Join-Path $env:TEMP "touko-test.git"
-.\bin\touko.exe --state-dir $state repo init --local $repo
-.\bin\touko.exe --state-dir $state add .\some-photo.png
-.\bin\touko.exe --state-dir $state commit -m "test: add a photo"
-.\bin\touko.exe --state-dir $state verify
-```
-
-macOS:
-
-```sh
-shasum -a 256 -c touko_0.1.1_darwin_arm64.sha256   # use darwin_amd64 on Intel
-tar -xzf touko_0.1.1_darwin_arm64.tar.gz
-cd touko_0.1.1_darwin_arm64
-./bin/touko version --json
-cp -R TOUKO.app /Applications/
-open /Applications/TOUKO.app
-```
-
-Gatekeeper may block the first launch because the `.app` is not signed with a Developer ID and is not notarized. Right-click it in Finder and choose Open, or allow it under System Settings → Privacy & Security after confirming the source. Do not disable Gatekeeper or other system security controls globally.
-
-### Package size and runtime memory
-
-Archives contain neither Chromium nor Node: MyGo reuses the system WebView, HTML/CSS/JS and fonts are embedded with `go:embed`, and the Go backend serves the page over loopback HTTP while bridging the clipboard. A small package therefore does not mean a small runtime: the binary still embeds roughly 12 MiB of fonts plus SQLite and image-processing code, and the desktop adds the system WebView process tree. Measure the actual download instead of trusting a fixed number: `ls -lh touko_0.1.1_*` on Unix, or `Get-Item .\touko_0.1.1_windows_amd64.zip | Select-Object Length` on Windows.
-
-### Build from source
-
-Use the Go version specified by `go.mod` (currently 1.27.1) and the runtime dependencies above:
+Build from source:
 
 ```sh
 git clone https://github.com/Eurekaimer/TOUKO.git
 cd TOUKO
 go build -trimpath -o touko ./cmd/touko
 go build -trimpath -o touko-desktop ./cmd/touko-desktop
-./touko version --json
-```
-
-Release builds use `CGO_ENABLED=0` and `-trimpath -s -w`, and inject `buildinfo.Version` / `buildinfo.Commit`; the Windows desktop adds `-H=windowsgui` to avoid a console window. Ordinary development builds report `dev / unknown`, not a release version. See [versioning and releases](docs/usage.md#11-版本与发布) for metadata injection and publication, and the [benchmark guide](docs/benchmark.md) for reproducible measurements.
-
-Arch users can build the local package from their current checkout (not a published AUR package); it installs both programs, the desktop entry and icons:
-
-```sh
-cd packaging && makepkg -si
 ```
 
 ## Quick start
 
 ```sh
-# Connect an existing repository, or run repo init first
-./touko --state-dir ~/.local/share/touko repo use Eurekaimer/TOUKO-WEBP-01
-./touko --state-dir ~/.local/share/touko sync
-
-# Add a picture, organise its metadata, publish
-./touko --state-dir ~/.local/share/touko add photo.png --tag travel --collection demo
-./touko --state-dir ~/.local/share/touko commit -m "images: add a photo"
-
-# Find it again by title, filename, tag, collection or content hash
-./touko --state-dir ~/.local/share/touko find travel
-./touko --state-dir ~/.local/share/touko find 4aff401b
+touko repo use Eurekaimer/TOUKO-WEBP-01
+touko sync
+touko add photo.png --tag travel --collection demo
+touko commit -m "images: add a photo"
+touko find travel
+touko url <UUID> --provider jsdelivr
 ```
 
-Other commands: `status`, `ls`, `find`, `show`, `edit`, `rm`, `verify`, `reindex`, `import`. All of them accept `--json`.
+`touko --help` lists the commands: `add`, `edit`, `rm`, `ls`, `find`, `show`, `status`, `commit`, `sync`, `verify`, `reindex`, `import`, `repo`, `auth`, `serve`, `url`, `cloudflare`, `reset`, `version`. All accept `--json`.
 
-## Web interface
+## Interface
 
 ```sh
-./touko --state-dir ~/.local/share/touko serve --port 7788
+touko serve --port 7788        # browser; add --no-open to skip opening it
+touko-desktop                  # native window
 ```
 
-The browser opens by default; `--no-open` starts the server alone. `touko-desktop` opens the same interface in a native window without an address bar, still rendered by the system WebView. MyGo bundles neither Chromium nor Node: interface assets are compiled into the Go binary with `go:embed`, and the server serves them over loopback HTTP while bridging the clipboard.
+The server listens on `127.0.0.1` and checks Host, Origin and CSRF. GitHub credentials stay inside the server process.
 
-The server listens on loopback only and validates Host, Origin and CSRF. GitHub credentials stay inside the server process and never reach the page.
+The gear button opens settings:
 
-## Galleries and CDN
+- Display: interface and font scaling
+- Cloudflare R2: enable switch, endpoint, bucket, public base URL and keys
+- Keys are stored in the workspace state directory at `cloudflare/credentials.json` (directory 0700, file 0600). The form fills them back masked; press Show to read them
 
-The GitHub repository is the source; jsDelivr is an optional delivery layer:
+Saving settings does not upload or sync anything. Turning the mirror off keeps the saved addresses.
 
+## Optional Cloudflare R2
+
+jsDelivr remains the default provider. R2 is an optional mirror configured in settings or directly in the workspace `config.json`:
+
+```json
+"cloudflare": {
+  "enabled": true,
+  "endpoint": "https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
+  "bucket": "touko-imgs",
+  "public_base_url": "https://img.eurekaimer.icu"
+}
 ```
-https://cdn.jsdelivr.net/gh/OWNER/REPO@BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
-https://raw.githubusercontent.com/OWNER/REPO/BRANCH/objects/<ns>/sha256/<aa>/<bb>/<hash>.<ext>
-```
 
-jsDelivr enforces a size limit on GitHub packages and answers 403 for the whole package once it is exceeded. Fall back to the raw URL, which serves the same bytes; TOUKO spreads pictures across repositories by capacity and records which repository actually holds each asset.
-
-Previews return an ETag derived from the content hash and an immutable cache policy. Reopening the same image reuses the cached bytes or receives a 304 without reading the Git object again.
-
-## Performance baseline
-
-The following numbers come from one reproducible local run: Linux x86_64, 20 logical CPUs, 32 GB RAM, Go 1.27.1, local Git backend, median of three repetitions. Absolute times depend on the machine and cache state; they are not fixed promises.
-
-![CLI and HTTP baseline at 0, 100 and 1000 images](docs/images/benchmark-cli.svg)
-
-Read paths remain in the millisecond range at 1000 images. `reindex` and `commit` walk or rewrite repository metadata, so they are visibly slower. The vertical axis is logarithmic, otherwise startup would be flattened by commit time.
-
-![Desktop RSS for an empty gallery and four phases at 1000 images](docs/images/benchmark-memory.svg)
-
-RSS is the resident set of the Linux process tree, taken from the highest of five snapshots. Shared pages appear in more than one process, so the tree total is not additional physical memory. An empty gallery starts around 717 MiB; a 1000-image gallery reaches about 918 MiB after browsing. The WebKit renderer is the main consumer, and it comes from the system WebView rather than the Go business process.
-
-Reproduce it with:
+`endpoint` is an HTTPS origin without a path; the region is fixed to `auto`. `public_base_url` is never inferred. Credentials come from the settings panel or two environment variables, not from `.env`, AWS profiles or gh:
 
 ```sh
-ROOT=$(mktemp -d /tmp/touko-bench.XXXXXXXX)
-python3 scripts/benchmark.py --root "$ROOT"
-python3 scripts/plot-benchmark.py \
-  --benchmark "$ROOT/benchmark.json" \
-  --rss "0=$ROOT/profiles/0.jsonl" \
-  --rss "1000=$ROOT/profiles/1000.jsonl" \
-  --out-dir docs/images
+export TOUKO_R2_ACCESS_KEY_ID=...
+export TOUKO_R2_SECRET_ACCESS_KEY=...
 ```
+
+New images upload after GitHub confirms the publication. Existing galleries and failed jobs use:
+
+```sh
+touko cloudflare sync --dry-run
+touko cloudflare sync
+touko url <UUID> --provider cloudflare
+```
+
+A Cloudflare URL is returned only for a synced receipt that still matches a live HEAD request. Staged images cannot be copied. Domain binding, DNS and cache settings belong to Cloudflare.
 
 ## Documentation
 
-| Guide | Contents |
-| --- | --- |
-| [Webview](docs/webview.md) | Startup, security boundary, live GitHub acceptance |
-| [CLI](docs/usage.md) | From the demo to multiple devices, recovery and JSON |
-| [Architecture](docs/code-guide.md) | Module boundaries, call chains and trade-offs |
-| [Function reference](docs/function-reference.md) | Inputs, outputs and reasons for every production function |
-| [Repository format](docs/repository-format.md) | Remote layout and versioning |
-| [Local state](docs/local-state.md) | SQLite cache, durable staging and rebuilds |
-| [Publication](docs/publication.md) | Commit, recovery and deletion semantics |
-| [Benchmark](docs/benchmark.md) | Reproducible CLI/HTTP baseline and desktop RSS method |
+[CLI](docs/usage.md) · [Webview](docs/webview.md) · [Architecture](docs/code-guide.md) · [Function reference](docs/function-reference.md) · [Repository format](docs/repository-format.md) · [Local state](docs/local-state.md) · [Publication](docs/publication.md) · [Benchmark](docs/benchmark.md)
 
 ## Boundaries
 
-Previews are not a thumbnail service, and local or private repositories produce no public links. `rm` removes a picture from the latest tree while Git history keeps it; truly erasing it requires rewriting history, which TOUKO does not offer. Linux/Wayland is verified; Windows and macOS are built by the release pipeline and pass CLI smoke tests, but their GUI, tray and clipboard paths have not been accepted on real machines.
+One image can be up to 100 MB. WebP conversion only replaces the original when the result is smaller; GIF and WebP inputs keep their bytes. Previews are not a thumbnail service. Local repositories and private GitHub repositories do not produce public URLs unless Cloudflare is enabled explicitly. `rm` does not rewrite Git history.
+
+The Linux/Wayland interface has been checked by hand. Windows and macOS builds pass CLI smoke tests; their GUI, tray and clipboard paths are still unverified on real desktops.
 
 ## Credits
 
-Typefaces Monaspace Radon, LXGW WenKai, Quicksand and Playfair Display (all SIL OFL). The native window is provided by [MyGo](https://github.com/egoist/mygo). Visual review followed Anthropic's `frontend-design` guidance.
+The name comes from Touko Nanami in *Yagate Kimi ni Naru*. Monaspace Radon, LXGW WenKai, Quicksand and Playfair Display are licensed under SIL OFL. The native window comes from [MyGo](https://github.com/egoist/mygo).
 
 ## License
 
