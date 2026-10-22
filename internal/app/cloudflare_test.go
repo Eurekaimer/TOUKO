@@ -1381,3 +1381,20 @@ func TestCloudflareNonPublicAndFactoryBoundaries(t *testing.T) {
 		t.Fatalf("missing factory URL = %v", err)
 	}
 }
+
+func TestCloudflareEmptySyncRequiresCredentials(t *testing.T) {
+	ctx, remote, service := realRepository(t)
+	writeTestCloudflareConfig(t, service.Dir, testCloudflareConfig(), false)
+	service.NewCloudflare = r2.FromEnvironment
+	t.Setenv("TOUKO_R2_ACCESS_KEY_ID", "")
+	t.Setenv("TOUKO_R2_SECRET_ACCESS_KEY", "")
+	for _, dryRun := range []bool{false, true} {
+		result, err := service.CloudflareSync(ctx, remote, CloudflareOptions{DryRun: dryRun})
+		if !errors.Is(err, domain.ErrDeliveryUnavailable) || result.Status != "unavailable" || result.ErrorCode != "credentials_missing" {
+			t.Fatalf("empty mirror claimed readiness without credentials: %+v, %v", result, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(service.Dir, "cloudflare")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("unavailable empty sync wrote a ledger", err)
+	}
+}

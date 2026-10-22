@@ -217,7 +217,7 @@ func (s *Service) CloudflareSync(ctx context.Context, r repository.Git, opts Clo
 		return cloudflareUnavailable(cloudflareCodeConfigurationInvalid, nil), cloudflareDeliveryError(cloudflareCodeConfigurationInvalid)
 	}
 	if len(uploads) == 0 && len(deletes) == 0 {
-		return cloudflareEmptyResult(opts.DryRun), nil
+		return cloudflareEmptyResult(ctx, opts.DryRun)
 	}
 	mirror, err := s.cloudflareMirror(ctx, cfg)
 	if err != nil {
@@ -289,7 +289,7 @@ func (s *Service) cloudflarePublication(ctx context.Context, r repository.Git, s
 		return &result
 	}
 	if len(uploads) == 0 && len(deletes) == 0 {
-		result := cloudflareEmptyResult(false)
+		result, _ := cloudflareEmptyResult(ctx, false)
 		return &result
 	}
 	mirror, err := s.cloudflareMirror(ctx, cfg)
@@ -320,8 +320,14 @@ func cloudflareResultShell(dryRun bool) CloudflareResult {
 	return CloudflareResult{Status: status, DryRun: dryRun, Items: []CloudflareItem{}}
 }
 
-func cloudflareEmptyResult(dryRun bool) CloudflareResult {
-	return cloudflareResultShell(dryRun)
+func cloudflareEmptyResult(ctx context.Context, dryRun bool) (CloudflareResult, error) {
+	if _, _, err := credential.ResolveR2(ctx); err != nil {
+		if ctx.Err() != nil {
+			return cloudflareUnavailable(cloudflareAdapterCode(err), nil), err
+		}
+		return cloudflareUnavailable(cloudflareCodeCredentialsMissing, nil), cloudflareDeliveryError(cloudflareCodeCredentialsMissing)
+	}
+	return cloudflareResultShell(dryRun), nil
 }
 
 func cloudflareUnavailable(code string, cause error) CloudflareResult {

@@ -239,6 +239,7 @@ touko url ASSET_ID --provider cloudflare
 ```
 
 默认仍是 jsDelivr。Cloudflare 只返回有 receipt 且实时 HEAD 匹配的已提交图片链接；暂存新图不可复制。普通 `sync` 不做 R2 全量 backfill；镜像失败只重试 `cloudflare sync`，不要重复发布 GitHub。
+显式同步即使当前图库为空，也要求 R2 凭据就绪；不会把“没有对象要上传”误报成已配置成功。
 
 R2 origin 存在不代表自定义域名、DNS 或 CDN 缓存已配置正确；TOUKO 不管理 purge、DNS 或计费。
 
