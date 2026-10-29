@@ -279,23 +279,71 @@ specified source checkouts; normal TOUKO builds and CLI output are unchanged.
 Each cell uses a separate branch, state directory and R2 namespace. Both builds
 receive the same ordered corpus and WebP setting. The run stops a cell on its
 first failed add or commit instead of mixing staged images into later samples.
+An R2-on cell is successful only when the commit reports a Cloudflare result
+with status `synced` and zero failed/pending items; TOUKO treats mirror errors
+as non-fatal to the commit, so exit code alone is not proof that R2 ran.
 
-Use a **private, disposable GitHub repository and private, dedicated R2 bucket**,
-especially when the input images contain screenshots. Do not use a public
-production bucket: the `.invalid` delivery URL in the benchmark configuration
-does not make objects in a public bucket private. The script requires an
-explicit private-bucket confirmation and refuses the repository and bucket in
-the default workspace config when it can read that config. It probes access
-but cannot verify a bucket's public-access settings or identify other
-production repositories or buckets.
+There are two R2 modes.
+
+**Private mode (default).** Use a private, disposable GitHub repository and a
+private, dedicated R2 bucket, especially when the input images contain
+screenshots. The script requires `--r2-bucket-private`, refuses the repository
+and bucket in the default workspace config when it can read that config, and
+requires a `https://*.invalid` `--r2-public-base` placeholder. That placeholder
+is benchmark metadata only: it does not make objects in a public bucket private.
+The script probes access but cannot verify a bucket's public-access settings or
+identify other production repositories or buckets.
+
+**Published mode (`--published-mapping`).** This mode exists only for a corpus
+whose bytes are already public. It reads the default workspace
+`cloudflare.endpoint`, `cloudflare.bucket` and `cloudflare.public_base_url`;
+`--r2-bucket`/`--r2-endpoint` may be omitted, and when supplied they must equal
+the configured values. `--r2-public-base` and `--r2-bucket-private` are
+rejected. The script then loads the real migration `url-mapping.json` and,
+before creating any branch or writing to GitHub/R2:
+
+1. requires every input file's SHA-256 and byte size to match a `migrated` row;
+2. requires that row's `new_r2_url` to be HTTPS on the exact configured origin
+   and below the exact configured base path, with no userinfo, query, fragment
+   or dot segments;
+3. fetches each unique content from that public URL outside all timed sections,
+   with no credentials or `Authorization` header, refuses redirects, requires
+   HTTP 200, and verifies both returned body size and SHA-256.
+
+Missing rows, byte mismatches, redirects, non-200 responses and network errors
+fail closed before the benchmark touches the repository or bucket. Transient
+timeouts and 5xx GETs get a bounded retry only during this untimed proof. The
+proof artifact is written under `benchmarks/results/` and its path, mapping
+SHA-256 and counts are recorded in the matrix metadata.
+
+Published mode always generates its own 128-bit random namespace prefix
+(`b` plus 32 lowercase hex characters, from `secrets.token_hex(16)`) and
+rejects `--r2-prefix`, so the benchmark cannot reuse or collide with a
+predictable production prefix. The generated prefix is printed and stored in
+metadata; pass it to any later exact-path cleanup. Private mode keeps the
+`benchmark-<stamp>` default or an explicit lowercase slug.
+
+Use a **private, disposable GitHub repository** in both modes. The default
+workspace's GitHub repository is always refused. The production R2 bucket is
+never used implicitly: it is reachable only through the proof above.
 
 ```sh
+# Private dedicated bucket (default mode)
 python3 scripts/benchmark-upload.py \
   --source old="$OLD_SOURCE" --binary old="$OLD_BINARY" \
   --source new="$NEW_SOURCE" --binary new="$NEW_BINARY" \
   --repo "$PRIVATE_TEST_REPO" --images "$IMAGE_DIRECTORY" \
   --r2-endpoint "$R2_ENDPOINT" --r2-bucket "$PRIVATE_R2_BUCKET" \
   --credentials "$R2_CREDENTIALS_JSON" --r2-bucket-private \
+  --expect-images 200 --repetitions 3 --hash-bench
+
+# Production bucket for a corpus already public (per-file proof required)
+python3 scripts/benchmark-upload.py \
+  --source old="$OLD_SOURCE" --binary old="$OLD_BINARY" \
+  --source new="$NEW_SOURCE" --binary new="$NEW_BINARY" \
+  --repo "$PRIVATE_TEST_REPO" --images "$IMAGE_DIRECTORY" \
+  --published-mapping "$STATE/migration/url-mapping.json" \
+  --credentials "$R2_CREDENTIALS_JSON" \
   --expect-images 200 --repetitions 3 --hash-bench
 ```
 
@@ -307,16 +355,34 @@ group summaries and a run-specific R2 inventory under `benchmarks/results/`.
 Nested timing spans overlap their parent and are not additive. Incomplete
 repetitions are retained but excluded from pooled comparisons.
 
-The driver retains its temporary root, branches and R2 objects so failed runs
-can be inspected. Delete only the dedicated test repository/branches and
-bucket after confirming ownership and saving results; never delete a shared
-bucket or a generic prefix. The GitHub token needs permission to delete the
-disposable repository if the repository itself should be removed.
+`verify_hash` sums SHA-256 writes during add staging read-back and commit
+reused-object verification; `upload_hash` covers re-reading staged image bytes
+for the Git blob upload; `total_hash` sums add `ingest.hash`, add/commit
+`verify.hash`, commit `upload.hash` and commit `ingest.hash`. All are nested and
+non-additive. They count measured image-byte hash writes only: `sha256.New`,
+`sha256.Sum`, metadata hashing and SDK signing are excluded.
 
-The complete four-group comparison remains unmeasured: the configured R2 key
-was denied `CreateBucket` on 2026-10-29, and no verified private bucket was
-available. The production bucket was not used for this dataset. Consequently
-R2 overhead and UUID speedup cannot be calculated from the partial samples.
+The driver retains its temporary root, branches and R2 objects so failed runs
+can be inspected. It never deletes R2 objects and never lists a bucket for
+prefix deletion. In private mode, delete the whole dedicated test bucket only
+and confirm ownership first. In published mode, never delete the bucket; remove
+only the exact object paths listed in the run's inventory, after confirming each
+one's ownership metadata. There is deliberately no built-in prefix deleter and
+no automated cleanup step: R2 conditional DELETE cannot guarantee atomicity, so
+treat deletion as an explicit manual operation. Never delete a shared bucket or
+a generic prefix. The GitHub token needs permission to delete the disposable
+repository if the repository itself should be removed.
+
+If a cell fails, rerun the complete four-group matrix with a new run root,
+output directory and (in published mode) generated prefix. Each invocation is
+one statistical unit: do not splice records from two invocations into one cell,
+and do not compare a recovered partial cell with a complete one. The retained
+partial output stays evidence only.
+
+The earlier complete four-group comparison remains unmeasured: the configured
+R2 key was denied `CreateBucket` on 2026-10-29, and no verified private bucket
+was available. That earlier run did not use the production bucket. R2 overhead
+and UUID speedup cannot be calculated from those partial samples.
 
 The separate `--hash-only` mode needs source and images but no remote
 resources. In a run on the same 200 images (49,518,825 bytes per pass), one

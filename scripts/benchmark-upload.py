@@ -21,15 +21,22 @@ Isolation and safety:
 
 * a fresh state directory per cell under a new temporary root;
 * a unique GitHub branch per cell (created from the repository's base branch);
-* a private GitHub repository and a user-supplied dedicated private R2 bucket
-  (there is no production-bucket default; the corpus contains user screenshots);
+* a private GitHub repository, and one of two R2 modes:
+  * private mode uses a user-supplied dedicated private R2 bucket (there is no
+    production-bucket default; the corpus may contain private screenshots);
+  * published mode uses the workspace production bucket only with
+    ``--published-mapping``, after every input file matches a migrated mapping
+    row by SHA-256 and size and every unique content is re-fetched from its
+    public R2 URL and hashed outside timing;
 * a unique namespace per cell, which is also the R2 object prefix
-  ``objects/<namespace>/``;
-* a non-routable ``*.invalid`` public base URL, so the benchmark configures no
-  public object URL;
-* an exact per-run R2 ownership inventory. No R2 deletes are issued: delete the
-  whole temporary bucket outside this harness, never a generic prefix, and do
-  not rely on conditional DELETE being enforced.
+  ``objects/<namespace>/``. Published mode always generates a 128-bit random
+  prefix; custom prefixes are rejected there;
+* in private mode, a non-routable ``*.invalid`` public base URL. That value is
+  benchmark metadata only and does not make a public bucket private;
+* an exact per-run R2 ownership inventory. This tool never deletes objects and
+  never lists a bucket for prefix deletion. R2 conditional DELETE cannot
+  guarantee atomicity; remove exact listed paths (or the whole temporary
+  private bucket) outside this harness only after confirming ownership.
 
 The optional ``--hash-only`` mode reproduces the separate in-memory SHA-256
 microbenchmark with Go timing. It is not upload-stage timing and is never mixed
@@ -38,15 +45,21 @@ into the upload statistics.
 
 import argparse
 import csv
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
+import socket
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -75,6 +88,9 @@ PHASES = [
     "decode",
     "webp",
     "hash",
+    "verify_hash",
+    "upload_hash",
+    "total_hash",
     "r2_put",
     "r2_ingest",
     "r2_hash",
@@ -98,6 +114,9 @@ NESTED_PHASES = {
     "decode": "ingest",
     "webp": "ingest",
     "hash": "ingest",
+    "verify_hash": "verify",
+    "upload_hash": "upload",
+    "total_hash": "multiple hash parents",
     "r2_put": "r2",
     "r2_ingest": "r2",
     "r2_hash": "r2",
@@ -109,7 +128,10 @@ PHASE_DEFINITIONS = {
     "ingest": "whole image.ingest call in add: read source once into a temporary, fsync, header decode, optional WebP",
     "decode": "nested in ingest: stdimage DecodeConfig header parse; with --webp also the full pixel decode inside conversion",
     "webp": "nested in ingest: full pixel decode, WebP encode and fsync; absent unless --webp converts this PNG/JPEG",
-    "hash": "nested in ingest: SHA-256 digest writes while the source is copied; upload and verify hash inside their own buckets",
+    "hash": "nested in ingest: SHA-256 digest writes during the initial source copy",
+    "verify_hash": "nested in verify: SHA-256 digest writes during add staging read-back and commit reused-object verification",
+    "upload_hash": "nested in upload: SHA-256 digest writes while re-reading staged image bytes for the Git blob upload",
+    "total_hash": "sum of add ingest.hash + add verify.hash + commit verify.hash + commit upload.hash + commit ingest.hash; nested and non-additive; SHA-256 writes over image bytes only (no sha256.New/Sum, metadata hashes or SDK signing)",
     "metadata": "PrepareInput plus applyPrepared: asset identity, title/tags/collections, path and local staged plan",
     "install_rest": "installPrepared minus verify and save: staging directory setup and payload rename",
     "verify": "staging verifyFile (size, header, full SHA-256 read-back, fsync) plus reused-object verification in commit",
@@ -150,13 +172,24 @@ FIELDS.extend(
         "commit_ok",
         "ok",
         "error",
+        "r2_enabled",
+        "r2_status",
+        "r2_failed",
+        "r2_pending",
+        "r2_error_code",
         "r2_object_paths",
     ]
 )
 
-# The corpus contains private screenshots. There is deliberately no default R2
-# bucket or endpoint: every matrix run must name a dedicated private bucket.
+# Private mode requires a dedicated bucket. Public mode is only reachable with
+# --published-mapping after every input byte has been fetched and hashed from an
+# already-public URL; the default workspace bucket/endpoint are used there.
 R2_DEFAULT_PUBLIC_BASE = "https://private.invalid"
+# A `.invalid` URL is benchmark metadata only. It does not hide objects in a
+# public bucket, so it is never accepted as proof of privacy.
+PUBLISHED_FETCH_ATTEMPTS = 3
+PUBLISHED_PREFIX_PREFIX = "b"
+PUBLISHED_PREFIX_BYTES = 16  # 128-bit unpredictable nonce
 
 LABELS = ("old", "new")
 R2_STATES = ("off", "on")
@@ -204,13 +237,383 @@ def key_values(values, what):
 
 
 def file_sha256(path):
-    import hashlib
-
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so a public proof never follows away from its origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        die(
+            f"published content URL {req.full_url} redirected (HTTP {code}) to {newurl}; "
+            "redirects are refused"
+        )
+
+
+def public_base_origin(base_url):
+    """Parse and validate the configured HTTPS public base."""
+    if not isinstance(base_url, str) or not base_url.strip():
+        die("the default workspace Cloudflare public_base_url is missing")
+    try:
+        parsed = urlparse(base_url)
+        port = parsed.port
+    except ValueError as error:
+        die(f"invalid Cloudflare public_base_url {base_url!r}: {error}")
+    if parsed.scheme != "https":
+        die(f"Cloudflare public_base_url must be HTTPS, got {base_url!r}")
+    if not parsed.hostname:
+        die(f"Cloudflare public_base_url has no host: {base_url!r}")
+    if parsed.username or parsed.password:
+        die("Cloudflare public_base_url must not contain credentials")
+    if parsed.query or parsed.fragment or parsed.params:
+        die("Cloudflare public_base_url must not contain a query, fragment or parameters")
+    if parsed.path and not parsed.path.startswith("/"):
+        die(f"Cloudflare public_base_url has an invalid path: {base_url!r}")
+    if "//" in parsed.path:
+        die("Cloudflare public_base_url must not contain an empty path segment")
+    if port is not None and not (1 <= port <= 65535):
+        die("Cloudflare public_base_url has an invalid port")
+    return parsed
+
+
+def url_under_public_base(url, base):
+    """Return True only for an exact HTTPS origin/base-path match.
+
+    The comparison is deliberately strict: same scheme, host, effective port
+    and an object path below the configured base path. Userinfo, queries,
+    fragments, empty segments and dot segments are refused so a mapping cannot
+    point the proof at a different origin or a path-traversal URL.
+    """
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    if parsed.query or parsed.fragment or parsed.params:
+        return False
+    if parsed.hostname.rstrip(".").lower() != base.hostname.rstrip(".").lower():
+        return False
+    if (port or 443) != (base.port or 443):
+        return False
+    base_path = base.path.rstrip("/")
+    prefix = base_path + "/" if base_path else "/"
+    if not parsed.path.startswith(prefix):
+        return False
+    remainder = parsed.path[len(prefix) :]
+    if not remainder or remainder.endswith("/"):
+        return False
+    segments = remainder.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        return False
+    return True
+
+
+def load_published_mapping(path):
+    """Load only fully migrated rows with a SHA-256, size and new R2 URL."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError) as error:
+        die(f"cannot read published mapping {path}: {error}")
+    if isinstance(data, dict):
+        data = data.get("items")
+    if not isinstance(data, list):
+        die(f"published mapping {path} must be a JSON array of objects")
+    entries = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            die(f"published mapping entry {index} is not an object")
+        status = (item.get("status") or "").strip()
+        if status != "migrated":
+            continue
+        sha256 = item.get("sha256")
+        size = item.get("size_bytes")
+        url = item.get("new_r2_url")
+        new_path = item.get("new_path")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            die(f"published mapping entry {index} has no lowercase SHA-256")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            die(f"published mapping entry {index} has no positive size_bytes")
+        if not isinstance(url, str) or not url:
+            die(f"published mapping entry {index} has no new_r2_url")
+        if not isinstance(new_path, str) or not new_path:
+            die(f"published mapping entry {index} has no new_path")
+        if (
+            new_path.startswith("/")
+            or "\\" in new_path
+            or any(part in ("", ".", "..") for part in new_path.split("/"))
+        ):
+            die(f"published mapping entry {index} has an unsafe new_path: {new_path!r}")
+        entries.append(
+            {
+                "asset_id": item.get("asset_id"),
+                "sha256": sha256,
+                "size_bytes": size,
+                "new_r2_url": url,
+                "new_path": new_path,
+            }
+        )
+    if not entries:
+        die(f"published mapping {path} has no migrated entries")
+    return entries
+
+
+def fetch_public_content(url, expected_sha256, expected_size, timeout, attempts=PUBLISHED_FETCH_ATTEMPTS):
+    """Fetch one already-public object outside timing and verify its bytes.
+
+    No credential is attached: the request carries only a fixed User-Agent.
+    Redirects, non-200 responses, oversized/truncated bodies and digest
+    mismatches fail closed. Only timeouts and 5xx responses are retried, and
+    only during untimed setup.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        die(f"published content URL is invalid: {url!r}")
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        die(f"published content URL must be HTTP(S): {url!r}")
+    if parsed.username or parsed.password:
+        die("published content URL must not contain credentials")
+    opener = urllib.request.build_opener(_NoRedirect)
+    attempts = max(1, attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "touko-benchmark-upload/1",
+                    "Accept-Encoding": "identity",
+                },
+            )
+            with opener.open(request, timeout=timeout) as response:
+                status = getattr(response, "status", 200)
+                if status != 200:
+                    die(f"published content GET returned HTTP {status} for {url}")
+                declared = response.headers.get("Content-Length")
+                if declared is not None:
+                    try:
+                        declared_size = int(declared)
+                    except ValueError:
+                        die(f"published content GET returned an invalid Content-Length for {url}")
+                    if declared_size != expected_size:
+                        die(
+                            f"published content size mismatch for {url}: "
+                            f"Content-Length {declared_size} != {expected_size}"
+                        )
+                digest = hashlib.sha256()
+                total = 0
+                while True:
+                    chunk = response.read(1 << 20)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > expected_size:
+                        die(
+                            f"published content size mismatch for {url}: "
+                            f"body exceeds {expected_size} bytes"
+                        )
+                    digest.update(chunk)
+        except urllib.error.HTTPError as error:
+            if error.code >= 500 and attempt < attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            die(f"published content GET failed for {url}: HTTP {error.code}")
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as error:
+            if attempt < attempts:
+                time.sleep(0.5 * attempt)
+                continue
+            die(f"published content GET failed for {url}: {error}")
+        if total != expected_size:
+            die(
+                f"published content size mismatch for {url}: "
+                f"received {total} bytes, expected {expected_size}"
+            )
+        actual = digest.hexdigest()
+        if not hmac.compare_digest(actual, expected_sha256):
+            die(
+                f"published content SHA-256 mismatch for {url}: "
+                f"received {actual}, expected {expected_sha256}"
+            )
+        return total
+    die(f"published content GET failed for {url}")
+
+
+def verify_published_corpus(images, entries, base, timeout):
+    """Prove every input file is already public before any remote write.
+
+    The mapping is not trusted on its own: each input file must match a
+    migrated row by SHA-256 and size, the row URL must be under the exact
+    configured HTTPS origin/base path, and one GET per unique content must
+    return bytes with the same SHA-256 and size.
+    """
+    by_content = {}
+    for entry in entries:
+        if not url_under_public_base(entry["new_r2_url"], base):
+            die(
+                f"published mapping URL for {entry['new_path']} is outside the configured "
+                f"HTTPS public base: {entry['new_r2_url']}"
+            )
+        by_content.setdefault((entry["sha256"], entry["size_bytes"]), []).append(entry)
+
+    unique = {}
+    input_bytes = 0
+    for image in images:
+        try:
+            size = os.path.getsize(image)
+            sha256 = file_sha256(image)
+        except OSError as error:
+            die(f"cannot inspect input image {image}: {error}")
+        input_bytes += size
+        matches = by_content.get((sha256, size))
+        if not matches:
+            die(
+                f"input image {image} (sha256 {sha256}, {size} bytes) has no migrated "
+                "published mapping entry; refusing to use the production bucket"
+            )
+        unique.setdefault((sha256, size), matches[0]["new_r2_url"])
+
+    contents = []
+    unique_bytes = 0
+    for (sha256, size), url in sorted(unique.items()):
+        fetch_public_content(url, sha256, size, timeout)
+        unique_bytes += size
+        contents.append({"sha256": sha256, "size_bytes": size, "url": url})
+    return {
+        "entries": len(entries),
+        "input_files": len(images),
+        "input_bytes": input_bytes,
+        "unique_contents": len(contents),
+        "unique_content_bytes": unique_bytes,
+        "contents": contents,
+    }
+
+
+def state_r2_config(r2_state, r2):
+    """Return the R2 config only for the R2-on cell, never a boolean."""
+    return r2 if r2_state == "on" else None
+
+
+def resolve_r2_settings(
+    workspace,
+    *,
+    bucket,
+    endpoint,
+    public_base,
+    private_confirmed,
+    prefix,
+    published_mapping,
+    credentials,
+    images,
+    timeout,
+    stamp,
+):
+    """Resolve private mode or the fail-closed published-production mode."""
+    configured = workspace.get("cloudflare") or {}
+    if not isinstance(configured, dict):
+        die("default TOUKO workspace Cloudflare config is not an object")
+
+    if published_mapping:
+        if private_confirmed:
+            die("--r2-bucket-private cannot be combined with --published-mapping")
+        if prefix:
+            die("--r2-prefix is not allowed with --published-mapping; the benchmark generates a random prefix")
+        if public_base is not None:
+            die("--r2-public-base is fixed by the workspace config in --published-mapping mode")
+        configured_bucket = configured.get("bucket")
+        configured_endpoint = configured.get("endpoint")
+        configured_base = configured.get("public_base_url")
+        if not isinstance(configured_bucket, str) or not configured_bucket:
+            die("--published-mapping requires a default workspace Cloudflare bucket")
+        if not isinstance(configured_endpoint, str) or not configured_endpoint:
+            die("--published-mapping requires a default workspace Cloudflare endpoint")
+        if bucket and bucket != configured_bucket:
+            die(
+                f"--r2-bucket {bucket!r} does not match the default workspace bucket "
+                f"{configured_bucket!r}"
+            )
+        if endpoint and endpoint.rstrip("/") != configured_endpoint.rstrip("/"):
+            die(
+                f"--r2-endpoint {endpoint!r} does not match the default workspace endpoint "
+                f"{configured_endpoint!r}"
+            )
+        if re.search(r"[/\\\s]", configured_bucket):
+            die("the configured R2 bucket name contains a path separator or whitespace")
+        base = public_base_origin(configured_base)
+        mapping_path = os.path.abspath(os.path.expanduser(published_mapping))
+        entries = load_published_mapping(mapping_path)
+        report = verify_published_corpus(images, entries, base, timeout)
+        report["mapping"] = mapping_path
+        report["mapping_sha256"] = file_sha256(mapping_path)
+        report["public_base_url"] = configured_base
+        return {
+            "mode": "published",
+            "endpoint": configured_endpoint,
+            "bucket": configured_bucket,
+            "public_base_url": configured_base,
+            "credentials": credentials,
+            "prefix": PUBLISHED_PREFIX_PREFIX
+            + secrets.token_hex(PUBLISHED_PREFIX_BYTES),
+            "private_bucket_confirmed": False,
+            "published": report,
+        }
+
+    if not bucket or not endpoint:
+        die(
+            "the R2-on groups require a dedicated private bucket: pass --r2-endpoint and "
+            "--r2-bucket. The production bucket is only allowed with --published-mapping "
+            "after its bytes are proven already public."
+        )
+    if bucket == configured.get("bucket"):
+        die(
+            "refusing to benchmark against the default workspace's R2 bucket; pass "
+            "--published-mapping only when every input file is already public and verified"
+        )
+    if re.search(r"[/\\\s]", bucket):
+        die("--r2-bucket must be a bucket name without path separators or whitespace")
+    if not private_confirmed:
+        die(
+            "pass --r2-bucket-private only after verifying the bucket is dedicated to this run, "
+            "private, and has no public access; the corpus contains private screenshots"
+        )
+    base_url = public_base or R2_DEFAULT_PUBLIC_BASE
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        die(f"invalid --r2-public-base: {base_url!r}")
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not parsed.hostname.endswith(".invalid")
+    ):
+        die(
+            "--r2-public-base must be a non-routable https://*.invalid placeholder. "
+            "It is benchmark metadata only and does not make a public bucket private."
+        )
+    resolved_prefix = (prefix or "").strip().lower() or f"benchmark-{stamp.lower()}"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", resolved_prefix):
+        die("--r2-prefix must be a lowercase slug using [a-z0-9_-]")
+    if len(resolved_prefix) > 40:
+        die("--r2-prefix must be at most 40 characters")
+    return {
+        "mode": "private",
+        "endpoint": endpoint,
+        "bucket": bucket,
+        "public_base_url": base_url,
+        "credentials": credentials,
+        "prefix": resolved_prefix,
+        "private_bucket_confirmed": True,
+        "published": None,
+    }
 
 
 def git_head(path):
@@ -586,6 +989,13 @@ def derive_phases(raw):
     install_rest = None
     if install is not None:
         install_rest = max(0, install - (verify_add or 0) - (save or 0))
+    hashes = {
+        "add_ingest": _ns(add.get("ingest.hash")),
+        "add_verify": _ns(add.get("verify.hash")),
+        "commit_verify": _ns(commit.get("verify.hash")),
+        "commit_upload": _ns(commit.get("upload.hash")),
+        "commit_ingest": _ns(commit.get("ingest.hash")),
+    }
     phases = {
         "ingest": ingest,
         "metadata": _ns(add.get("add.metadata")),
@@ -610,10 +1020,13 @@ def derive_phases(raw):
         "cleanup": _ns(commit.get("commit.cleanup")),
         "decode": _ns(add.get("ingest.decode")),
         "webp": _ns(add.get("ingest.webp")),
-        "hash": _ns(add.get("ingest.hash")),
+        "hash": hashes["add_ingest"],
+        "verify_hash": _sum_present([hashes["add_verify"], hashes["commit_verify"]]),
+        "upload_hash": hashes["commit_upload"],
+        "total_hash": _sum_present(list(hashes.values())),
         "r2_put": _ns(commit.get("commit.r2_put")),
         "r2_ingest": _ns(commit.get("ingest.stream")),
-        "r2_hash": _ns(commit.get("ingest.hash")),
+        "r2_hash": hashes["commit_ingest"],
     }
     total = _sum_present([_ns(raw.get("add_ns")), _ns(raw.get("commit_ns"))])
     exclusive = [phases[name] for name in EXCLUSIVE_PHASES if phases[name] is not None]
@@ -637,9 +1050,28 @@ def normalise_record(raw, index, image, r2_state, webp_convert):
         "error": "",
         "phases_available": False,
         "r2_applicable": r2_state == "on",
+        "r2_enabled": False,
+        "r2_status": "",
+        "r2_failed": 0,
+        "r2_pending": 0,
+        "r2_error_code": "",
     }
     if isinstance(raw, dict):
-        for name in ("add_ns", "commit_ns", "total_ns", "add_ok", "commit_ok", "ok", "error", "r2_items"):
+        for name in (
+            "add_ns",
+            "commit_ns",
+            "total_ns",
+            "add_ok",
+            "commit_ok",
+            "ok",
+            "error",
+            "r2_items",
+            "r2_enabled",
+            "r2_status",
+            "r2_failed",
+            "r2_pending",
+            "r2_error_code",
+        ):
             if name in raw:
                 record[name] = raw[name]
     for name in ("add_ns", "commit_ns", "total_ns"):
@@ -684,6 +1116,43 @@ def normalise_record(raw, index, image, r2_state, webp_convert):
     record["unavailable_phases"] = "; ".join(
         f"{name}={reason}" for name, reason in unavailable.items()
     )
+    failed = record.get("r2_failed")
+    pending = record.get("r2_pending")
+    invalid_counts = (
+        isinstance(failed, bool)
+        or not isinstance(failed, int)
+        or isinstance(pending, bool)
+        or not isinstance(pending, int)
+    )
+    if r2_state == "on":
+        if invalid_counts:
+            failed, pending = 0, 0
+        record["r2_failed"] = failed
+        record["r2_pending"] = pending
+        if record.get("ok"):
+            if record.get("r2_enabled") is not True:
+                record["ok"] = False
+                record["error"] = "R2-on record was not marked r2_enabled by the runner"
+            elif record.get("r2_status") != "synced":
+                record["ok"] = False
+                record["error"] = (
+                    f"R2 publication not synced (status={record.get('r2_status')!r}, "
+                    f"failed={failed}, pending={pending}, "
+                    f"error_code={record.get('r2_error_code')!r})"
+                )
+            elif failed != 0 or pending != 0 or invalid_counts:
+                record["ok"] = False
+                record["error"] = (
+                    f"R2 publication incomplete (status={record.get('r2_status')!r}, "
+                    f"failed={record.get('r2_failed')}, pending={record.get('r2_pending')})"
+                )
+    else:
+        record["r2_enabled"] = False
+        record["r2_failed"] = 0
+        record["r2_pending"] = 0
+        record["r2_status"] = ""
+        record["r2_error_code"] = ""
+        record["r2_items"] = []
     record["ok"] = bool(record.get("ok"))
     record["r2_object_paths"] = ";".join(
         item.get("object_path", "")
@@ -711,6 +1180,7 @@ def measure_cell(runner, state, images, namespace, group, rep, r2_state, raw_pat
                 str(index),
                 "-message",
                 f"benchmark: {group} r2={namespace} rep={rep} image={index}",
+                f"-r2-enabled={'true' if r2_state == 'on' else 'false'}",
             ]
             if webp:
                 command.append("-webp")
@@ -831,6 +1301,10 @@ def write_cell_outputs(base, metadata, summary, records):
     lines.append(f"- repo: `{metadata['repo']}`")
     lines.append(f"- branch: `{metadata['branch']}`")
     lines.append(f"- namespace / R2 prefix: `{metadata['namespace']}` (`objects/{metadata['namespace']}/`)")
+    lines.append(
+        f"- R2 mode: `{metadata['r2'].get('mode', 'private')}`; "
+        f"bucket: `{metadata['r2'].get('bucket')}`; public base: `{metadata['r2'].get('public_base_url')}`"
+    )
     lines.append(f"- binary: `{metadata['binary']}` (sha256 `{metadata['binary_sha256']}`)")
     if metadata.get("source"):
         lines.append(f"- source: `{metadata['source']}` at `{metadata.get('source_head') or 'unknown'}`")
@@ -858,7 +1332,9 @@ def write_cell_outputs(base, metadata, summary, records):
     lines.append(
         "- phases: exclusive buckets are ingest, metadata, install_rest, verify, save, git_prepare, "
         "upload, commit_git, r2, plan, journal, finalize, cleanup and other (CLI residual); "
-        "decode, webp and hash are nested in ingest, r2_put/r2_ingest/r2_hash are nested in r2"
+        "decode, webp and hash are nested in ingest; verify_hash is nested in verify; "
+        "upload_hash is nested in upload; total_hash sums image-byte hash writes and is "
+        "nested/non-additive; r2_put/r2_ingest/r2_hash are nested in r2"
     )
     if not summary["phases_available"]:
         lines.append(
@@ -965,25 +1441,38 @@ def write_r2_inventory(out_dir, stamp, metadata, cells):
                     }
                 )
     unique_paths = sorted({item["object_path"] for item in observed if item["object_path"]})
+    mode = metadata["r2"].get("mode")
+    if mode == "published":
+        cleanup_note = (
+            "This is an evidence inventory, not deletion authorization. This run wrote to the "
+            "configured production bucket after every input byte was verified from its public URL. "
+            "Never delete the bucket. Remove only the exact object paths listed here after confirming "
+            "ownership; do not list or delete by a generic prefix. R2 conditional DELETE cannot "
+            "guarantee atomicity, and this harness never deletes objects."
+        )
+    else:
+        cleanup_note = (
+            "This is an evidence inventory, not deletion authorization. The bucket is expected to "
+            "be temporary and private. Delete the whole bucket through the Cloudflare account API or "
+            "dashboard after copying the results; do not delete keys by a generic prefix, and do not "
+            "rely on conditional DELETE being enforced. This harness never deletes objects."
+        )
     payload = {
+        "mode": mode,
         "bucket": metadata["r2"]["bucket"],
         "endpoint": metadata["r2"]["endpoint"],
         "prefix": metadata["r2"]["prefix"],
         "observed_items": observed,
         "unique_object_paths": unique_paths,
         "prefix_violations": violations,
-        "cleanup_note": (
-            "This is an evidence inventory, not deletion authorization. The bucket is expected to "
-            "be temporary and private. Delete the whole bucket through the Cloudflare account API or "
-            "dashboard after copying the results; do not delete keys by a generic prefix, and do not "
-            "rely on conditional DELETE being enforced."
-        ),
+        "cleanup_note": cleanup_note,
     }
     base = unique_base(out_dir, f"upload-benchmark-{stamp}-r2-inventory")
     write_json(base + ".json", payload)
     lines = [
         "# R2 ownership inventory",
         "",
+        f"- mode: `{payload['mode']}`",
         f"- bucket: `{payload['bucket']}`",
         f"- endpoint: `{payload['endpoint']}`",
         f"- prefix: `{payload['prefix']}`",
@@ -1236,23 +1725,42 @@ def write_matrix_outputs(out_dir, stamp, metadata, cells, groups):
         f"- WebP conversion: {'enabled' if webp['convert'] else 'disabled'} for both builds"
         + ("" if webp["convert"] else " (`--webp=false`); the webp phase is therefore unavailable"),
         f"- repetitions per group: {metadata['repetitions']}",
-        f"- R2 endpoint/bucket: `{metadata['r2']['endpoint']}` / `{metadata['r2']['bucket']}`",
+        f"- R2 mode: `{metadata['r2']['mode']}`; endpoint/bucket: "
+        f"`{metadata['r2']['endpoint']}` / `{metadata['r2']['bucket']}`",
         f"- R2 private-bucket confirmation: {metadata['r2']['private_bucket_confirmed']}; "
+        f"public base: `{metadata['r2']['public_base_url']}`; "
         f"probe: `{json.dumps(metadata['r2']['probe'], ensure_ascii=False)}`",
+        (
+            f"- published proof: `{metadata['r2']['published_mapping']['proof']}` "
+            f"(mapping sha256 `{metadata['r2']['published_mapping']['mapping_sha256']}`, "
+            f"{metadata['r2']['published_mapping']['unique_contents']} unique contents, "
+            f"{metadata['r2']['published_mapping']['unique_content_bytes']} bytes re-fetched and verified)"
+            if metadata["r2"].get("published_mapping")
+            else "- published proof: not used (private dedicated-bucket mode)"
+        ),
         f"- binary revisions: "
         + ", ".join(
             f"{label}={entry['vcs_revision'] or 'unknown'}"
             for label, entry in metadata["binaries"].items()
         ),
         f"- R2 isolation: unique namespace per cell, objects under `objects/<namespace>/`; no deletes were issued",
-        f"- R2 ownership inventory: `{metadata['r2']['inventory']}`; delete the temporary bucket, not a generic prefix",
+        f"- R2 ownership inventory: `{metadata['r2']['inventory']}`; "
+        + (
+            "never delete the production bucket; remove only the exact listed object paths"
+            if metadata["r2"]["mode"] == "published"
+            else "delete the temporary bucket, not a generic prefix"
+        )
+        + ". R2 conditional DELETE cannot guarantee atomicity; this harness never deletes objects.",
         "- timing: Go `time.Since` spans inside the staged add and published commit; no measured retries",
         "- measured code: runners built from instrumented temporary copies of the listed sources; "
         "the supplied binaries are used only for untimed setup",
         "- phase buckets: ingest/metadata/install_rest/verify/save (add), "
         "git_prepare/upload/commit_git/plan/journal/finalize/r2/cleanup (commit), "
         "plus total and other (CLI residual). decode/webp/hash are nested in ingest; "
-        "r2_put/r2_ingest/r2_hash are nested in r2, so nested shares overlap their parent.",
+        "verify_hash is nested in verify; upload_hash is nested in upload; total_hash sums the "
+        "image-byte hash writes and is nested/non-additive; r2_put/r2_ingest/r2_hash are nested in r2.",
+        "- hash caveat: the hash aggregates count measured SHA-256 writes over image bytes only; "
+        "sha256.New/Sum, metadata hashes and SDK signing are excluded.",
         "",
         "| group | R2 | complete reps | images | total ms | mean ms/image | median ms/image | p95 ms/image | MB/s |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -1473,18 +1981,30 @@ def main():
     parser.add_argument("--expect-images", type=int, default=200)
     parser.add_argument("--expect-bytes", type=int, default=0, help="optional exact total byte count")
     parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--r2-prefix", default="", help="unique namespace prefix (default: benchmark-<stamp>)")
-    parser.add_argument("--r2-endpoint", default="", help="dedicated R2 endpoint (required)")
-    parser.add_argument("--r2-bucket", default="", help="dedicated private R2 bucket (required)")
+    parser.add_argument(
+        "--r2-prefix",
+        default="",
+        help="unique namespace prefix (default: benchmark-<stamp>; forbidden with --published-mapping)",
+    )
+    parser.add_argument("--r2-endpoint", default="", help="R2 endpoint; defaults to the workspace value with --published-mapping")
+    parser.add_argument("--r2-bucket", default="", help="R2 bucket; defaults to the workspace production bucket only with --published-mapping")
     parser.add_argument(
         "--r2-public-base",
-        default=R2_DEFAULT_PUBLIC_BASE,
-        help="non-routable placeholder; the benchmark does not publish objects",
+        default=None,
+        help="private mode only: non-routable https://*.invalid placeholder (metadata, not privacy)",
     )
     parser.add_argument(
         "--r2-bucket-private",
         action="store_true",
-        help="confirm the supplied bucket is dedicated to this run and has no public access",
+        help="private mode only: confirm the supplied bucket is dedicated to this run and has no public access",
+    )
+    parser.add_argument(
+        "--published-mapping",
+        default="",
+        help=(
+            "migration/url-mapping.json whose rows prove every input file is already public; "
+            "enables the workspace production bucket only after every unique content is fetched and verified"
+        ),
     )
     parser.add_argument("--credentials", default=os.path.expanduser("~/.local/share/touko/cloudflare/credentials.json"))
     parser.add_argument("--root", default="", help="new or empty root for state and runner builds")
@@ -1632,46 +2152,39 @@ def main():
     r2_credentials = os.path.abspath(os.path.expanduser(args.credentials))
     if not os.path.isfile(r2_credentials):
         die(f"R2 credentials file not found: {r2_credentials}")
-    if not args.r2_endpoint or not args.r2_bucket:
-        die(
-            "the R2-on groups require a dedicated private bucket: pass --r2-endpoint and "
-            "--r2-bucket. The production bucket is never used by default."
+    r2 = resolve_r2_settings(
+        workspace,
+        bucket=args.r2_bucket,
+        endpoint=args.r2_endpoint,
+        public_base=args.r2_public_base,
+        private_confirmed=args.r2_bucket_private,
+        prefix=args.r2_prefix,
+        published_mapping=args.published_mapping,
+        credentials=r2_credentials,
+        images=images,
+        timeout=min(args.timeout, 120),
+        stamp=stamp,
+    )
+    r2_prefix = r2["prefix"]
+    print(
+        f"R2 mode={r2['mode']} bucket={r2['bucket']} prefix={r2_prefix}",
+        flush=True,
+    )
+    published_report = r2.pop("published")
+    if published_report:
+        proof_base = unique_base(out_dir, f"upload-benchmark-{stamp}-published-proof")
+        write_json(proof_base + ".json", published_report)
+        r2["published"] = {
+            key: value
+            for key, value in published_report.items()
+            if key != "contents"
+        }
+        r2["published"]["proof"] = proof_base + ".json"
+        print(
+            f"published proof: {published_report['unique_contents']} unique content(s), "
+            f"{published_report['unique_content_bytes']} bytes -> {proof_base}.json",
+            flush=True,
         )
-    configured_r2 = workspace.get("cloudflare") or {}
-    if not isinstance(configured_r2, dict):
-        die("default TOUKO workspace Cloudflare config is not an object")
-    if args.r2_bucket == configured_r2.get("bucket"):
-        die("refusing to benchmark against the default workspace's R2 bucket")
-    if re.search(r"[/\\\s]", args.r2_bucket):
-        die("--r2-bucket must be a bucket name without path separators or whitespace")
-    if not args.r2_bucket_private:
-        die(
-            "pass --r2-bucket-private only after verifying the bucket is dedicated to this run, "
-            "private, and has no public access; the corpus contains private screenshots"
-        )
-    public = urlparse(args.r2_public_base)
-    if (
-        public.scheme != "https"
-        or not public.hostname
-        or not public.hostname.endswith(".invalid")
-    ):
-        die(
-            "--r2-public-base must be a non-routable https://*.invalid placeholder so the "
-            "benchmark never configures a public object URL"
-        )
-
-    r2_prefix = args.r2_prefix.strip().lower() or f"benchmark-{stamp.lower()}"
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", r2_prefix):
-        die("--r2-prefix must be a lowercase slug using [a-z0-9_-]")
-    if len(r2_prefix) > 40:
-        die("--r2-prefix must be at most 40 characters")
-
-    r2 = {
-        "endpoint": args.r2_endpoint,
-        "bucket": args.r2_bucket,
-        "public_base_url": args.r2_public_base,
-        "credentials": r2_credentials,
-    }
     probe_key = f"objects/{r2_prefix}-probe/zz-benchmark-probe-does-not-exist"
     r2_probe = probe_r2(
         runner_paths["new"],
@@ -1708,11 +2221,13 @@ def main():
         },
         "repetitions": args.repetitions,
         "r2": {
+            "mode": r2["mode"],
             "endpoint": r2["endpoint"],
             "bucket": r2["bucket"],
             "public_base_url": r2["public_base_url"],
             "prefix": r2_prefix,
-            "private_bucket_confirmed": args.r2_bucket_private,
+            "private_bucket_confirmed": r2["private_bucket_confirmed"],
+            "published_mapping": r2.get("published"),
             "probe": r2_probe,
         },
         "binaries": binary_meta,
@@ -1767,7 +2282,7 @@ def main():
                         state,
                         args.repo,
                         branch,
-                        r2_state == "on",
+                        state_r2_config(r2_state, r2),
                         env,
                         args.timeout,
                     )

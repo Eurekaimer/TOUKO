@@ -194,10 +194,44 @@ def _staging_edits():
 \tif err := ctx.Err(); err != nil {""", 1),
     ]
 
+def _verify_edits():
+    return [
+        _import('"github.com/Eurekaimer/TOUKO/internal/domain"'),
+        (
+            "if _, err := w.digest.Write(data); err != nil {",
+            'if _, err := (benchrec.Writer{W: w.digest, Name: "verify.hash"}).Write(data); err != nil {',
+            1,
+        ),
+    ]
+
+
+def _legacy_verify_edits():
+    return [
+        _import('"github.com/Eurekaimer/TOUKO/internal/domain"'),
+        (
+            "n, err := w.Hash.Write(b)",
+            'n, err := (benchrec.Writer{W: w.Hash, Name: "verify.hash"}).Write(b)',
+            1,
+        ),
+    ]
+
+
+def _legacy_staging_hash_edit():
+    return (
+        "size, err := io.Copy(hash, io.LimitReader(contextReader{ctx, file}, object.Size+1))",
+        'size, err := io.Copy(benchrec.Writer{W: hash, Name: "verify.hash"}, io.LimitReader(contextReader{ctx, file}, object.Size+1))',
+        1,
+    )
+
 
 def _commit_edits():
     return [
         _import('"github.com/Eurekaimer/TOUKO/internal/domain"'),
+        (
+            "_, _ = r.digest.Write(p[:n])",
+            '_, _ = (benchrec.Writer{W: r.digest, Name: "upload.hash"}).Write(p[:n])',
+            1,
+        ),
         ("""\thead := st.BaseHead
 \tbase, err := repository.ReadSnapshot(ctx, r, head)""",
          """\tstopPrepare := benchrec.Span("commit.prepare")
@@ -414,6 +448,11 @@ def prepare_source(source, destination):
         "internal/image/ingest.go": _ingest_edits(),
         "internal/staging/files.go": _staging_edits(),
     }
+    if os.path.exists(os.path.join(destination, "internal", "image", "verify.go")):
+        plan["internal/image/verify.go"] = _verify_edits()
+    else:
+        plan["internal/staging/files.go"].append(_legacy_staging_hash_edit())
+        plan["internal/repository/verify.go"] = _legacy_verify_edits()
     for rel, edits in plan.items():
         _rewrite(destination, rel, edits)
     _wrap_cloudflare_publication(destination)

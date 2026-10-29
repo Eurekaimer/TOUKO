@@ -55,6 +55,11 @@ type uploadRecord struct {
 	CommitOK  bool     `json:"commit_ok"`
 	OK        bool     `json:"ok"`
 	Error     string   `json:"error,omitempty"`
+	R2Enabled bool     `json:"r2_enabled"`
+	R2Status  string   `json:"r2_status,omitempty"`
+	R2Failed  int      `json:"r2_failed"`
+	R2Pending int      `json:"r2_pending"`
+	R2Error   string   `json:"r2_error_code,omitempty"`
 	R2Items   []r2Item `json:"r2_items,omitempty"`
 	// PhasesAdd and PhasesCommit are nanosecond spans recorded inside the
 	// production pipeline for this image. They are separate so a commit phase
@@ -103,6 +108,7 @@ func run() error {
 		index      = flag.Int("index", 0, "image index in the run")
 		message    = flag.String("message", "bench: upload image", "commit message")
 		webp       = flag.Bool("webp", false, "pass --webp to add and measure conversion")
+		r2Enabled  = flag.Bool("r2-enabled", false, "require the commit to return a fully synced Cloudflare result")
 		hashDir    = flag.String("hash-dir", "", "run the SHA-256 microbenchmark on this directory")
 		repeats    = flag.Int("hash-repeats", 3, "measured hash passes after one warmup")
 		r2Bucket   = flag.String("r2-bucket", "", "probe this bucket/credentials instead of timing an upload")
@@ -132,19 +138,24 @@ func run() error {
 	if *state == "" || *image == "" {
 		return errors.New("both -state and -image are required")
 	}
-	record, err := measureUpload(*state, *image, *namespace, *index, *message, *webp)
+	record, err := measureUpload(*state, *image, *namespace, *index, *message, *webp, *r2Enabled)
 	if err != nil {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(record)
 }
 
-func measureUpload(state, image, namespace string, index int, message string, webp bool) (uploadRecord, error) {
+func measureUpload(state, image, namespace string, index int, message string, webp, r2Enabled bool) (uploadRecord, error) {
 	info, err := os.Stat(image)
 	if err != nil {
 		return uploadRecord{}, err
 	}
-	record := uploadRecord{Index: index, File: filepath.Base(image), SizeBytes: info.Size()}
+	record := uploadRecord{
+		Index:     index,
+		File:      filepath.Base(image),
+		SizeBytes: info.Size(),
+		R2Enabled: r2Enabled,
+	}
 
 	benchrec.Enable()
 	addCode, _, addErr, addElapsed := runCLI(
@@ -181,14 +192,40 @@ func measureUpload(state, image, namespace string, index int, message string, we
 	} else {
 		var result struct {
 			Cloudflare *struct {
-				Items []r2Item `json:"items"`
+				Status    string   `json:"status"`
+				Failed    int      `json:"failed"`
+				Pending   int      `json:"pending"`
+				ErrorCode string   `json:"error_code,omitempty"`
+				Items     []r2Item `json:"items"`
 			} `json:"cloudflare"`
 		}
-		if json.Unmarshal([]byte(commitOut), &result) == nil && result.Cloudflare != nil {
+		decodeErr := json.Unmarshal([]byte(commitOut), &result)
+		if decodeErr != nil {
+			if r2Enabled {
+				record.Error = fmt.Sprintf("R2 enabled but commit JSON is unreadable: %v", decodeErr)
+			}
+		} else if result.Cloudflare != nil {
+			record.R2Status = result.Cloudflare.Status
+			record.R2Failed = result.Cloudflare.Failed
+			record.R2Pending = result.Cloudflare.Pending
+			record.R2Error = result.Cloudflare.ErrorCode
 			record.R2Items = result.Cloudflare.Items
 		}
+		if r2Enabled && decodeErr == nil && result.Cloudflare == nil {
+			record.Error = "R2 enabled but commit returned no Cloudflare result"
+		}
+		if r2Enabled && decodeErr == nil && result.Cloudflare != nil &&
+			(result.Cloudflare.Status != "synced" || result.Cloudflare.Failed > 0 || result.Cloudflare.Pending > 0) {
+			record.Error = fmt.Sprintf(
+				"R2 publication incomplete: status=%q failed=%d pending=%d error_code=%q",
+				result.Cloudflare.Status,
+				result.Cloudflare.Failed,
+				result.Cloudflare.Pending,
+				result.Cloudflare.ErrorCode,
+			)
+		}
 	}
-	record.OK = record.AddOK && record.CommitOK
+	record.OK = record.AddOK && record.CommitOK && record.Error == ""
 	record.TotalNS = record.AddNS + record.CommitNS
 	return record, nil
 }
