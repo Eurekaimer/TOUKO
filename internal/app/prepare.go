@@ -271,17 +271,29 @@ func (s *Service) PreviewPrepared(ctx context.Context, reader repository.Reader,
 	return capacityFor(base, used, projected, lim), nil
 }
 
-// AddPrepared atomically stages a prepared batch. It takes its own service
-// lock, reloads durable state, rechecks the remote HEAD, validates the exact
-// projected capacity, and only then installs payloads. No caller-held lock is
-// expected or accepted.
+// StagePrepared stages a validated batch without contacting the repository.
+// Commit checks the authoritative HEAD before publishing, as with Add.
+func (s *Service) StagePrepared(ctx context.Context, inputs []PreparedInput) ([]AssetView, error) {
+	return s.addPrepared(ctx, inputs, nil)
+}
+
+// AddPrepared atomically stages a prepared batch after checking HEAD and
+// projected capacity under the service lock.
 func (s *Service) AddPrepared(ctx context.Context, inputs []PreparedInput, opts PreparedOptions) ([]AssetView, error) {
 	if opts.Reader == nil {
 		return nil, fmt.Errorf("prepared add requires repository access")
 	}
-	limit, err := capacityLimit(opts.MaxBytes)
-	if err != nil {
-		return nil, err
+	return s.addPrepared(ctx, inputs, &opts)
+}
+
+func (s *Service) addPrepared(ctx context.Context, inputs []PreparedInput, opts *PreparedOptions) ([]AssetView, error) {
+	var limit int64
+	var err error
+	if opts != nil {
+		limit, err = capacityLimit(opts.MaxBytes)
+		if err != nil {
+			return nil, err
+		}
 	}
 	unlock, err := s.Lock(ctx)
 	if err != nil {
@@ -302,20 +314,21 @@ func (s *Service) AddPrepared(ctx context.Context, inputs []PreparedInput, opts 
 	if err != nil {
 		return nil, err
 	}
-	base, used, projected, err := projectCapacity(ctx, opts.Reader, st, next)
-	if err != nil {
-		return nil, err
-	}
-	capacity := capacityFor(base, used, projected, limit)
-	if projected > capacity.LimitBytes {
-		return nil, &CapacityError{Capacity: capacity}
+	if opts != nil {
+		base, used, projected, err := projectCapacity(ctx, opts.Reader, st, next)
+		if err != nil {
+			return nil, err
+		}
+		capacity := capacityFor(base, used, projected, limit)
+		if projected > capacity.LimitBytes {
+			return nil, &CapacityError{Capacity: capacity}
+		}
 	}
 	return s.installPrepared(ctx, st, next, inputs)
 }
 
-// installPrepared installs already validated payloads and saves the staged
-// state. The caller holds the service lock and has completed every capacity and
-// occupancy check, so a failure here only rolls back payloads this call created.
+// installPrepared saves validated payloads under the service lock. Failure
+// only rolls back payloads this call created.
 func (s *Service) installPrepared(ctx context.Context, st, next index.State, inputs []PreparedInput) ([]AssetView, error) {
 	success := false
 	defer func() {

@@ -563,3 +563,57 @@ func (f *fixture) raw(method, path string) int {
 	f.server.ServeHTTP(out, request)
 	return out.Code
 }
+
+func TestSingleWorkspaceUploadDoesNotNeedCloneAndCommitChecksHead(t *testing.T) {
+	f := newFixture(t)
+	f.setup()
+	ctx := t.Context()
+	configPath := filepath.Join(f.service.Dir, "config.json")
+	localConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git, err := localgit.Open(ctx, filepath.Join(f.root, "gallery.git"), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := git.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"backend":"github","owner":"owner","name":"gallery","branch":"main"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := os.Getenv("PATH")
+	t.Setenv("PATH", t.TempDir())
+	f.upload([][]byte{imageBytes(t)}, 200)
+	if err := os.Setenv("PATH", path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(repository.CloneDir(f.service.Dir)); !os.IsNotExist(err) {
+		t.Fatalf("upload created a clone: %v", err)
+	}
+	if err := os.WriteFile(configPath, localConfig, 0600); err != nil {
+		t.Fatal(err)
+	}
+	head, err := git.Head(ctx)
+	if err != nil || head != base {
+		t.Fatalf("staging changed HEAD: %s, %v", head, err)
+	}
+	commit, err := git.Commit(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advanced, err := git.CreateCommit(ctx, commit.Tree, base, "external change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := git.UpdateRef(ctx, base, advanced); err != nil {
+		t.Fatal(err)
+	}
+	f.request("POST", "/api/commit", map[string]string{"message": "publish"}, 409)
+	st, err := f.service.Store.Load(ctx)
+	if err != nil || len(st.Changes) != 1 {
+		t.Fatalf("conflicting commit lost staged image: %v", err)
+	}
+}

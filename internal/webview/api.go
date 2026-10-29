@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -513,14 +512,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) (any, error) {
 		}
 		inputs = append(inputs, item)
 	}
-	reader, err := s.reader(r.Context())
-	if err != nil {
-		for _, done := range inputs {
-			os.Remove(done.Payload.TempPath)
-		}
-		return nil, err
-	}
-	assets, err := s.service.AddPrepared(r.Context(), inputs, app.PreparedOptions{Reader: reader, MaxBytes: math.MaxInt64})
+	assets, err := s.service.StagePrepared(r.Context(), inputs)
 	if err != nil {
 		return nil, err
 	}

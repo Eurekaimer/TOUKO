@@ -1807,7 +1807,9 @@ function uploadRequest(data, files, sequence) {
       $("upload-progress").value = Math.round((loaded / total) * 100);
       $("upload-progress-text").textContent =
         loaded === total
-          ? "正在校验并保存到本机…"
+          ? (view.kind === "library"
+              ? "正在校验图片、检查成员仓库容量并保存到本机…"
+              : "正在校验图片并保存到本机…")
           : `上传至本机 ${Math.round((loaded / total) * 100)}%`;
       $("upload-progress-text").textContent += files.length ? "" : "";
     };
@@ -1819,8 +1821,10 @@ function uploadRequest(data, files, sequence) {
         reject(new Error("本地服务响应无效，请检查终端后刷新确认。"));
         return;
       }
-      if ((request.status >= 200 && request.status < 300) || request.status === 207) resolve(body);
-      else reject(responseError(body, request.status));
+      if ((request.status >= 200 && request.status < 300) || request.status === 207) {
+        $("upload-progress-text").textContent = "本机处理完成，正在刷新图库状态…";
+        resolve(body);
+      } else reject(responseError(body, request.status));
     };
     request.onerror = () =>
       reject(new Error("连接中断，请刷新确认暂存状态后再继续。请先刷新核对暂存，不要自动重发整批。"));
