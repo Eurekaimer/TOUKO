@@ -740,6 +740,7 @@ type uploadTarget struct {
 	server    *Server
 	id        string
 	reader    repository.Git
+	preview   *app.Capacity
 	projected int64
 	paths     map[string]domain.ContentObject
 	inputs    []app.PreparedInput
@@ -845,6 +846,7 @@ func (m *workspaceSet) libraryUpload(w http.ResponseWriter, r *http.Request, lib
 			targets = append(targets, target)
 			continue
 		}
+		target.preview = &capacity
 		target.projected = capacity.ProjectedBytes
 		for _, view := range assetViews(state) {
 			target.paths[repository.ObjectPath(view.Asset)] = view.Asset.Object
@@ -937,7 +939,7 @@ func (m *workspaceSet) libraryUpload(w http.ResponseWriter, r *http.Request, lib
 func (m *workspaceSet) stageMember(ctx context.Context, target *uploadTarget) ([]app.AssetView, error) {
 	target.server.workMu.Lock()
 	defer target.server.workMu.Unlock()
-	return target.server.service.AddPrepared(ctx, target.inputs, app.PreparedOptions{Reader: target.reader, MaxBytes: libraryCapacityLimit})
+	return target.server.service.AddPrepared(ctx, target.inputs, app.PreparedOptions{Reader: target.reader, MaxBytes: libraryCapacityLimit, Preview: target.preview})
 }
 
 func capacityMessage(targets []*uploadTarget) string {

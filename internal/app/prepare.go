@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
@@ -37,11 +38,14 @@ type PreparedInput struct {
 }
 
 // PreparedOptions configures AddPrepared. Reader is required: capacity and
-// staleness are always checked against the actual repository HEAD under the
-// service lock. MaxBytes <= 0 selects DefaultCapacityBytes.
+// staleness are checked against its current HEAD under the service lock.
+// Preview may reuse a validated snapshot from PreviewPrepared on the same
+// reader; the current staged changes and capacity are still recalculated.
+// MaxBytes <= 0 selects DefaultCapacityBytes.
 type PreparedOptions struct {
 	Reader   repository.Reader
 	MaxBytes int64
+	Preview  *Capacity
 }
 
 // Capacity describes the repository's full indexed HEAD tree plus a proposed
@@ -53,6 +57,12 @@ type Capacity struct {
 	ProjectedBytes int64                 `json:"projected_bytes"`
 	LimitBytes     int64                 `json:"limit_bytes"`
 	RemainingBytes int64                 `json:"remaining_bytes"`
+	preview        *capacitySnapshot
+}
+
+type capacitySnapshot struct {
+	reader repository.Reader
+	base   repository.Snapshot
 }
 
 // CapacityError carries the rejected projection. It unwraps to
@@ -191,7 +201,7 @@ func applyPrepared(st index.State, inputs []PreparedInput) (index.State, error) 
 // projectCapacity reads the current repository HEAD and computes the full tree
 // bytes plus the proposed batch through the real CommitPlan. Missing or stale
 // remote state is an error, never a zero-byte projection.
-func projectCapacity(ctx context.Context, reader repository.Reader, st index.State, next index.State) (repository.Snapshot, int64, int64, error) {
+func projectCapacity(ctx context.Context, reader repository.Reader, st index.State, next index.State, cached *repository.Snapshot) (repository.Snapshot, int64, int64, error) {
 	if reader == nil {
 		return repository.Snapshot{}, 0, 0, fmt.Errorf("capacity requires repository access")
 	}
@@ -202,9 +212,14 @@ func projectCapacity(ctx context.Context, reader repository.Reader, st index.Sta
 	if head != st.Head {
 		return repository.Snapshot{}, 0, 0, &domain.ConflictError{Base: st.Head, Remote: head, Reason: "head_changed"}
 	}
-	base, err := repository.ReadSnapshot(ctx, reader, head)
-	if err != nil {
-		return repository.Snapshot{}, 0, 0, err
+	var base repository.Snapshot
+	if cached != nil && cached.Head == head {
+		base = *cached
+	} else {
+		base, err = repository.ReadSnapshot(ctx, reader, head)
+		if err != nil {
+			return repository.Snapshot{}, 0, 0, err
+		}
 	}
 	if err := sameRepository(st, base); err != nil {
 		return repository.Snapshot{}, 0, 0, err
@@ -236,10 +251,9 @@ func capacityFor(base repository.Snapshot, used, projected, limit int64) Capacit
 	return Capacity{Head: base.Head, UsedBytes: used, ProjectedBytes: projected, LimitBytes: limit, RemainingBytes: remaining}
 }
 
-// PreviewPrepared reports the proposed capacity for a prepared batch without
-// acquiring the service lock or changing durable state. It uses the cached HEAD
-// and verifies that HEAD still matches the repository, so callers must treat a
-// later AddPrepared check as authoritative.
+// PreviewPrepared reports proposed capacity without changing durable state.
+// AddPrepared may reuse its immutable snapshot only after checking the same
+// reader's current HEAD; it always replans against the current staged state.
 func (s *Service) PreviewPrepared(ctx context.Context, reader repository.Reader, inputs []PreparedInput, limit int64) (Capacity, error) {
 	if reader == nil {
 		return Capacity{}, fmt.Errorf("capacity requires repository access")
@@ -264,11 +278,13 @@ func (s *Service) PreviewPrepared(ctx context.Context, reader repository.Reader,
 	if err != nil {
 		return Capacity{}, err
 	}
-	base, used, projected, err := projectCapacity(ctx, reader, st, next)
+	base, used, projected, err := projectCapacity(ctx, reader, st, next, nil)
 	if err != nil {
 		return Capacity{}, err
 	}
-	return capacityFor(base, used, projected, lim), nil
+	capacity := capacityFor(base, used, projected, lim)
+	capacity.preview = &capacitySnapshot{reader: reader, base: base}
+	return capacity, nil
 }
 
 // StagePrepared stages a validated batch without contacting the repository.
@@ -315,7 +331,13 @@ func (s *Service) addPrepared(ctx context.Context, inputs []PreparedInput, opts 
 		return nil, err
 	}
 	if opts != nil {
-		base, used, projected, err := projectCapacity(ctx, opts.Reader, st, next)
+		var cached *repository.Snapshot
+		if opts.Preview != nil && opts.Preview.preview != nil &&
+			reflect.ValueOf(opts.Reader).Comparable() &&
+			reflect.ValueOf(opts.Preview.preview.reader).Comparable() && opts.Preview.preview.reader == opts.Reader {
+			cached = &opts.Preview.preview.base
+		}
+		base, used, projected, err := projectCapacity(ctx, opts.Reader, st, next, cached)
 		if err != nil {
 			return nil, err
 		}
