@@ -62,3 +62,8 @@ Creation uses `If-None-Match:*`; replacement of a valid same-repository/source o
 
 No bucket listing or bucket-wide pruning occurs. R2 does not document conditional DELETE: external same-key writes still have a check-to-delete window. This is not a cross-system transaction or a linearizability guarantee. GitHub remains authoritative; reconcile can repair the latest referenced placement.
 
+On 2026-10-29, a live probe of a benchmark-owned object confirmed this limit:
+R2 accepted `DeleteObject` with an intentionally incorrect `If-Match`, and a
+subsequent HEAD returned 404. Do not rely on that header to protect a key from
+concurrent replacement; isolate writers before deleting old migration objects.
+
