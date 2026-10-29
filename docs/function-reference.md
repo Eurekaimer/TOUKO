@@ -447,6 +447,7 @@ Cobra 命令构造函数返回 `*cobra.Command`；真正业务发生在其匿名
 | `errorCode` | error 链 → JSON code/exit。 | 先 usage，再 domain errors；APIStatus 接口错误为 api_error，其余 io_error。权限 APIError 可先被 errors.Is 归 unauthorized；不吞底层错误。 |
 | `(*runtime).service` | ctx → 本次调用惰性打开并复用的 Service。 | StateDir→app.Open，只有需要本地状态的命令才开 DB；Run 最终关闭。 |
 | `(*runtime).backend` | Service.Location → localgit或GitHub API adapter。 | GitHub经credential.Resolve取得运行时凭据；用于写入与权威journal恢复，不以浅clone代替远端关系。localgit会实际Open仓库。 |
+| `(*runtime).commitReader` | backend + 现有clone → Git。 | HEAD/写入留API；clone已有对象时本地读commit/tree/blob，缺失逐对象回退；索引HEAD缺失时先浅取一次。没有clone直接用API。 |
 | `(*runtime).encode` | 任意结果 → stdout 单个 JSON 值。 | 输出错误返回给 Run，不写调试日志。 |
 | `(*runtime).command` | 创建 root 与全部命令树。 | 注册全局 state-dir/json、`version` 与 `--version`，禁自动 completion 子命令；版本查询只读 buildinfo，不打开 Service。其他业务在子命令；PersistentPreRun 标记已开始，统一用法错误包装。 |
 | `(*runtime).printAssets` | AssetView 列表 → JSON envelope 或人类行。 | nil 规范为空数组；人类输出 ID/state/namespace/title/hash；不改变 stage。 |
@@ -598,6 +599,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `(*Server).repositories` | 凭据 → repositories envelope。 | 调ListRepositories分页列当前用户可访问仓库，普通gallery/图片命中不调用此API。 |
 | `(*Server).branches` | `repository=OWNER/REPO` → branches envelope。 | 校验恰好一段owner/name，拒绝空段与多余斜杠；复用同一凭据缓存调ListBranches分页。这是分支下拉的唯一来源，不接受任意URL或分支名。 |
 | `(*Server).reader` | 当前Location → 本地Git reader。 | GitHub先ensureClone（缺失时可联网创建，但不fetch已有clone），再localgit.Open；localgit回backend。verify/import以此读取固定快照。 |
+| `(*Server).commitReader` | 当前Location → 提交用Git。 | backend负责HEAD与写入；已有clone时用`IndexedObjects`+`NewLocalFirst`读不可变对象，缺对象逐项回退API；clone缺失直接用API。 `/api/commit` 使用它。 |
 | `(*Server).syncRepository` | Service.SyncWith → SyncResult。 | 同锁prepare中普通路径先updateClone再reader；journal走backend权威API，恢复成功后同锁刷新clone/再sync。 |
 
 ### [`login.go`](../internal/webview/login.go)：浏览器设备授权
@@ -667,6 +669,9 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `localgit.Update` | `fetch` 分支后 `reset --hard` + `clean -fd`，使工作树与远端**严格一致**（远端删除的文件会消失）。只用于 TOUKO 管理的目录。 |
 | `localgit.WorkingCopy` | 缺失则 Clone，然后 Open；读命令用它。 |
 | `localgit.runCredentialed` | Git命令经credential protocol与继承fd3传凭据，不进URL/argv/env/文件，等待子进程结束；错误经redact。 |
+| `localgit.HasObject` | `git cat-file -e <id>`：对象库是否已有该对象。 | 只用于决定本地读还是API回退；校验ID，缺失或错误一律false。 |
+| `localgit.NewLocalFirst` | API Git + 本地Repository → Git。 | 仅覆盖 Commit/Tree/OpenBlob 的只读方法；本地有该对象就本地读，否则回退API；HEAD、Create*/UpdateRef、IsAncestor 全部保持API。 |
+| `localgit.IndexedObjects` | 目录/远端/分支/索引HEAD/token → *Repository 或 nil。 | 无clone返回nil；HEAD对象已在本地直接返回；缺失时30秒内浅取该提交（不写FETCH_HEAD），失败仍返回旧clone供逐对象回退。 |
 | `localgit.RemoteHead` | `git ls-remote --refs --exit-code -- <remote> refs/heads/<branch>`，只读核对远端分支，不写 ref/FETCH_HEAD；输出有上限且按sha1校验，异常行拒绝。 |
 | `localgit.FetchCommit` | `git fetch --depth=1 --no-tags --no-write-fetch-head --no-auto-maintenance -- <remote> <sha>`，只补齐缺失对象（含 shallow 边界更新），不移动 checkout、分支引用或待发布内容；凭据仍走fd3。 |
 | `webview.(*Server).capacityReader` | 单工作区/统一图库容量读取：clone HEAD 等于索引 HEAD 直接用本地对象；落后时先用 `RemoteHead` 核对，`FetchCommit` 补固定提交，返回每次 `Head` 都重新核对的 reader。clone 缺失、Git 失败或超过 30 秒回退 GitHub API；真实 HEAD 变化报 conflict，不把旧 clone 当新状态。 |
@@ -675,6 +680,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `webview.localImage` | canonical从checkout读取并验regular/size；显式Path不读可变同名文件，而由openImage按immutable Git blob读取。未命中可回退其他固定快照读取。 |
 | `webview.(*Server).updateClone`、`CloneStatus` | 显式sync创建/更新clone；state调用CloneStatus报告实际可用性/路径。并非未使用helper，不在gallery/preview偷偷fetch。 |
 | `cli.(*runtime).reader` | GitHub经Resolve与WorkingCopy取得本地clone（缺失可创建），不刷新已有clone；localgit直接backend。verify不fetch，sync由syncClone显式先更新。 |
+| `cli.(*runtime).commitReader` | commit专用：backend writer + `localgit.IndexedObjects`/`NewLocalFirst`。 | 只读对象走本地clone，HEAD/写入仍走API；fetch失败或对象缺失时逐对象回退，不移动checkout。 |
 
 ### [`static/app.js`](../internal/webview/static/app.js)：按用户操作查函数
 

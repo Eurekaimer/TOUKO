@@ -197,6 +197,32 @@ func (r *runtime) reader(ctx context.Context, s *app.Service) (repository.Git, e
 	return localgit.WorkingCopy(ctx, location.RemoteURL(), repository.CloneDir(s.Dir), location.Branch, token)
 }
 
+// commitReader keeps HEAD and every write on the API, but reads immutable
+// objects from the checkout when it already holds them.
+func (r *runtime) commitReader(ctx context.Context, s *app.Service) (repository.Git, error) {
+	git, err := r.backend(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	location, err := s.Location(ctx)
+	if err != nil || location.Backend != "github" {
+		return git, err
+	}
+	st, err := s.Store.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	token, _, err := credential.Resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	local := localgit.IndexedObjects(ctx, repository.CloneDir(s.Dir), location.RemoteURL(), location.Branch, st.Head, token)
+	if local == nil {
+		return git, nil
+	}
+	return localgit.NewLocalFirst(git, local), nil
+}
+
 func (r *runtime) encode(v any) error { return json.NewEncoder(r.stdout).Encode(v) }
 
 func (r *runtime) command() *cobra.Command {

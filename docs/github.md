@@ -48,7 +48,7 @@ ID=$(/tmp/touko add logo/touko-logo.png --namespace blog --tag demo --output id)
 
 每个仓库/分支是独立 URL 工作区（新工作区为 `/w/<key>/`），各自保存 clone、index、stage/journal；切换不会清空旧暂存，不必停止服务换 state。根工作区保持兼容，新工作区存于 `<state-root>/workspaces/<key>/`。独立 CLI 仍需按实际工作区路径传 `--state-dir`，不要拿根 state-dir 操作所有仓库。
 
-首次 GitHub 读操作会建立浅克隆（`--depth 1`）。已有 clone 时预览和 `verify` 只读本地当前快照，不 fetch，不是“远端最新”证明；普通 `sync` 先更新 clone，再在**同一次调用**中索引新的固定 HEAD。发布结果未知的 journal 通过 API 恢复，不用浅克隆判断远端提交；`commit`、`repo init` 仍用 GitHub API 写入，不执行 `git push`。认证/仓库发现/列表同样会访问 API。
+首次 GitHub 读操作会建立浅克隆（`--depth 1`）。已有 clone 时预览和 `verify` 只读本地当前快照，不 fetch，不是“远端最新”证明；普通 `sync` 先更新 clone，再在**同一次调用**中索引新的固定 HEAD。发布结果未知的 journal 通过 API 恢复，不用浅克隆判断远端提交；`commit`、`repo init` 仍用 GitHub API 写入，不执行 `git push`。提交的 HEAD 核对、blob/tree/commit 写入与 ref 更新都在 API，但只读对象优先来自已有 clone，缺失时逐对象回退，因此一次单图提交不再随图库大小增长。认证/仓库发现/列表同样会访问 API。
 
 统一图库上传的容量检查优先复用本地 Git 对象；clone 落后时通过 Git 核对远端分支，必要时浅取固定提交，但不 reset 或 clean 工作树。Git 不可用或 clone 缺失时仍回退 API；完整流程与超时边界见 [上传与预览](webview.md#a-上传与预览)。上传阶段只暂存，不向 GitHub 或 Cloudflare 发布；R2 镜像在 GitHub 确认发布后才开始。
 

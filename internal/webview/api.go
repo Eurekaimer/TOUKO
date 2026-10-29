@@ -181,7 +181,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 				err = usage("commit message must not be empty")
 			} else {
 				var git repository.Git
-				git, err = s.backend(r.Context())
+				git, err = s.commitReader(r.Context())
 				if err == nil {
 					result, err = s.service.Commit(r.Context(), git, input.Message)
 				}

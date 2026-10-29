@@ -748,12 +748,36 @@ type uploadTarget struct {
 	err       error
 }
 
-func (t *uploadTarget) accepts(input app.PreparedInput) bool {
+// tryAccept loads the member's capacity the first time routing needs it. Most
+// batches fit the first member, so later members are not read at all.
+func (t *uploadTarget) tryAccept(ctx context.Context, input app.PreparedInput) bool {
+	t.load(ctx)
+	if t.err != nil {
+		return false
+	}
 	objectPath := repository.ObjectPath(input.Asset)
 	if existing, ok := t.paths[objectPath]; ok {
 		return existing == input.Asset.Object
 	}
 	return t.projected+input.Asset.Object.Size <= libraryCapacityLimit
+}
+
+func (t *uploadTarget) load(ctx context.Context) {
+	if t.err != nil || t.reader != nil {
+		return
+	}
+	reader, err := t.server.capacityReader(ctx)
+	if err != nil {
+		t.err = err
+		return
+	}
+	capacity, err := t.server.service.PreviewPrepared(ctx, reader, nil, libraryCapacityLimit)
+	if err != nil {
+		t.err = err
+		return
+	}
+	t.reader, t.preview = reader, &capacity
+	t.projected = capacity.ProjectedBytes
 }
 
 func (t *uploadTarget) assign(index int, input app.PreparedInput) {
@@ -833,27 +857,11 @@ func (m *workspaceSet) libraryUpload(w http.ResponseWriter, r *http.Request, lib
 			targets = append(targets, target)
 			continue
 		}
-		reader, err := server.capacityReader(ctx)
-		if err != nil {
-			target.err = err
-			targets = append(targets, target)
-			continue
-		}
-		target.reader = reader
-		capacity, err := server.service.PreviewPrepared(ctx, reader, nil, libraryCapacityLimit)
-		if err != nil {
-			target.err = err
-			targets = append(targets, target)
-			continue
-		}
-		target.preview = &capacity
-		target.projected = capacity.ProjectedBytes
 		for _, view := range assetViews(state) {
 			target.paths[repository.ObjectPath(view.Asset)] = view.Asset.Object
 		}
 		targets = append(targets, target)
 	}
-
 	failed := make([]map[string]any, 0)
 	for index, input := range prepared {
 		var chosen *uploadTarget
@@ -866,21 +874,23 @@ func (m *workspaceSet) libraryUpload(w http.ResponseWriter, r *http.Request, lib
 				continue
 			}
 			if existing, ok := target.paths[objectPath]; ok && existing == input.Asset.Object {
-				chosen = target
-				break
+				target.load(ctx)
+				if target.err == nil {
+					chosen = target
+					break
+				}
 			}
 		}
 		if chosen == nil {
 			for _, target := range targets {
-				if target.err != nil || !target.accepts(input) {
-					continue
+				if target.tryAccept(ctx, input) {
+					chosen = target
+					break
 				}
-				chosen = target
-				break
 			}
 		}
 		if chosen == nil {
-			failed = append(failed, map[string]any{"index": index, "code": "capacity_full", "message": capacityMessage(targets)})
+			failed = append(failed, map[string]any{"index": index, "code": "capacity_full", "message": capacityMessage(ctx, targets)})
 			continue
 		}
 		chosen.assign(index, input)
@@ -942,9 +952,10 @@ func (m *workspaceSet) stageMember(ctx context.Context, target *uploadTarget) ([
 	return target.server.service.AddPrepared(ctx, target.inputs, app.PreparedOptions{Reader: target.reader, MaxBytes: libraryCapacityLimit, Preview: target.preview})
 }
 
-func capacityMessage(targets []*uploadTarget) string {
+func capacityMessage(ctx context.Context, targets []*uploadTarget) string {
 	parts := make([]string, 0, len(targets))
 	for _, target := range targets {
+		target.load(ctx)
 		if target.err != nil {
 			parts = append(parts, fmt.Sprintf("%s unavailable: %v", target.id, target.err))
 			continue

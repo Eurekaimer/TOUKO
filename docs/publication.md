@@ -16,6 +16,15 @@ and errors remain ordered. During an ordinary commit, unchanged Git entries can
 reuse metadata from the freshly validated base, while all candidate references
 and conflicts are checked again. Journal recovery reads snapshots afresh.
 
+GitHub commits keep HEAD checks, blob writes, tree/commit creation and the ref
+update on the API, but answer reads of immutable commit, tree and blob objects
+from the local clone when it already holds them. A missing object falls back to
+the API per object, and the clone's own ref is never moved. When a previous API
+commit left the clone behind, its indexed commit is fetched once (depth 1,
+without FETCH_HEAD) before reading; a failed fetch simply means the API answers
+instead. This keeps a one-image commit at roughly nine API requests regardless of
+gallery size instead of one metadata request per Asset.
+
 A published remote commit is not rolled back when local bookkeeping fails. Errors identify the published/candidate HEAD; `sync` reconciles it. Save is deliberately cache-first: failed workspace replacement can leave new cache beside old durable stage/journal, which recovery must retain rather than interpret as a second batch. A directory-sync failure after rename is reported, not represented as guaranteed rollback. Payload-cleanup errors must not be read as remote publication failure.
 
 ## Recovery table

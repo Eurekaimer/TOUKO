@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 )
@@ -64,6 +65,29 @@ func Clone(ctx context.Context, remote, dir, branch, token string) error {
 		return fmt.Errorf("git clone: %w: %s", err, redact(stderr, token))
 	}
 	return nil
+}
+
+// IndexedObjects opens an existing checkout and makes sure the indexed commit's
+// objects are present, fetching that one commit when a previous API commit left
+// the clone behind. A missing checkout, missing head or failed fetch returns nil
+// (or the old checkout), so callers keep using the API.
+func IndexedObjects(ctx context.Context, dir, remote, branch string, head domain.RepositoryHead, token string) *Repository {
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		return nil
+	}
+	local, err := Open(ctx, dir, branch)
+	if err != nil {
+		return nil
+	}
+	if head == "" || local.HasObject(ctx, string(head)) {
+		return local
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := FetchCommit(fetchCtx, dir, remote, head, token); err != nil {
+		return local
+	}
+	return local
 }
 
 // WorkingCopy opens the checkout at dir, creating it from remote when absent.

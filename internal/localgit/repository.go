@@ -40,15 +40,17 @@ func Open(ctx context.Context, path, branch string) (*Repository, error) {
 	if err := r.validateBranch(ctx); err != nil {
 		return nil, err
 	}
-	format, err := r.run(ctx, nil, "rev-parse", "--show-object-format")
+	// One process answers both questions: object format, then absolute git dir.
+	out, err := r.run(ctx, nil, "rev-parse", "--show-object-format", "--absolute-git-dir")
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(string(format)) != "sha1" {
+	format, gitDir, _ := strings.Cut(string(out), "\n")
+	if format != "sha1" {
 		return nil, fmt.Errorf("local Git repository must use sha1 object format")
 	}
-	if _, err := r.run(ctx, nil, "rev-parse", "--absolute-git-dir"); err != nil {
-		return nil, err
+	if strings.TrimSpace(gitDir) == "" {
+		return nil, fmt.Errorf("unexpected git rev-parse output")
 	}
 	return r, nil
 }
@@ -335,6 +337,15 @@ func (b *blobReader) Close() error {
 	return b.closeErr
 }
 
+// HasObject reports whether the object database already holds id.
+func (r *Repository) HasObject(ctx context.Context, id string) bool {
+	if validateID(id) != nil {
+		return false
+	}
+	_, err := r.run(ctx, nil, "cat-file", "-e", id)
+	return err == nil
+}
+
 func (r *Repository) OpenBlob(ctx context.Context, id repository.BlobID) (io.ReadCloser, error) {
 	if err := validateID(string(id)); err != nil {
 		return nil, err
@@ -354,6 +365,43 @@ func (r *Repository) OpenBlob(ctx context.Context, id repository.BlobID) (io.Rea
 		return nil, err
 	}
 	return &blobReader{pipe: pipe, cmd: cmd, ctx: ctx, stderr: stderr}, nil
+}
+
+// NewLocalFirst answers immutable objects from the checkout when it already
+// holds them. HEAD, writes and ref updates stay with api, which is
+// authoritative; an object Git does not have falls back to api.
+func NewLocalFirst(api repository.Git, local *Repository) repository.Git {
+	return &localFirst{Git: api, local: local}
+}
+
+type localFirst struct {
+	repository.Git
+	local *Repository
+}
+
+func (r *localFirst) Commit(ctx context.Context, head domain.RepositoryHead) (repository.GitCommit, error) {
+	if r.local.HasObject(ctx, string(head)) {
+		if commit, err := r.local.Commit(ctx, head); err == nil {
+			return commit, nil
+		}
+	}
+	return r.Git.Commit(ctx, head)
+}
+
+func (r *localFirst) Tree(ctx context.Context, tree repository.TreeID) ([]repository.GitEntry, error) {
+	if r.local.HasObject(ctx, string(tree)) {
+		if entries, err := r.local.Tree(ctx, tree); err == nil {
+			return entries, nil
+		}
+	}
+	return r.Git.Tree(ctx, tree)
+}
+
+func (r *localFirst) OpenBlob(ctx context.Context, id repository.BlobID) (io.ReadCloser, error) {
+	if r.local.HasObject(ctx, string(id)) {
+		return r.local.OpenBlob(ctx, id)
+	}
+	return r.Git.OpenBlob(ctx, id)
 }
 
 func (r *Repository) IsAncestor(ctx context.Context, ancestor, head domain.RepositoryHead) (bool, error) {

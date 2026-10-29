@@ -127,6 +127,36 @@ func (r *remoteCapacityReader) Head(ctx context.Context) (domain.RepositoryHead,
 	return localgit.RemoteHead(remoteCtx, r.dir, r.remote, r.branch, r.token)
 }
 
+// commitReader adds authoritative GitHub writes and HEAD checks to the local
+// objects the checkout already holds, so a commit does not re-download every
+// metadata blob on each publication.
+func (s *Server) commitReader(ctx context.Context) (repository.Git, error) {
+	api, err := s.backend(ctx)
+	if err != nil {
+		return nil, err
+	}
+	location, err := s.service.Location(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if location.Backend != "github" {
+		return api, nil
+	}
+	st, err := s.service.Store.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	token, _, err := s.credentials(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	local := localgit.IndexedObjects(ctx, repository.CloneDir(s.service.Dir), location.RemoteURL(), location.Branch, st.Head, token)
+	if local == nil {
+		return api, nil
+	}
+	return localgit.NewLocalFirst(api, local), nil
+}
+
 func (s *Server) syncRepository(ctx context.Context) (app.SyncResult, error) {
 	return s.service.SyncWith(ctx, func(ctx context.Context, recovering bool) (repository.Git, error) {
 		if recovering {

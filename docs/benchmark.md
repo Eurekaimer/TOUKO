@@ -272,6 +272,42 @@ measure real GitHub or R2 latency, rate limits, browser rendering, image
 encoding, or a complete five-second publish; an isolated writable remote was
 not available, so no end-to-end remote timing is claimed here.
 
+### Single-image publication against a real gallery
+
+The same machine, a 200-Asset public gallery, one 57 KB PNG, and Cloudflare R2
+enabled. Requests are counted from the GitHub core rate-limit counter before and
+after the command; wall time is `/usr/bin/time`. The network path ran through a
+local HTTP proxy at roughly 0.3–0.9 s per GitHub request, so these numbers
+describe that link, not GitHub's best case.
+
+| Operation | Build | API requests | Wall |
+| --- | --- | ---: | ---: |
+| `add` (staging only) | either | 0 | 0.05 s |
+| commit one new image, R2 on | before local reads | 212 | 25.8 s |
+| commit one new image, R2 on | after local reads | 11 | 13.6 s |
+| commit one deletion, R2 on | after local reads | 10 | 12.1 s |
+| commit one new image, R2 off | after local reads | 9 | 9.3 s |
+| commit one deletion, R2 off | after local reads | 9 | 7.5 s |
+
+Before the change, a commit read the manifest and every Asset metadata file from
+the API, so its request count grew with the gallery. After it, immutable commit,
+tree and blob reads come from the clone and a one-image commit costs about nine
+requests: read HEAD, upload the image blob and its metadata, create the tree and
+commit, re-read the candidate commit and tree, update the ref, re-read HEAD.
+
+The remaining wall time is almost entirely request latency: nine requests at
+0.5–1 s each plus three R2 calls. PicGo is faster because its GitHub uploader
+issues a single `PUT /repos/{owner}/{repo}/contents/{path}` and lets GitHub
+create the commit; it reads no base snapshot, keeps no atomic multi-file batch,
+writes no TOUKO manifest, and confirms nothing after the write. Matching that
+request count would require dropping those properties, not tuning this code.
+
+Two network observations from the same session, neither caused by the client: one
+tree read hit the 45 s HTTP timeout, and for several minutes every request body
+above roughly 20 KB failed (a `400 malformed request` through the proxy, a
+dropped connection without it) while the same body sent chunked succeeded. The
+same uploads succeeded before and after that window, so the client was unchanged.
+
 ### Large-gallery rendering check
 
 The gallery mounts at most 60 cards first and appends another batch when the

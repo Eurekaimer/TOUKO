@@ -12,10 +12,40 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Eurekaimer/TOUKO/internal/app"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 )
+
+// A target that is already loaded must decide from its projected bytes; the
+// same object path with identical bytes is reused even at the waterline, while
+// a different object at that path is never admitted.
+func TestUploadTargetAcceptance(t *testing.T) {
+	ctx := t.Context()
+	git, err := localgit.Init(ctx, filepath.Join(t.TempDir(), "gallery.git"), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := domain.ContentObject{Size: 10}
+	target := &uploadTarget{reader: git, projected: libraryCapacityLimit - 10, paths: map[string]domain.ContentObject{}}
+	if !target.tryAccept(ctx, app.PreparedInput{Asset: domain.Asset{Path: "a.webp", Object: object}}) {
+		t.Fatal("object within the waterline was rejected")
+	}
+	object.Size = 11
+	if target.tryAccept(ctx, app.PreparedInput{Asset: domain.Asset{Path: "b.webp", Object: object}}) {
+		t.Fatal("object past the waterline was accepted")
+	}
+	object.Size = 10
+	reuse := &uploadTarget{reader: git, projected: libraryCapacityLimit, paths: map[string]domain.ContentObject{"a.webp": object}}
+	if !reuse.tryAccept(ctx, app.PreparedInput{Asset: domain.Asset{Path: "a.webp", Object: object}}) {
+		t.Fatal("identical object at the same path was not reused")
+	}
+	other := domain.ContentObject{Size: 10, MIME: "image/webp"}
+	if reuse.tryAccept(ctx, app.PreparedInput{Asset: domain.Asset{Path: "a.webp", Object: other}}) {
+		t.Fatal("a different object at an occupied path was accepted")
+	}
+}
 
 func TestLibraryUploadUsesAuthoritativeReaderWhenCloneMissingOrStale(t *testing.T) {
 	for _, stale := range []bool{false, true} {

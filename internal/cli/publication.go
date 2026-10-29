@@ -16,7 +16,7 @@ func (r *runtime) commitCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		git, err := r.backend(cmd.Context(), s)
+		git, err := r.commitReader(cmd.Context(), s)
 		if err != nil {
 			return err
 		}
