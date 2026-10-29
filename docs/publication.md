@@ -11,6 +11,11 @@
 5. Persist `{BaseHead,CandidateHead,CandidateTree}` as the publication journal in `workspace.json` **before** publishing the ref. Check HEAD again; publish using backend ref protection.
 6. Validate candidate metadata (including any required v2 manifest upgrade), resolved image placements, deletions and unchanged unrelated leaf entries; confirm remote is candidate or its descendant. Scan the latest valid HEAD, commit the cache transaction, then durably replace the workspace to clear changes/journal. Release unreferenced staged payloads only after Save succeeds.
 
+Snapshot metadata reads run with at most eight concurrent requests; validation
+and errors remain ordered. During an ordinary commit, unchanged Git entries can
+reuse metadata from the freshly validated base, while all candidate references
+and conflicts are checked again. Journal recovery reads snapshots afresh.
+
 A published remote commit is not rolled back when local bookkeeping fails. Errors identify the published/candidate HEAD; `sync` reconciles it. Save is deliberately cache-first: failed workspace replacement can leave new cache beside old durable stage/journal, which recovery must retain rather than interpret as a second batch. A directory-sync failure after rename is reported, not represented as guaranteed rollback. Payload-cleanup errors must not be read as remote publication failure.
 
 ## Recovery table
@@ -38,7 +43,7 @@ GitHub publication remains the success boundary. The only automatic mirror hook 
 
 R2 failure is an optional `cloudflare` result, not a rollback or a second GitHub publication. Original cache/cleanup failures still use their original error paths. Recovery uses the same finalizer; `SyncWith` retains its mirror result through the subsequent clone refresh.
 
-One reconcile engine serves publication and explicit full backfill. Before remote work it durably writes every PUT/delete intent (W1); it processes keys serially, then saves results once (W2). A crash before W2 can replay W1 by HEAD, adopting matching owned objects without retransmission. Source blobs are fixed by Git SHA and streamed through unconverted image ingest into private temporary files.
+One reconcile engine serves publication and explicit full backfill. Before remote work it durably writes every PUT/delete intent (W1); it processes sorted uploads in batches of at most four, merges their results in order, then saves results once (W2). A crash before W2 can replay W1 by HEAD, adopting matching owned objects without retransmission. Automatic publication can read a matching staged Add payload; missing payloads and full backfill use the fixed Git SHA. Both sources pass through unconverted image ingest and full description validation before PUT.
 
 Creation uses `If-None-Match:*`; replacement of a valid same-repository/source object uses its observed ETag with `If-Match`. Foreign or untagged keys are conflicts, never overwritten. All PUT/adopt work precedes deletion; an unfinished PUT defers every delete. Deletion requires no final Asset reference, a fresh authoritative source HEAD, and confirmed ownership metadata. Deleted tombstones remain known so a late timed-out PUT can be cleaned on a later explicit sync.
 

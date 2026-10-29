@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Eurekaimer/TOUKO/internal/credential"
@@ -19,6 +21,7 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/index"
 	"github.com/Eurekaimer/TOUKO/internal/r2"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
+	"github.com/Eurekaimer/TOUKO/internal/staging"
 )
 
 // Cloudflare mirror ledger states. These strings are the durable contract of
@@ -133,6 +136,7 @@ type cloudflareReconcile struct {
 	entries    map[string]index.MirrorEntry
 	uploads    map[string]bool
 	deletes    map[string]bool
+	payloads   map[string]string
 	dryRun     bool
 	ledger     index.MirrorLedger
 
@@ -272,15 +276,17 @@ func (s *Service) cloudflarePublication(ctx context.Context, r repository.Git, s
 		return &result
 	}
 	candidates := make(map[string]bool)
+	payloads := make(map[string]string)
 	for id, change := range st.Changes {
 		if change.Kind != domain.Add || change.Asset == nil {
 			continue
 		}
 		final, ok := snap.Assets[id]
-		if !ok || final.Object != change.Asset.Object || final.Path != change.Asset.Path {
+		if !ok || final.Object != change.Asset.Object || final.Path != change.Asset.Path || final.Namespace != change.Asset.Namespace {
 			continue
 		}
 		candidates[repository.ObjectPath(final)] = true
+		payloads[repository.ObjectPath(final)] = staging.PayloadPath(s.Dir, final.Namespace, final.Object)
 	}
 	uploads := cloudflareUploadKeys(refs, candidates, entries, true)
 	deletes := cloudflareDeleteKeys(refs, entries)
@@ -298,6 +304,7 @@ func (s *Service) cloudflarePublication(ctx context.Context, r repository.Git, s
 		return &result
 	}
 	run := cloudflareNewReconcile(s, r, cfg, mirror, snap.Manifest.ID, cloudflareSourceID(location), snap.Head, refs, entries, uploads, deletes, ledger, false)
+	run.payloads = payloads
 	result, _ := run.run(ctx)
 	return &result
 }
@@ -607,61 +614,80 @@ func (r *cloudflareReconcile) run(ctx context.Context) (CloudflareResult, error)
 	uploads := cloudflareKeys(r.uploads)
 	deletes := cloudflareKeys(r.deletes)
 	putsIncomplete := false
+	type uploadResult struct {
+		status, action, code, stop string
+		cause                      error
+		entry                      index.MirrorEntry
+		hasEntry                   bool
+	}
+	for start := 0; start < len(uploads); start += 4 {
+		if ctx.Err() != nil && r.stop == "" {
+			r.stop = cloudflareCodeCanceled
+			if r.cause == nil {
+				r.cause = ctx.Err()
+			}
+		}
+		if r.stop != "" {
+			for _, key := range uploads[start:] {
+				if !r.dryRun {
+					r.markEntry(key, func(e *index.MirrorEntry) {
+						e.State = cloudflarePending
+						e.ErrorCode = r.stop
+					})
+				}
+				r.addItem(key, "put", "pending", r.stop)
+			}
+			putsIncomplete = true
+			break
+		}
+		end := min(start+4, len(uploads))
+		results := make([]uploadResult, end-start)
+		var wg sync.WaitGroup
+		for i, key := range uploads[start:end] {
+			child := *r
+			child.entries = make(map[string]index.MirrorEntry, 1)
+			if entry, ok := r.entries[key]; ok {
+				child.entries[key] = entry
+			}
+			wg.Add(1)
+			go func(i int, key string) {
+				defer wg.Done()
+				result := &results[i]
+				if child.dryRun {
+					result.status, result.action, result.code, result.stop, result.cause = child.reconcileUploadDry(ctx, key)
+				} else {
+					result.status, result.action, result.code, result.stop, result.cause = child.reconcileUpload(ctx, key)
+					result.entry, result.hasEntry = child.entries[key]
+				}
+			}(i, key)
+		}
+		wg.Wait()
+		for i, key := range uploads[start:end] {
+			result := results[i]
+			if result.hasEntry {
+				r.entries[key] = result.entry
+			}
+			if result.cause != nil && r.cause == nil {
+				r.cause = result.cause
+			}
+			if result.stop != "" && r.stop == "" {
+				r.stop = result.stop
+			}
+			if result.status != "synced" && !(r.dryRun && (result.status == "exists" || result.status == "would_upload")) {
+				putsIncomplete = true
+			}
+			r.addItem(key, result.action, result.status, result.code)
+		}
+	}
 	if r.dryRun {
-		for i, key := range uploads {
-			status, action, code, stop, cause := r.reconcileUploadDry(ctx, key)
-			if cause != nil && r.cause == nil {
-				r.cause = cause
+		if putsIncomplete {
+			for _, key := range deletes {
+				r.addItem(key, "delete", "pending", cloudflareCodeDeferredPutFailure)
 			}
-			r.addItem(key, action, status, code)
-			if stop != "" {
-				r.stop = stop
-				for _, remaining := range uploads[i+1:] {
-					r.addItem(remaining, "put", "failed", stop)
-				}
-				break
-			}
+		} else {
+			r.reconcileDeletesDry(ctx, deletes)
 		}
-		r.reconcileDeletesDry(ctx, deletes)
 	} else {
-		for i, key := range uploads {
-			if ctx.Err() != nil {
-				r.stop = cloudflareCodeCanceled
-			}
-			if r.stop != "" {
-				for _, remaining := range uploads[i:] {
-					r.markEntry(remaining, func(e *index.MirrorEntry) {
-						e.State = cloudflarePending
-						e.ErrorCode = r.stop
-					})
-					r.addItem(remaining, "put", "pending", r.stop)
-				}
-				putsIncomplete = true
-				break
-			}
-			status, action, code, stop, cause := r.reconcileUpload(ctx, key)
-			if cause != nil && r.cause == nil {
-				r.cause = cause
-			}
-			if stop != "" {
-				r.stop = stop
-			}
-			if status != "synced" {
-				putsIncomplete = true
-			}
-			r.addItem(key, action, status, code)
-			if r.stop != "" {
-				for _, remaining := range uploads[i+1:] {
-					r.markEntry(remaining, func(e *index.MirrorEntry) {
-						e.State = cloudflarePending
-						e.ErrorCode = r.stop
-					})
-					r.addItem(remaining, "put", "pending", r.stop)
-				}
-				putsIncomplete = true
-				break
-			}
-		}
 		if putsIncomplete {
 			for _, key := range deletes {
 				r.markEntry(key, func(e *index.MirrorEntry) {
@@ -961,9 +987,21 @@ func (r *cloudflareReconcile) putBlob(ctx context.Context, key string, ref cloud
 	if ref.entry.Type != "blob" || ref.entry.SHA == "" {
 		return "", cloudflareCodeSourceUnavailable, fmt.Errorf("%w: object entry %s is unavailable", domain.ErrRepositoryCorrupt, key)
 	}
-	body, err := r.repo.OpenBlob(ctx, repository.BlobID(ref.entry.SHA))
-	if err != nil {
-		return "", cloudflareCodeSourceUnavailable, err
+	var body io.ReadCloser
+	var err error
+	if payload := r.payloads[key]; payload != "" {
+		file, openErr := os.Open(payload)
+		if openErr == nil {
+			body = file
+		} else if !errors.Is(openErr, os.ErrNotExist) {
+			return "", cloudflareCodeSourceUnavailable, openErr
+		}
+	}
+	if body == nil {
+		body, err = r.repo.OpenBlob(ctx, repository.BlobID(ref.entry.SHA))
+		if err != nil {
+			return "", cloudflareCodeSourceUnavailable, err
+		}
 	}
 	tempDir, err := os.MkdirTemp(r.service.Dir, "cloudflare-upload-")
 	if err != nil {
