@@ -128,6 +128,8 @@ touko url <UUID> --provider cloudflare
 
 同一批图片在内存中计算一次 SHA-256 的三轮实测平均为 **0.111 ms/张**，不包含磁盘、转换或网络。旧版单图请求数与计时、完整方法和限制见 [Benchmark](docs/benchmark.md)；当前发布前会额外读取一次 HEAD。
 
+**迁移安全提示：** 已发布的 `touko migrate paths` 和 `--prune-old` 尚未通过失败恢复与旧对象保护验证，请勿用于生产图库；保留现有图片和链接，直到修复完成。
+
 ## 文档
 
 [CLI 用法](docs/usage.md) · [URL 迁移](docs/migration.md) · [Webview](docs/webview.md) · [架构](docs/code-guide.md) · [函数导航](docs/function-reference.md) · [仓库格式](docs/repository-format.md) · [本地状态](docs/local-state.md) · [发布协议](docs/publication.md) · [Benchmark](docs/benchmark.md)

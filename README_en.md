@@ -133,6 +133,10 @@ SHA-256 pass, excluding disk, conversion and network. Historical single-image
 request counts, methodology and limits are in [Benchmark](docs/benchmark.md).
 The current client adds a pre-publication HEAD read.
 
+**Migration safety:** The published `touko migrate paths` and `--prune-old`
+have not passed failure-recovery and legacy-object safety checks. Do not use
+them on a production gallery until the fix is complete.
+
 ## Documentation
 
 [CLI](docs/usage.md) · [Webview](docs/webview.md) · [Architecture](docs/code-guide.md) · [Function reference](docs/function-reference.md) · [Repository format](docs/repository-format.md) · [Local state](docs/local-state.md) · [Publication](docs/publication.md) · [Benchmark](docs/benchmark.md)
