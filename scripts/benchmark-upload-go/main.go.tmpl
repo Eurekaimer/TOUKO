@@ -1,0 +1,355 @@
+// Command benchmark-upload-go times one staged image and its publication with
+// Go's monotonic clock. It calls the same internal/cli entry point as the real
+// binary, so add and commit are measured inside the process instead of around a
+// subprocess spawn and Python's clock.
+//
+// The runner imports internal/benchrec, which the Python harness injects into a
+// temporary source copy. Each timed add and commit therefore returns the
+// per-phase durations recorded inside the production pipeline, not estimates.
+// A source tree without that instrumentation cannot build this command.
+//
+// The command is benchmark-only. It performs no retries: a failed add or commit
+// is returned to the caller and the caller must stop that run. It never talks to
+// a repository by itself; the Python harness prepares the state and repository
+// outside the timed section.
+//
+// Hash mode is a separate in-memory SHA-256 microbenchmark. It is intentionally
+// not part of an upload phase and must not be reported as one.
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/Eurekaimer/TOUKO/internal/benchrec"
+	"github.com/Eurekaimer/TOUKO/internal/cli"
+	"github.com/Eurekaimer/TOUKO/internal/r2"
+)
+
+type r2Item struct {
+	ObjectPath string `json:"object_path"`
+	Action     string `json:"action"`
+	Status     string `json:"status"`
+	ErrorCode  string `json:"error_code,omitempty"`
+}
+
+type uploadRecord struct {
+	Index     int      `json:"index"`
+	File      string   `json:"file"`
+	SizeBytes int64    `json:"size_bytes"`
+	AddNS     int64    `json:"add_ns"`
+	CommitNS  int64    `json:"commit_ns"`
+	TotalNS   int64    `json:"total_ns"`
+	AddOK     bool     `json:"add_ok"`
+	CommitOK  bool     `json:"commit_ok"`
+	OK        bool     `json:"ok"`
+	Error     string   `json:"error,omitempty"`
+	R2Items   []r2Item `json:"r2_items,omitempty"`
+	// PhasesAdd and PhasesCommit are nanosecond spans recorded inside the
+	// production pipeline for this image. They are separate so a commit phase
+	// can never be mistaken for add work.
+	PhasesAdd    map[string]int64 `json:"phases_add,omitempty"`
+	PhasesCommit map[string]int64 `json:"phases_commit,omitempty"`
+}
+
+type r2ProbeResult struct {
+	OK     bool   `json:"ok"`
+	Bucket string `json:"bucket"`
+	Key    string `json:"key"`
+	Exists bool   `json:"exists"`
+}
+
+type hashSample struct {
+	Repeat    int    `json:"repeat"`
+	File      string `json:"file"`
+	SizeBytes int64  `json:"size_bytes"`
+	HashNS    int64  `json:"hash_ns"`
+}
+
+type hashResult struct {
+	Description       string       `json:"description"`
+	ImageCount        int          `json:"image_count"`
+	Repeats           int          `json:"repeats"`
+	InputBytesPerPass int64        `json:"input_bytes_per_repeat"`
+	MeanMS            float64      `json:"mean_ms"`
+	MedianMS          float64      `json:"median_ms"`
+	P95MS             float64      `json:"p95_ms"`
+	Samples           []hashSample `json:"samples"`
+}
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	var (
+		state      = flag.String("state", "", "prepared state directory")
+		image      = flag.String("image", "", "image to stage and commit")
+		namespace  = flag.String("namespace", "bench", "asset namespace")
+		index      = flag.Int("index", 0, "image index in the run")
+		message    = flag.String("message", "bench: upload image", "commit message")
+		webp       = flag.Bool("webp", false, "pass --webp to add and measure conversion")
+		hashDir    = flag.String("hash-dir", "", "run the SHA-256 microbenchmark on this directory")
+		repeats    = flag.Int("hash-repeats", 3, "measured hash passes after one warmup")
+		r2Bucket   = flag.String("r2-bucket", "", "probe this bucket/credentials instead of timing an upload")
+		r2Endpoint = flag.String("r2-endpoint", "", "R2 endpoint for -r2-bucket")
+		r2Public   = flag.String("r2-public-base", "https://private.invalid", "non-routable public base for the probe")
+		r2Creds    = flag.String("r2-credentials", "", "workspace cloudflare/credentials.json for the probe")
+		r2Key      = flag.String("r2-probe-key", "", "run-specific key used only to verify bucket access")
+	)
+	flag.Parse()
+
+	if *r2Bucket != "" {
+		result, err := probeR2(*r2Endpoint, *r2Bucket, *r2Public, *r2Creds, *r2Key)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+
+	if *hashDir != "" {
+		result, err := measureHash(*hashDir, *repeats)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
+
+	if *state == "" || *image == "" {
+		return errors.New("both -state and -image are required")
+	}
+	record, err := measureUpload(*state, *image, *namespace, *index, *message, *webp)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(record)
+}
+
+func measureUpload(state, image, namespace string, index int, message string, webp bool) (uploadRecord, error) {
+	info, err := os.Stat(image)
+	if err != nil {
+		return uploadRecord{}, err
+	}
+	record := uploadRecord{Index: index, File: filepath.Base(image), SizeBytes: info.Size()}
+
+	benchrec.Enable()
+	addCode, _, addErr, addElapsed := runCLI(
+		state,
+		"add",
+		image,
+		"--namespace",
+		namespace,
+		fmt.Sprintf("--webp=%t", webp),
+		"--json",
+	)
+	record.PhasesAdd = benchrec.Take()
+	record.AddNS = addElapsed.Nanoseconds()
+	record.AddOK = addCode == 0
+	if !record.AddOK {
+		record.Error = limit(addErr, 1000)
+		if record.Error == "" {
+			record.Error = fmt.Sprintf("add exited with code %d", addCode)
+		}
+		record.TotalNS = record.AddNS
+		return record, nil
+	}
+
+	benchrec.Enable()
+	commitCode, commitOut, commitErr, commitElapsed := runCLI(state, "commit", "-m", message, "--json")
+	record.PhasesCommit = benchrec.Take()
+	record.CommitNS = commitElapsed.Nanoseconds()
+	record.CommitOK = commitCode == 0
+	if !record.CommitOK {
+		record.Error = limit(commitErr, 1000)
+		if record.Error == "" {
+			record.Error = fmt.Sprintf("commit exited with code %d", commitCode)
+		}
+	} else {
+		var result struct {
+			Cloudflare *struct {
+				Items []r2Item `json:"items"`
+			} `json:"cloudflare"`
+		}
+		if json.Unmarshal([]byte(commitOut), &result) == nil && result.Cloudflare != nil {
+			record.R2Items = result.Cloudflare.Items
+		}
+	}
+	record.OK = record.AddOK && record.CommitOK
+	record.TotalNS = record.AddNS + record.CommitNS
+	return record, nil
+}
+
+// runCLI keeps the exact production entry point, but captures its streams and
+// times the call with time.Since. The caller supplies a prepared state; nothing
+// in this function retries or rewrites a failed result.
+func runCLI(state string, args ...string) (int, string, string, time.Duration) {
+	argv := make([]string, 0, len(args)+2)
+	argv = append(argv, "--state-dir", state)
+	argv = append(argv, args...)
+	var stdout, stderr bytes.Buffer
+	started := time.Now()
+	code := cli.Run(context.Background(), argv, strings.NewReader(""), &stdout, &stderr)
+	elapsed := time.Since(started)
+	return code, stdout.String(), stderr.String(), elapsed
+}
+
+// probeR2 verifies the dedicated bucket and its credentials without writing or
+// deleting anything. A missing probe key is expected; the HEAD falls back to a
+// bucket probe inside the R2 client, so a missing bucket or denied access is an
+// error rather than a silent "not found".
+func probeR2(endpoint, bucket, publicBase, credentialsPath, probeKey string) (r2ProbeResult, error) {
+	result := r2ProbeResult{Bucket: bucket, Key: probeKey}
+	if endpoint == "" || bucket == "" || credentialsPath == "" || probeKey == "" {
+		return result, errors.New("-r2-endpoint, -r2-bucket, -r2-credentials and -r2-probe-key are required")
+	}
+	var stored struct {
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+	}
+	data, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return result, err
+	}
+	cfg := r2.Config{
+		Enabled:       true,
+		Endpoint:      endpoint,
+		Bucket:        bucket,
+		PublicBaseURL: publicBase,
+	}
+	client, err := r2.New(cfg, stored.AccessKeyID, stored.SecretAccessKey)
+	if err != nil {
+		return result, err
+	}
+	_, exists, err := client.HeadObject(context.Background(), probeKey)
+	if err != nil {
+		return result, err
+	}
+	result.OK = true
+	result.Exists = exists
+	return result, nil
+}
+
+func measureHash(dir string, repeats int) (hashResult, error) {
+	if repeats < 1 {
+		return hashResult{}, errors.New("-hash-repeats must be at least 1")
+	}
+	files, err := imageFiles(dir)
+	if err != nil {
+		return hashResult{}, err
+	}
+	if len(files) == 0 {
+		return hashResult{}, errors.New("no images found")
+	}
+	var inputBytes int64
+	for _, file := range files {
+		data, err := os.ReadFile(file.Path)
+		if err != nil {
+			return hashResult{}, err
+		}
+		inputBytes += int64(len(data))
+		hashSink = sha256.Sum256(data)
+	}
+
+	samples := make([]hashSample, 0, len(files)*repeats)
+	values := make([]float64, 0, len(files)*repeats)
+	for repeat := 1; repeat <= repeats; repeat++ {
+		for _, file := range files {
+			data, err := os.ReadFile(file.Path)
+			if err != nil {
+				return hashResult{}, err
+			}
+			started := time.Now()
+			hashSink = sha256.Sum256(data)
+			ns := time.Since(started).Nanoseconds()
+			samples = append(samples, hashSample{Repeat: repeat, File: file.Name, SizeBytes: int64(len(data)), HashNS: ns})
+			values = append(values, float64(ns)/1e6)
+		}
+	}
+	sort.Float64s(values)
+	return hashResult{
+		Description:       "in-memory crypto/sha256 over each file; Go time.Since excludes file reads; one untimed warmup pass; excludes image processing, staging, GitHub and R2",
+		ImageCount:        len(files),
+		Repeats:           repeats,
+		InputBytesPerPass: inputBytes,
+		MeanMS:            mean(values),
+		MedianMS:          percentile(values, 0.5),
+		P95MS:             percentile(values, 0.95),
+		Samples:           samples,
+	}, nil
+}
+
+type imageFile struct {
+	Name string
+	Path string
+}
+
+func imageFiles(dir string) ([]imageFile, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]imageFile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(entry.Name())) {
+		case ".png", ".jpg", ".jpeg", ".gif", ".webp":
+			files = append(files, imageFile{Name: entry.Name(), Path: filepath.Join(dir, entry.Name())})
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	return files, nil
+}
+
+var hashSink [sha256.Size]byte
+
+func mean(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var total float64
+	for _, value := range values {
+		total += value
+	}
+	return total / float64(len(values))
+}
+
+func percentile(values []float64, fraction float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	position := int(math.Round(fraction * float64(len(values)-1)))
+	if position < 0 {
+		position = 0
+	}
+	if position >= len(values) {
+		position = len(values) - 1
+	}
+	return values[position]
+}
+
+func limit(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= max {
+		return value
+	}
+	return value[:max]
+}
