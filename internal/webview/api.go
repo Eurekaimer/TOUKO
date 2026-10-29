@@ -59,7 +59,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		switch path {
-		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/verify", "/api/cloudflare/sync", "/api/cloudflare/config", "/api/cloudflare/credentials":
+		case "/api/state", "/api/auth", "/api/repos", "/api/branches", "/api/workspaces", "/api/libraries", "/api/repo", "/api/init", "/api/sync", "/api/reindex", "/api/import", "/api/commit", "/api/reset", "/api/remove", "/api/upload", "/api/webp/estimate", "/api/verify", "/api/cloudflare/sync", "/api/cloudflare/config", "/api/cloudflare/credentials":
 		default:
 			s.fail(w, 404, "usage", "unknown API endpoint")
 			return
@@ -79,6 +79,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == "/api/state" {
 		result, err := s.state(r.Context())
+		if err != nil {
+			s.respondError(w, err)
+		} else {
+			s.json(w, result)
+		}
+		return
+	}
+	// Estimation decodes and encodes one selected image; it must not hold the
+	// gallery operation lock, and it changes no state.
+	if path == "/api/webp/estimate" {
+		result, err := s.estimateWebP(w, r)
 		if err != nil {
 			s.respondError(w, err)
 		} else {

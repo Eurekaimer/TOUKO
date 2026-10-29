@@ -724,7 +724,7 @@
               /><small>小写字母、数字、下划线或连字符</small></label>
           </div>
           <label>目标目录（可选）<input id="upload-directory" placeholder="例如 images/blog，留空使用默认内容路径" />
-            <small>相对仓库根目录，使用 / 分隔；图片以内容哈希命名，不覆盖原文件名。</small>
+            <small>相对仓库根目录，使用 / 分隔；图片以 Asset UUID 命名，不覆盖原文件名。</small>
           </label>
           <div class="webp-option">
             <label class="webp-toggle"
@@ -742,7 +742,7 @@
             >
             <small
               >可选。仅在 WebP 更小时替换原图（转换后不保留原始字节）；
-              GIF 与已有 WebP 保持原样，避免丢失动画或二次压缩。</small
+              GIF 与已有 WebP 保持原样，避免丢失动画或二次压缩。选中图片后会按当前质量预估转换后的体积。</small
             >
           </div>
           <div id="upload-progress-area" class="progress-area" hidden>

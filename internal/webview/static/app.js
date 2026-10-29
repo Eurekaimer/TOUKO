@@ -34,6 +34,10 @@ let view = null;
 let busy = false;
 let currentKey = null;
 let uploadFiles = [];
+// Estimated stored size per selected file. Keyed by File identity and cleared
+// whenever the WebP option or its quality changes.
+let uploadEstimates = new Map();
+let uploadEstimateSequence = 0;
 let confirmOperation = null;
 let toastTimer;
 let refreshSequence = 0;
@@ -1710,6 +1714,7 @@ function removeAssets(keys) {
 function releaseUploadFiles() {
   uploadFiles.forEach(({ url }) => URL.revokeObjectURL(url));
   uploadFiles = [];
+  clearUploadEstimates();
   $("upload-files").value = "";
   renderUploadFiles();
 }
@@ -1740,9 +1745,76 @@ function setUploadFiles(files, append = false) {
     url: URL.createObjectURL(file),
   }));
   renderUploadFiles();
+  void estimateUploads();
+}
+function convertibleToWebP(file) {
+  return (
+    file.type === "image/png" ||
+    file.type === "image/jpeg" ||
+    /\.(png|jpe?g)$/i.test(file.name)
+  );
+}
+function clearUploadEstimates() {
+  uploadEstimateSequence++;
+  uploadEstimates = new Map();
+}
+function webpQuality() {
+  const value = Number($("upload-webp-quality").value);
+  return Number.isFinite(value) ? Math.max(1, Math.min(100, Math.round(value))) : 85;
+}
+function estimatePrefix() {
+  if (view?.kind === "library") return viewPrefix;
+  const member = firstUsableMember();
+  return member ? `/w/${member.id}` : "";
+}
+function savedLabel(estimate) {
+  if (estimate.estimated_bytes >= estimate.original_bytes) return "体积不变，保留原图";
+  const percent = Math.round((1 - estimate.estimated_bytes / estimate.original_bytes) * 100);
+  return `减少 ${percent}%`;
+}
+async function estimateUploads() {
+  const quality = webpQuality();
+  const sequence = ++uploadEstimateSequence;
+  const enabled = $("upload-webp").checked;
+  if (!enabled) {
+    uploadEstimates = new Map();
+    renderUploadFiles();
+    return;
+  }
+  const prefix = estimatePrefix();
+  if (!prefix) {
+    renderUploadFiles();
+    return;
+  }
+  const pending = uploadFiles.filter(
+    ({ file }) => convertibleToWebP(file) && !uploadEstimates.has(file),
+  );
+  renderUploadFiles();
+  for (const { file } of pending) {
+    if (sequence !== uploadEstimateSequence) return;
+    const data = new FormData();
+    data.append("image", file, file.name);
+    data.append("quality", String(quality));
+    try {
+      const response = await fetch(apiURL("webp/estimate", prefix), {
+        method: "POST",
+        headers: { "X-Touko-CSRF": view.csrf },
+        body: data,
+      });
+      if (sequence !== uploadEstimateSequence) return;
+      if (!response.ok) continue;
+      const body = await response.json().catch(() => null);
+      if (!body || typeof body.estimated_bytes !== "number") continue;
+      uploadEstimates.set(file, body);
+      renderUploadFiles();
+    } catch {
+      // A failed estimate only hides the hint; the upload itself still works.
+    }
+  }
 }
 function renderUploadFiles() {
   $("upload-list").replaceChildren();
+  const webp = $("upload-webp").checked;
   uploadFiles.forEach(({ file, url }, index) => {
     const row = element("div", "upload-row");
     const image = element("img");
@@ -1756,10 +1828,14 @@ function renderUploadFiles() {
       { once: true },
     );
     const info = element("div");
-    info.append(
-      element("strong", "", file.name),
-      element("small", "", bytes(file.size)),
-    );
+    const meta = element("small", "", bytes(file.size));
+    if (webp && convertibleToWebP(file)) {
+      const estimate = uploadEstimates.get(file);
+      meta.textContent = estimate
+        ? `${bytes(file.size)} → 预计 ${bytes(estimate.estimated_bytes)}（${savedLabel(estimate)}）`
+        : `${bytes(file.size)} · 正在预估转换后体积…`;
+    }
+    info.append(element("strong", "", file.name), meta);
     const remove = button("", "icon-button", () =>
       setUploadFiles(
         uploadFiles.filter((_, i) => i !== index).map(({ file }) => file),
@@ -1770,8 +1846,22 @@ function renderUploadFiles() {
     row.append(image, info, remove);
     $("upload-list").append(row);
   });
+  const originalTotal = uploadFiles.reduce((total, { file }) => total + file.size, 0);
+  const convertible = uploadFiles.filter(({ file }) => convertibleToWebP(file));
+  const estimatedAll =
+    webp &&
+    convertible.length > 0 &&
+    convertible.every(({ file }) => uploadEstimates.has(file));
+  const projected = estimatedAll
+    ? uploadFiles.reduce(
+        (total, { file }) =>
+          total + (uploadEstimates.get(file)?.estimated_bytes ?? file.size),
+        0,
+      )
+    : null;
   $("upload-summary").textContent = uploadFiles.length
-    ? `${uploadFiles.length} 张图片，共 ${bytes(uploadFiles.reduce((total, { file }) => total + file.size, 0))}`
+    ? `${uploadFiles.length} 张图片，共 ${bytes(originalTotal)}` +
+      (projected !== null ? `，转换后预计 ${bytes(projected)}` : "")
     : "尚未选择图片";
   if ($("upload-limit"))
     $("upload-limit").textContent = view?.kind === "library"
@@ -3481,6 +3571,17 @@ function bindEvents() {
   });
   $("upload-webp").addEventListener("change", () => {
     $("upload-webp-quality").disabled = !$("upload-webp").checked;
+    clearUploadEstimates();
+    void estimateUploads();
+  });
+  let qualityTimer;
+  $("upload-webp-quality").addEventListener("input", () => {
+    $("upload-webp-quality").disabled = !$("upload-webp").checked;
+    clearTimeout(qualityTimer);
+    qualityTimer = setTimeout(() => {
+      clearUploadEstimates();
+      void estimateUploads();
+    }, 400);
   });
   $("upload-files").addEventListener("change", () => {
     // Appending keeps files pasted earlier; clearing value allows picking the
