@@ -1025,8 +1025,8 @@ def derive_phases(raw):
         "upload_hash": hashes["commit_upload"],
         "total_hash": _sum_present(list(hashes.values())),
         "r2_put": _ns(commit.get("commit.r2_put")),
-        "r2_ingest": _ns(commit.get("ingest.stream")),
-        "r2_hash": hashes["commit_ingest"],
+        "r2_ingest": _ns(commit.get("ingest.stream")) if commit.get("commit.r2") is not None else None,
+        "r2_hash": hashes["commit_ingest"] if commit.get("commit.r2") is not None else None,
     }
     total = _sum_present([_ns(raw.get("add_ns")), _ns(raw.get("commit_ns"))])
     exclusive = [phases[name] for name in EXCLUSIVE_PHASES if phases[name] is not None]
