@@ -41,11 +41,14 @@ def run(binary, state, *args, timeout=900):
     return proc, elapsed
 
 
-def configure_state(binary, state, repo, r2, credentials):
+def configure_state(binary, state, repo, branch, r2, credentials):
     if os.path.exists(os.path.join(state, "config.json")):
         raise SystemExit(f"state already configured: {state}")
     os.makedirs(state, exist_ok=True)
-    proc, _ = run(binary, state, "repo", "use", repo, "--json")
+    args = ["repo", "use", repo, "--json"]
+    if branch:
+        args += ["--branch", branch]
+    proc, _ = run(binary, state, *args)
     if proc.returncode != 0:
         raise SystemExit(f"repo use failed: {proc.stderr.strip()}")
     proc, _ = run(binary, state, "repo", "init", "--json")
@@ -127,6 +130,7 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--group", required=True, help="Label stored with the results")
     parser.add_argument("--repo", required=True, help="OWNER/REPO dedicated to this run")
+    parser.add_argument("--branch", default="", help="Branch dedicated to this group (default: repository default)")
     parser.add_argument("--images", required=True, help="Directory of images")
     parser.add_argument("--state", required=True, help="Fresh state directory")
     parser.add_argument("--r2", choices=["on", "off"], default="off")
@@ -146,7 +150,7 @@ def main():
     if not images:
         raise SystemExit("no images found")
 
-    configure_state(args.binary, args.state, args.repo, args.r2 == "on", args.credentials)
+    configure_state(args.binary, args.state, args.repo, args.branch, args.r2 == "on", args.credentials)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     os.makedirs(args.out_dir, exist_ok=True)
     base = os.path.join(args.out_dir, f"upload-benchmark-{stamp}-{args.group}")
@@ -161,6 +165,7 @@ def main():
             "started_at": stamp,
             "binary": args.binary,
             "repo": args.repo,
+            "branch": args.branch,
             "r2": args.r2,
             "images": args.images,
             "raw_jsonl": raw_path,
