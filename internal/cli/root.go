@@ -227,7 +227,7 @@ func (r *runtime) encode(v any) error { return json.NewEncoder(r.stdout).Encode(
 
 func (r *runtime) command() *cobra.Command {
 	root := &cobra.Command{
-		Use: "touko", Short: "Content-addressed image repositories",
+		Use: "touko", Short: "Git-backed image repositories",
 		Version:      buildinfo.String(),
 		SilenceUsage: true, SilenceErrors: true,
 		Args:             arguments(cobra.NoArgs),
@@ -264,7 +264,11 @@ func (r *runtime) printAssets(assets []app.AssetView) error {
 		}{assets})
 	}
 	for _, v := range assets {
-		if _, err := fmt.Fprintf(r.stdout, "%s\t%s\t%s\t%s\t%s\n", v.Asset.ID, v.State, v.Asset.Namespace, v.Asset.Title, v.Asset.Object.Hash); err != nil {
+		hash := "-"
+		if v.Asset.Object.HasHash() {
+			hash = v.Asset.Object.Hash.String()
+		}
+		if _, err := fmt.Fprintf(r.stdout, "%s\t%s\t%s\t%s\t%s\n", v.Asset.ID, v.State, v.Asset.Namespace, v.Asset.Title, hash); err != nil {
 			return err
 		}
 	}
@@ -347,7 +351,10 @@ func matches(v app.AssetView, query string) bool {
 	}
 	// Hashes are lowercase hex, so an upper-case query still matches through the
 	// lowered query the caller builds; the canonical path never proves identity.
-	if strings.Contains(v.Asset.Object.Hash.String(), query) {
+	if strings.Contains(strings.ToLower(repository.ObjectPath(v.Asset)), query) {
+		return true
+	}
+	if v.Asset.Object.HasHash() && strings.Contains(v.Asset.Object.Hash.String(), query) {
 		return true
 	}
 	for _, values := range [][]string{v.Asset.Tags, v.Asset.Collections} {

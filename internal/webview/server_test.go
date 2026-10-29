@@ -286,7 +286,7 @@ func TestPreviewRevalidatesWithoutReadingBytes(t *testing.T) {
 		t.Fatal("initial preview bytes differ")
 	}
 	tag := first.Header().Get("ETag")
-	if tag == "" || first.Header().Get("Cache-Control") != "private, max-age=31536000, immutable" {
+	if tag == "" || !strings.Contains(first.Header().Get("Cache-Control"), "no-cache") {
 		t.Fatalf("preview caching headers: %v", first.Header())
 	}
 	req := httptest.NewRequest("GET", testOrigin+"/api/assets/"+id+"/image", nil)
@@ -298,6 +298,88 @@ func TestPreviewRevalidatesWithoutReadingBytes(t *testing.T) {
 	}
 	f.request("POST", "/api/remove", map[string]any{"selectors": []string{id}}, 200)
 	f.request("GET", "/api/assets/"+id+"/image", nil, 404)
+}
+
+func TestPreviewRevalidatesAfterRemoteContentChanges(t *testing.T) {
+	f := newFixture(t)
+	f.setup()
+	id, _ := f.add()
+	f.request("POST", "/api/commit", map[string]string{"message": "publish"}, http.StatusOK)
+	first := f.request("GET", "/api/assets/"+id+"/image", nil, http.StatusOK)
+	oldTag := first.Header().Get("ETag")
+	if oldTag == "" {
+		t.Fatal("missing preview ETag")
+	}
+
+	replacement := photoBytes(t)
+	uploaded := f.upload([][]byte{replacement}, http.StatusOK)
+	var added struct {
+		Assets []app.AssetView `json:"assets"`
+	}
+	if err := json.Unmarshal(uploaded.Body.Bytes(), &added); err != nil || len(added.Assets) != 1 {
+		t.Fatalf("replacement upload: %v", err)
+	}
+	f.request("POST", "/api/reset", map[string]bool{"confirm": true}, http.StatusOK)
+	current, err := f.service.Show(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := current.Asset
+	updated.Object = added.Assets[0].Asset.Object
+	metadata, err := repository.EncodeAsset(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	location, err := f.service.Location(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	git, err := localgit.Open(t.Context(), location.Path, location.Branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := git.Head(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := git.Commit(t.Context(), head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageBlob, err := git.CreateBlob(t.Context(), bytes.NewReader(replacement), int64(len(replacement)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataBlob, err := git.CreateBlob(t.Context(), bytes.NewReader(metadata), int64(len(metadata)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := git.CreateTree(t.Context(), base.Tree, []repository.TreeChange{
+		{Path: repository.ObjectPath(updated), Blob: &imageBlob},
+		{Path: repository.AssetPath(updated.ID), Blob: &metadataBlob},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := git.CreateCommit(t.Context(), tree, head, "replace image externally")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := git.UpdateRef(t.Context(), head, next); err != nil {
+		t.Fatal(err)
+	}
+	f.request("POST", "/api/sync", map[string]any{}, http.StatusOK)
+
+	req := httptest.NewRequest(http.MethodGet, testOrigin+"/api/assets/"+id+"/image", nil)
+	req.Header.Set("If-None-Match", oldTag)
+	out := httptest.NewRecorder()
+	f.server.ServeHTTP(out, req)
+	if out.Code != http.StatusOK || !bytes.Equal(out.Body.Bytes(), replacement) {
+		t.Fatalf("changed image served stale cache: status %d", out.Code)
+	}
+	if out.Header().Get("ETag") == oldTag {
+		t.Fatal("changed bytes reused the old ETag")
+	}
 }
 
 func TestUploadWebPAndOptionalConversion(t *testing.T) {

@@ -30,6 +30,15 @@ func ingestPNG(t *testing.T, dir string) image.Result {
 	return result
 }
 
+func stagedAsset(t *testing.T, ns domain.Namespace, result image.Result) domain.Asset {
+	t.Helper()
+	id, err := domain.NewAssetID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return domain.Asset{ID: id, Namespace: ns, Object: result.Object}
+}
+
 func assertMissing(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
@@ -40,19 +49,25 @@ func assertMissing(t *testing.T, path string) {
 func TestInstallDeduplicatesWithinNamespace(t *testing.T) {
 	ctx, dir := context.Background(), t.TempDir()
 	first := ingestPNG(t, dir)
-	path, created, err := Install(ctx, dir, "blog", first)
-	if err != nil || !created || path != PayloadPath(dir, "blog", first.Object) {
+	firstAsset := stagedAsset(t, "blog", first)
+	path, created, err := Install(ctx, dir, firstAsset, first)
+	if err != nil || !created || path != PayloadPath(dir, firstAsset) {
 		t.Fatalf("first installation: %s %v %v", path, created, err)
 	}
 	assertMissing(t, first.TempPath)
 	second := ingestPNG(t, dir)
-	samePath, created, err := Install(ctx, dir, "blog", second)
+	secondAsset := stagedAsset(t, "blog", second)
+	if secondAsset.ID == firstAsset.ID {
+		t.Fatal("test assets share an identity")
+	}
+	samePath, created, err := Install(ctx, dir, secondAsset, second)
 	if err != nil || created || samePath != path {
 		t.Fatalf("deduplicated installation: %s %v %v", samePath, created, err)
 	}
 	assertMissing(t, second.TempPath)
 	third := ingestPNG(t, dir)
-	otherPath, created, err := Install(ctx, dir, "notes", third)
+	thirdAsset := stagedAsset(t, "notes", third)
+	otherPath, created, err := Install(ctx, dir, thirdAsset, third)
 	if err != nil || !created || otherPath == path || third.Object.Hash != first.Object.Hash {
 		t.Fatalf("namespace placement: %s %v %v", otherPath, created, err)
 	}
@@ -75,7 +90,8 @@ func TestInstallRejectsCorruptExistingWithoutOverwrite(t *testing.T) {
 		t.Run(map[bool]string{false: "size", true: "hash"}[sameSize], func(t *testing.T) {
 			dir := t.TempDir()
 			result := ingestPNG(t, dir)
-			path := PayloadPath(dir, "blog", result.Object)
+			asset := stagedAsset(t, "blog", result)
+			path := PayloadPath(dir, asset)
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -86,7 +102,7 @@ func TestInstallRejectsCorruptExistingWithoutOverwrite(t *testing.T) {
 			if err := os.WriteFile(path, corrupt, 0600); err != nil {
 				t.Fatal(err)
 			}
-			gotPath, created, err := Install(context.Background(), dir, "blog", result)
+			gotPath, created, err := Install(context.Background(), dir, asset, result)
 			if !errors.Is(err, domain.ErrHashMismatch) || created || gotPath != "" {
 				t.Fatalf("corrupt target accepted: %s %v %v", gotPath, created, err)
 			}
@@ -100,13 +116,13 @@ func TestInstallRejectsCorruptExistingWithoutOverwrite(t *testing.T) {
 }
 
 func TestInstallFailuresLeaveNoPayload(t *testing.T) {
-	for _, name := range []string{"canceled", "corrupt_source", "invalid_namespace"} {
+	for _, name := range []string{"canceled", "corrupt_source", "invalid_namespace", "no_identity", "no_hash"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			result := ingestPNG(t, dir)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			ns := domain.Namespace("blog")
+			asset := stagedAsset(t, "blog", result)
 			var expected error
 			switch name {
 			case "canceled":
@@ -118,14 +134,21 @@ func TestInstallFailuresLeaveNoPayload(t *testing.T) {
 				}
 				expected = domain.ErrHashMismatch
 			case "invalid_namespace":
-				ns = "../escape"
+				asset.Namespace = "../escape"
+			case "no_identity":
+				asset.ID = domain.AssetID{}
+			case "no_hash":
+				asset.Object.Hash = domain.ObjectHash{}
+				result.Object.Hash = domain.ObjectHash{}
 			}
-			path, created, err := Install(ctx, dir, ns, result)
+			path, created, err := Install(ctx, dir, asset, result)
 			if err == nil || created || path != "" || (expected != nil && !errors.Is(err, expected)) {
 				t.Fatalf("unexpected failure result: %s %v %v", path, created, err)
 			}
 			assertMissing(t, result.TempPath)
-			assertMissing(t, PayloadPath(dir, "blog", result.Object))
+			if asset.Object.HasHash() {
+				assertMissing(t, PayloadPathFor(dir, "blog", result.Object))
+			}
 		})
 	}
 }
@@ -133,12 +156,14 @@ func TestInstallFailuresLeaveNoPayload(t *testing.T) {
 func TestCleanupPreservesReferencedPayloadAndUnrelatedFiles(t *testing.T) {
 	ctx, dir := context.Background(), t.TempDir()
 	result := ingestPNG(t, dir)
-	path, _, err := Install(ctx, dir, "blog", result)
+	asset := stagedAsset(t, "blog", result)
+	path, _, err := Install(ctx, dir, asset, result)
 	if err != nil {
 		t.Fatal(err)
 	}
 	other := ingestPNG(t, dir)
-	otherPath, _, err := Install(ctx, dir, "notes", other)
+	otherAsset := stagedAsset(t, "notes", other)
+	otherPath, _, err := Install(ctx, dir, otherAsset, other)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +197,8 @@ func TestCleanupPreservesReferencedPayloadAndUnrelatedFiles(t *testing.T) {
 func TestCleanupCanceledPreservesPayload(t *testing.T) {
 	dir := t.TempDir()
 	result := ingestPNG(t, dir)
-	path, _, err := Install(context.Background(), dir, "blog", result)
+	asset := stagedAsset(t, "blog", result)
+	path, _, err := Install(context.Background(), dir, asset, result)
 	if err != nil {
 		t.Fatal(err)
 	}

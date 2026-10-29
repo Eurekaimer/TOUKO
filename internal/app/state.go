@@ -22,6 +22,9 @@ type Service struct {
 	// NewCloudflare builds the mirror from an already resolved workspace
 	// credential pair. Tests inject a fake; production uses NewCloudflareMirror.
 	NewCloudflare func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error)
+	// VerifyURL reads a published public target and proves its bytes. Tests
+	// inject a fake; production uses an HTTP GET with size/hash or header checks.
+	VerifyURL func(context.Context, string, domain.ContentObject) error
 }
 
 func StateDir(explicit string) (string, error) {

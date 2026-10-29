@@ -215,7 +215,7 @@ func validateMirrorEntry(entry *MirrorEntry) error {
 	if err := domain.ValidateRepositoryPath(entry.Key); err != nil {
 		return mirrorCorrupt("invalid mirror entry key: %v", err)
 	}
-	if entry.Object.Hash == (domain.ObjectHash{}) {
+	if !entry.Object.HasHash() {
 		return mirrorCorrupt("mirror entry %q has no object hash", entry.Key)
 	}
 	if err := entry.Object.Validate(); err != nil {

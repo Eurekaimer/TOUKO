@@ -362,7 +362,7 @@ func (s *Service) installPrepared(ctx context.Context, st, next index.State, inp
 		}
 	}()
 	for i, input := range inputs {
-		if _, _, err := staging.Install(ctx, s.Dir, input.Asset.Namespace, input.Payload); err != nil {
+		if _, _, err := staging.Install(ctx, s.Dir, input.Asset, input.Payload); err != nil {
 			discardTemps(inputs[i:])
 			return nil, err
 		}

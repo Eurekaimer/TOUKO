@@ -20,7 +20,7 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
         'Runs the real remote lifecycle against a DEDICATED gallery repository:' \
         '  auth status -> repo use -> repo init -> add -> commit -> url -> verify' \
         '  then a fresh second device (use + sync + full metadata compare),' \
-        '  a raw-byte SHA-256 check, and a last-reference deletion on a third device.' \
+        '  a raw-byte comparison, and a last-reference deletion on a third device.' \
         '' \
         'Prerequisites: the repository must exist with an initial commit (add a README),' \
         'and GITHUB_TOKEN must carry Contents: read and write for it. Requires Go 1.27.1+,' \
@@ -240,11 +240,10 @@ if not selected['private']:
                     f'was not performed') from error
             time.sleep(3 * (attempt + 1))
     require(remote_bytes is not None, 'raw GitHub returned no bytes')
-    digest = hashlib.sha256(remote_bytes).hexdigest()
-    require(digest == local['object']['hash'],
-            f'raw GitHub bytes differ from the recorded hash: {digest} != {local["object"]["hash"]}')
+    require(remote_bytes == Path(sources[0]).read_bytes(),
+            'raw GitHub bytes differ from the original uploaded fixture')
     require(len(remote_bytes) == local['object']['size'], 'raw GitHub size differs from the record')
-    print(f'PASS raw GitHub bytes hash to the recorded object {digest[:12]}…', flush=True)
+    print(f'PASS raw GitHub bytes match the original fixture ({hashlib.sha256(remote_bytes).hexdigest()[:12]}…)', flush=True)
 else:
     print('SKIP raw byte fetch: private repository has no anonymous URL', flush=True)
 
@@ -261,9 +260,10 @@ for asset_id, expected_asset in local_assets.items():
     for field in comparable:
         require(got[field] == expected_asset[field],
                 f'{asset_id}.{field} differs after fresh sync: {got[field]!r} != {expected_asset[field]!r}')
-    for field in ('hash', 'size', 'mime', 'ext', 'width', 'height'):
-        require(got['object'][field] == expected_asset['object'][field],
-                f'{asset_id}.object.{field} differs after fresh sync')
+    require(got['object'] == expected_asset['object'],
+            f'{asset_id}.object differs after fresh sync')
+    require(got.get('path') == expected_asset.get('path'),
+            f'{asset_id}.path differs after fresh sync')
 require(document(b, 'verify', '--json')['assets'] == len(local_assets), 'second device verify disagrees')
 print(f'PASS fresh device B recovered {len(local_assets)} assets with identical metadata and verified bytes', flush=True)
 

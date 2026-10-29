@@ -54,9 +54,10 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 	if err = mutable(st); err != nil {
 		return CommitResult{}, err
 	}
-	// The staged base was captured when the first change was made. Reading it
-	// here needs no HEAD probe: the ref update later rejects a non-fast-forward,
-	// and only that failure needs the remote relationship.
+	// The staged base was captured when the first change was made. The adapter
+	// reads the branch before PATCHing it, so a rejected update still needs the
+	// authoritative relationship query: the read/PATCH pair is not an atomic
+	// compare-and-swap and cannot prove the expected old head under concurrency.
 	head := st.BaseHead
 	base, err := repository.ReadSnapshot(ctx, r, head)
 	if err != nil {
@@ -181,13 +182,15 @@ func (r *stagedReader) Read(p []byte) (int, error) {
 	}
 	n, err := r.source.Read(p)
 	if n > 0 {
-		_, _ = r.digest.Write(p[:n])
+		if r.digest != nil {
+			_, _ = r.digest.Write(p[:n])
+		}
 		r.size += int64(n)
 	}
 	return n, err
 }
 func (s *Service) uploadStaged(ctx context.Context, r repository.Writer, p repository.ObjectPlacement) (repository.BlobID, error) {
-	file, err := os.Open(staging.PayloadPath(s.Dir, p.Namespace, p.Object))
+	file, err := os.Open(staging.PayloadPathFor(s.Dir, p.Namespace, p.Object))
 	if err != nil {
 		return "", err
 	}
@@ -199,6 +202,10 @@ func (s *Service) uploadStaged(ctx context.Context, r repository.Writer, p repos
 	if info.Size() != p.Object.Size {
 		_ = file.Close()
 		return "", fmt.Errorf("%w: staged object size %s", domain.ErrHashMismatch, p.Path)
+	}
+	if !p.Object.HasHash() {
+		_ = file.Close()
+		return "", fmt.Errorf("%w: staged object %s has no content hash", domain.ErrHashMismatch, p.Path)
 	}
 	reader := &stagedReader{ctx: ctx, source: io.LimitReader(file, p.Object.Size+1), digest: sha256.New()}
 	blob, err := r.CreateBlob(ctx, reader, p.Object.Size)
@@ -258,6 +265,9 @@ func (s *Service) recoverPublication(ctx context.Context, r repository.Git, st i
 	return SyncResult{Head: st.Head, AssetCount: len(st.Assets)}, nil
 }
 func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index.State, base *repository.Snapshot) (SyncResult, error) {
+	if st.Publication != nil && st.Publication.Operation != "" {
+		return s.publishOperationJournal(ctx, r, st, base)
+	}
 	candidate, err := validateCandidate(ctx, r, st, base)
 	if err != nil {
 		return SyncResult{}, err
@@ -265,9 +275,9 @@ func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index
 	return s.publish(ctx, r, st, candidate)
 }
 
-// publish updates the branch. The adapter rejects a non-fast-forward, and the
-// candidate's parent is the base, so a rejected update is the only case that
-// needs the authoritative relationship query.
+// publish updates the branch. The adapter reads the branch before PATCHing, so
+// rejection is diagnosed with the authoritative relationship query rather than
+// assumed to be a non-fast-forward alone.
 func (s *Service) publish(ctx context.Context, r repository.Git, st index.State, candidate repository.Snapshot) (SyncResult, error) {
 	p := st.Publication
 	if err := r.UpdateRef(ctx, p.BaseHead, p.CandidateHead); err != nil {
@@ -311,6 +321,9 @@ func staleConflict(ctx context.Context, r repository.Reader, st index.State, hea
 // and records the head that is current, so a descendant is never mistaken for
 // the candidate.
 func (s *Service) finalizePublished(ctx context.Context, r repository.Git, st index.State, head domain.RepositoryHead) (SyncResult, error) {
+	if st.Publication != nil && st.Publication.Operation != "" {
+		return s.finalizeOperationPublished(ctx, r, st, head)
+	}
 	candidate, err := validateCandidate(ctx, r, st, nil)
 	if err != nil {
 		return SyncResult{}, err
@@ -347,7 +360,9 @@ func (s *Service) finalizeSnapshot(ctx context.Context, r repository.Git, st ind
 	if err := s.Store.Save(ctx, next); err != nil {
 		return result, fmt.Errorf("published head %s; local index update failed; run sync: %w", head, err)
 	}
-	result.Cloudflare = s.cloudflarePublication(ctx, r, st, snap)
+	if st.Publication == nil || st.Publication.Operation == "" {
+		result.Cloudflare = s.cloudflarePublication(ctx, r, st, snap)
+	}
 	if err := s.cleanup(ctx, next); err != nil {
 		return result, fmt.Errorf("published head %s; local payload cleanup failed: %w", head, err)
 	}

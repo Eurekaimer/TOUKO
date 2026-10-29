@@ -57,7 +57,7 @@ func TestStagingNormalizationAndSharedPayload(t *testing.T) {
 	if st.Changes[a[0].Asset.ID].Kind != domain.Add {
 		t.Fatal(st.Changes)
 	}
-	path := staging.PayloadPath(s.Dir, "blog", a[0].Asset.Object)
+	path := staging.PayloadPath(s.Dir, a[0].Asset)
 	if err = s.Remove(ctx, []string{a[0].Asset.ID.String()}); err != nil {
 		t.Fatal(err)
 	}

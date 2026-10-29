@@ -2,6 +2,7 @@ package repository
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 )
@@ -35,12 +36,16 @@ func ObjectPath(asset domain.Asset) string {
 	return LegacyObjectPath(asset.Namespace, asset.Object)
 }
 
-// DirectoryPath turns an upload directory into the leading path segments for a
-// new asset. Spaces become hyphens so the resulting URL never needs escaping.
+// DirectoryPath replaces spaces in an upload directory; other characters are URL-escaped.
 func DirectoryPath(directory string) string {
 	parts := strings.Split(directory, "/")
 	for i, part := range parts {
-		parts[i] = strings.ReplaceAll(part, " ", "-")
+		parts[i] = strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return '-'
+			}
+			return r
+		}, part)
 	}
 	return strings.Join(parts, "/")
 }

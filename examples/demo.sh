@@ -161,7 +161,7 @@ def filesystem_state():
 
 
 def main():
-    """Exercise publication, reconstruction, stale deletion, dedup, and stdin via CLI."""
+    """Exercise publication, reconstruction, stale deletion, independent paths, and stdin via CLI."""
     print(f'Building CLI; retaining demo at {root}', flush=True)
     run(['go', 'build', '-o', binary, './cmd/touko'])
     document(a, 'repo', 'init', '--local', str(gallery))
@@ -209,11 +209,12 @@ def main():
                 asset['object']['mime'] == 'image/png' and
                 (asset['object']['width'], asset['object']['height']) == (64, 48),
                 'Published sample metadata differs from the input')
-        placement(asset)
+        blob = tree_entries()[placement(asset)]
+        stored = run(['git', '--git-dir', gallery, 'cat-file', 'blob', blob]).stdout
+        require(stored == (images / filename).read_bytes(),
+                f'Published bytes differ from {filename}')
     require(original[red1]['object'] == original[red2]['object'],
             'Repeated red content must keep identical content metadata')
-    require(len({asset['object']['hash'] for asset in original.values()}) == 3,
-            'The three generated samples must have distinct content hashes')
     red_path = placement(original[red1])
     red2_path = placement(original[red2])
     require(red_path != red2_path, 'Duplicate bytes must not share one placement')

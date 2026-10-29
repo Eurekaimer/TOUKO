@@ -249,7 +249,7 @@ func TestCommitRejectsDamagedStageBeforePublication(t *testing.T) {
 	ctx, r, s := realRepository(t)
 	asset := stageImage(t, ctx, s)
 	base, _ := r.Head(ctx)
-	if err := os.WriteFile(staging.PayloadPath(s.Dir, asset.Namespace, asset.Object), bytes.Repeat([]byte{'x'}, int(asset.Object.Size)), 0600); err != nil {
+	if err := os.WriteFile(staging.PayloadPath(s.Dir, asset), bytes.Repeat([]byte{'x'}, int(asset.Object.Size)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Commit(ctx, r, "damaged"); !errors.Is(err, domain.ErrHashMismatch) {
@@ -547,7 +547,7 @@ func TestResetWithoutJournalWorksOffline(t *testing.T) {
 	if after.Head != before.Head || after.BaseHead != "" || len(after.Changes) != 0 || after.Publication != nil || !reflect.DeepEqual(after.Assets, before.Assets) {
 		t.Fatal(after)
 	}
-	if _, err = os.Stat(staging.PayloadPath(s.Dir, asset.Namespace, asset.Object)); !errors.Is(err, os.ErrNotExist) {
+	if _, err = os.Stat(staging.PayloadPath(s.Dir, asset)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("unreferenced staged payload retained", err)
 	}
 }

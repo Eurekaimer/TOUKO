@@ -307,7 +307,7 @@ func validateObject(opts PutOptions) error {
 	if err := opts.Object.Validate(); err != nil {
 		return err
 	}
-	if opts.Object.Hash == (domain.ObjectHash{}) {
+	if !opts.Object.HasHash() {
 		return errors.New("object hash is required")
 	}
 	if opts.RepositoryID == (domain.RepositoryID{}) {

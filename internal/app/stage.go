@@ -68,7 +68,7 @@ func (s *Service) cleanup(ctx context.Context, st index.State) error {
 	refs := make(map[string]bool)
 	for _, c := range st.Changes {
 		if c.Asset != nil {
-			refs[staging.PayloadPath(s.Dir, c.Asset.Namespace, c.Asset.Object)] = true
+			refs[staging.PayloadPath(s.Dir, *c.Asset)] = true
 		}
 	}
 	return staging.Cleanup(ctx, s.Dir, refs)

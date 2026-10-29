@@ -19,6 +19,10 @@ type Publication struct {
 	BaseHead      domain.RepositoryHead
 	CandidateHead domain.RepositoryHead
 	CandidateTree string
+	// Operation marks journals that are not rebuildable from a staged batch.
+	// Migration owns its validation and recovery for these values.
+	Operation string   `json:",omitempty"`
+	Deletions []string `json:",omitempty"`
 }
 
 type State struct {

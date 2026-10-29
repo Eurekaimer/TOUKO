@@ -196,7 +196,7 @@ func TestAtomicBatchRetryAfterBlobFailure(t *testing.T) {
 		if !ok || change.Kind != domain.Add || change.Asset == nil || !reflect.DeepEqual(*change.Asset, view.Asset) {
 			t.Fatalf("asset %s lost its persisted add: %#v", view.Asset.ID, change)
 		}
-		data, err := os.ReadFile(staging.PayloadPath(s.Dir, view.Asset.Namespace, view.Asset.Object))
+		data, err := os.ReadFile(staging.PayloadPath(s.Dir, view.Asset))
 		if err != nil || !bytes.Equal(data, payloads[i]) {
 			t.Fatalf("asset %s lost its staged PNG: %v", view.Asset.ID, err)
 		}
@@ -365,7 +365,7 @@ func TestCommitStagedAddEditRemoveNormalization(t *testing.T) {
 		if err := s.Remove(ctx, []string{asset.ID.String()}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := os.Stat(staging.PayloadPath(s.Dir, asset.Namespace, asset.Object)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(staging.PayloadPath(s.Dir, asset)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("canceled add retained payload: %v", err)
 		}
 		result := mustCommit(t, ctx, s, r)
@@ -389,7 +389,7 @@ func TestCommitStagedAddEditRemoveNormalization(t *testing.T) {
 		if err := s.Remove(ctx, []string{canceled.ID.String()}); err != nil {
 			t.Fatal(err)
 		}
-		data, err := os.ReadFile(staging.PayloadPath(s.Dir, kept.Namespace, kept.Object))
+		data, err := os.ReadFile(staging.PayloadPath(s.Dir, kept))
 		if err != nil || !bytes.Equal(data, pngBytes(t)) {
 			t.Fatalf("canceling duplicate damaged surviving payload: %v", err)
 		}

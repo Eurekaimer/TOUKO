@@ -161,3 +161,22 @@ func TestPlanFirstExplicitPathUpgradesManifestInSameBatch(t *testing.T) {
 		}
 	}
 }
+
+
+func TestPlanHashPathUpgradeRemainsV2(t *testing.T) {
+	a := sampleAsset(t)
+	a.Path = "img/imported.png"
+	base := planBase(t)
+	plan := mustPlan(t, base, domain.Change{Kind: domain.Add, AssetID: a.ID, Asset: &a})
+	for _, write := range plan.MetadataWrites {
+		if write.Path != ManifestPath {
+			continue
+		}
+		manifest, err := DecodeManifest(write.Data)
+		if err != nil || manifest.FormatVersion != 2 {
+			t.Fatalf("hashed import changed format: %#v, %v", manifest, err)
+		}
+		return
+	}
+	t.Fatal("hashed import did not record its explicit path")
+}

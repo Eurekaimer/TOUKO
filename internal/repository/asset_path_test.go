@@ -36,6 +36,9 @@ func TestDirectoryPathReplacesSpaces(t *testing.T) {
 	if got := DirectoryPath("my images/blog posts"); got != "my-images/blog-posts" {
 		t.Fatalf("directory = %q", got)
 	}
+	if got := DirectoryPath("my\u00a0images/blog\u2003posts"); got != "my-images/blog-posts" {
+		t.Fatalf("non-ASCII spaces = %q", got)
+	}
 	if got := DirectoryPath(""); got != "" {
 		t.Fatalf("empty directory = %q", got)
 	}

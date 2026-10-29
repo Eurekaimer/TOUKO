@@ -59,10 +59,11 @@ func TestCanonicalPlacementAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DecodeManifest(bytes.Replace(b, []byte(`"format_version":1`), []byte(`"format_version":3`), 1)); !errors.Is(err, domain.ErrRepositoryCorrupt) {
+	if _, err := DecodeManifest(bytes.Replace(b, []byte(`"format_version":1`), []byte(`"format_version":4`), 1)); !errors.Is(err, domain.ErrRepositoryCorrupt) {
 		t.Fatal(err)
 	}
 }
+
 func FuzzDecodeAsset(f *testing.F) {
 	a := sampleAsset(f)
 	b, _ := EncodeAsset(a)

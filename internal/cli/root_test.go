@@ -397,3 +397,16 @@ func TestRunHumanOutputAndEditFieldPresence(t *testing.T) {
 		t.Fatalf("explicit clear did not preserve other fields: %+v", views)
 	}
 }
+
+func TestMigrateRequiresApplyAndReportsJSONFailure(t *testing.T) {
+	dir, _ := setupCLI(t)
+	for _, args := range [][]string{
+		{"migrate", "paths", "--dry-run=false"},
+		{"migrate", "paths", "--prune-old", "--json"},
+	} {
+		got := invoke(dir, nil, args...)
+		if got.code == 0 {
+			t.Errorf("%v succeeded unexpectedly: stdout=%q stderr=%q", args, got.out, got.err)
+		}
+	}
+}

@@ -50,7 +50,7 @@ func TestReindexRecoversCacheWithoutLosingStagedWork(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			payload := staging.PayloadPath(s.Dir, staged.Namespace, staged.Object)
+			payload := staging.PayloadPath(s.Dir, staged)
 			wantPayload, err := os.ReadFile(payload)
 			if err != nil {
 				t.Fatal(err)

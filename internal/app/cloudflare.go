@@ -61,6 +61,13 @@ const (
 
 type CloudflareOptions struct {
 	DryRun bool
+	// SuppressDeletes performs upload-only reconciliation. Migration uses it so
+	// old keys are never removed while metadata still points at them.
+	SuppressDeletes bool
+	// ExtraAssets adds canonical destinations that are not yet referenced by
+	// asset metadata. Phase one of migration publishes them in Git first and
+	// uploads them here before metadata switches.
+	ExtraAssets []domain.Asset
 }
 
 type CloudflareItem struct {
@@ -157,7 +164,12 @@ func (s *Service) CloudflareSync(ctx context.Context, r repository.Git, opts Clo
 		return cloudflareUnavailable("", err), err
 	}
 	defer unlock()
+	return s.cloudflareSyncLocked(ctx, r, opts)
+}
 
+// cloudflareSyncLocked is CloudflareSync without taking the service lock. Only
+// callers that already hold it (migration) may use it.
+func (s *Service) cloudflareSyncLocked(ctx context.Context, r repository.Git, opts CloudflareOptions) (CloudflareResult, error) {
 	st, err := s.Store.Load(ctx)
 	if err != nil {
 		return cloudflareUnavailable("", err), err
@@ -208,6 +220,9 @@ func (s *Service) CloudflareSync(ctx context.Context, r repository.Git, opts Clo
 	if err != nil {
 		return cloudflareUnavailable(cloudflareCodeSourceUnavailable, nil), err
 	}
+	if err = mergeExtraRefs(refs, snapshot, opts.ExtraAssets); err != nil {
+		return cloudflareUnavailable(cloudflareCodeSourceUnavailable, nil), err
+	}
 	ledger, entries, err := s.cloudflareLedger(ctx, cfg, snapshot.Manifest.ID, cloudflareSourceID(location))
 	if err != nil {
 		return cloudflareInternalResult(cloudflareCodeMirrorStateInvalid), &CloudflareSyncError{
@@ -216,6 +231,17 @@ func (s *Service) CloudflareSync(ctx context.Context, r repository.Git, opts Clo
 	}
 	uploads := cloudflareUploadKeys(refs, nil, entries, false)
 	deletes := cloudflareDeleteKeys(refs, entries)
+	retained, err := s.retainedR2Keys(ctx, r, snapshot)
+	if err != nil {
+		result := cloudflareInternalResult(cloudflareCodeMirrorStateInvalid)
+		return result, &CloudflareSyncError{Result: result, cause: err}
+	}
+	for key := range retained {
+		delete(deletes, key)
+	}
+	if opts.SuppressDeletes {
+		deletes = map[string]bool{}
+	}
 	base := cloudflareNewReconcile(s, r, cfg, nil, snapshot.Manifest.ID, cloudflareSourceID(location), snapshot.Head, refs, entries, uploads, deletes, ledger, opts.DryRun)
 	if s.NewCloudflare == nil {
 		return cloudflareUnavailable(cloudflareCodeConfigurationInvalid, nil), cloudflareDeliveryError(cloudflareCodeConfigurationInvalid)
@@ -286,10 +312,18 @@ func (s *Service) cloudflarePublication(ctx context.Context, r repository.Git, s
 			continue
 		}
 		candidates[repository.ObjectPath(final)] = true
-		payloads[repository.ObjectPath(final)] = staging.PayloadPath(s.Dir, final.Namespace, final.Object)
+		payloads[repository.ObjectPath(final)] = staging.PayloadPath(s.Dir, final)
 	}
 	uploads := cloudflareUploadKeys(refs, candidates, entries, true)
 	deletes := cloudflareDeleteKeys(refs, entries)
+	retained, err := s.retainedR2Keys(ctx, r, snap)
+	if err != nil {
+		result := cloudflareInternalResult(cloudflareCodeMirrorStateInvalid)
+		return &result
+	}
+	for key := range retained {
+		delete(deletes, key)
+	}
 	if s.NewCloudflare == nil {
 		result := cloudflareUnavailable(cloudflareCodeConfigurationInvalid, nil)
 		return &result
@@ -483,6 +517,36 @@ func cloudflareSnapshotRefs(snapshot repository.Snapshot) (map[string]cloudflare
 		refs[path] = cloudflareRef{object: asset.Object, entry: entry}
 	}
 	return refs, nil
+}
+
+// mergeExtraRefs adds canonical destinations that a migration has published
+// in Git but that asset metadata does not reference yet. Every entry must
+// already exist with the exact size; the migration phase validates bytes.
+func mergeExtraRefs(refs map[string]cloudflareRef, snapshot repository.Snapshot, assets []domain.Asset) error {
+	if len(assets) == 0 {
+		return nil
+	}
+	entries := make(map[string]repository.GitEntry, len(snapshot.Entries))
+	for _, entry := range snapshot.Entries {
+		if entry.Type == "blob" {
+			entries[entry.Path] = entry
+		}
+	}
+	for _, asset := range assets {
+		if err := asset.Object.Validate(); err != nil {
+			return fmt.Errorf("%w: %v", domain.ErrRepositoryCorrupt, err)
+		}
+		path := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+		entry, ok := entries[path]
+		if !ok || entry.Size != asset.Object.Size {
+			return fmt.Errorf("%w: extra migration object %s is missing", domain.ErrRepositoryCorrupt, path)
+		}
+		if previous, ok := refs[path]; ok && previous.object != asset.Object {
+			return fmt.Errorf("%w: contradictory descriptions for %s", domain.ErrRepositoryCorrupt, path)
+		}
+		refs[path] = cloudflareRef{object: asset.Object, entry: entry}
+	}
+	return nil
 }
 
 func cloudflareEntryMap(ledger index.MirrorLedger) map[string]index.MirrorEntry {

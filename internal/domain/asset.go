@@ -28,6 +28,7 @@ type Repository struct {
 	ID            RepositoryID `json:"repository_id"`
 	HashAlgorithm string       `json:"hash_algorithm"`
 }
+// ContentObject describes immutable image bytes and their SHA-256 digest.
 type ContentObject struct {
 	Hash   ObjectHash `json:"hash"`
 	MIME   string     `json:"mime"`
@@ -36,6 +37,9 @@ type ContentObject struct {
 	Width  int        `json:"width"`
 	Height int        `json:"height"`
 }
+
+func (o ContentObject) HasHash() bool { return o.Hash != (ObjectHash{}) }
+
 type Asset struct {
 	ID           AssetID       `json:"id"`
 	Namespace    Namespace     `json:"namespace"`
@@ -66,6 +70,9 @@ func (a Asset) Validate() error {
 		if err := ValidateRepositoryPath(a.Path); err != nil {
 			return err
 		}
+	}
+	if !a.Object.HasHash() {
+		return fmt.Errorf("asset has no content hash")
 	}
 	return a.Object.Validate()
 }

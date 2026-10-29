@@ -2,10 +2,8 @@ package staging
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,7 +12,15 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/image"
 )
 
-func PayloadPath(stateDir string, ns domain.Namespace, object domain.ContentObject) string {
+// PayloadPath resolves a staged payload from its durable Asset metadata.
+// Staged bytes stay content-addressed: the digest is the corruption check that
+// keeps an interrupted upload from being published under an Asset UUID. The
+// repository placement itself is still the independent Asset-ID path.
+func PayloadPath(stateDir string, asset domain.Asset) string {
+	return PayloadPathFor(stateDir, asset.Namespace, asset.Object)
+}
+
+func PayloadPathFor(stateDir string, ns domain.Namespace, object domain.ContentObject) string {
 	path := filepath.Join(stateDir, "stage", "objects", string(ns), object.Hash.String()+"."+object.Ext)
 	if absolute, err := filepath.Abs(path); err == nil {
 		return absolute
@@ -25,8 +31,9 @@ func PayloadPath(stateDir string, ns domain.Namespace, object domain.ContentObje
 // Install consumes result.TempPath even on failure. The caller must hold the
 // state directory's operation lock, so the destination check and rename cannot
 // race another staging mutation. Existing payloads are verified, never replaced.
-func Install(ctx context.Context, stateDir string, ns domain.Namespace, result image.Result) (string, bool, error) {
-	path := PayloadPath(stateDir, ns, result.Object)
+func Install(ctx context.Context, stateDir string, asset domain.Asset, result image.Result) (string, bool, error) {
+	ns := asset.Namespace
+	path := PayloadPath(stateDir, asset)
 	source, err := filepath.Abs(result.TempPath)
 	if err != nil {
 		return "", false, err
@@ -41,6 +48,15 @@ func Install(ctx context.Context, stateDir string, ns domain.Namespace, result i
 	parsed, err := domain.ParseNamespace(string(ns))
 	if err != nil || parsed != ns {
 		return "", false, fmt.Errorf("invalid staging namespace %q", ns)
+	}
+	if asset.ID == (domain.AssetID{}) {
+		return "", false, fmt.Errorf("staged asset has no identity")
+	}
+	if !asset.Object.HasHash() {
+		return "", false, fmt.Errorf("staged asset has no content hash")
+	}
+	if asset.Object != result.Object {
+		return "", false, fmt.Errorf("staged metadata describes different bytes than the payload")
 	}
 	if err := result.Object.Validate(); err != nil {
 		return "", false, err
@@ -106,18 +122,8 @@ func verifyFile(ctx context.Context, path string, object domain.ContentObject, s
 		return fmt.Errorf("open payload: %w", err)
 	}
 	defer file.Close()
-	hash := sha256.New()
-	size, err := io.Copy(hash, io.LimitReader(contextReader{ctx, file}, object.Size+1))
-	if err != nil {
-		return fmt.Errorf("verify staged payload: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	var actual domain.ObjectHash
-	hash.Sum(actual[:0])
-	if size != object.Size || actual != object.Hash {
-		return fmt.Errorf("%w: staged payload bytes differ: %s", domain.ErrHashMismatch, path)
+	if err := image.Verify(ctx, file, object); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	if syncFile {
 		if err := file.Chmod(0600); err != nil {
@@ -163,18 +169,3 @@ func Cleanup(ctx context.Context, stateDir string, referenced map[string]bool) e
 	})
 }
 
-type contextReader struct {
-	ctx    context.Context
-	source io.Reader
-}
-
-func (r contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	n, err := r.source.Read(p)
-	if canceled := r.ctx.Err(); canceled != nil {
-		return n, canceled
-	}
-	return n, err
-}

@@ -355,7 +355,7 @@ func assertOwnedObject(t *testing.T, fake *fakeMirror, key string, data []byte, 
 func TestCloudflareSyncUploadsSkipsAndBuildsURL(t *testing.T) {
 	ctx, r, s := realRepository(t)
 	asset := stageImage(t, ctx, s)
-	payload, err := os.ReadFile(staging.PayloadPath(s.Dir, asset.Namespace, asset.Object))
+	payload, err := os.ReadFile(staging.PayloadPath(s.Dir, asset))
 	if err != nil {
 		t.Fatal(err)
 	}

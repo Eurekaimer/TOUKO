@@ -17,19 +17,17 @@ import (
 )
 
 func (s *Server) preview(w http.ResponseWriter, r *http.Request, selector string) {
-	source, object, err := s.openImage(r.Context(), selector)
+	source, object, identity, err := s.openImage(r.Context(), selector)
 	if err != nil {
 		s.respondError(w, err)
 		return
 	}
 	defer source.Close()
-	// An Asset's content hash never changes for its ID, and preview URLs already
-	// carry that hash. The browser may therefore reuse the bytes for this URL
-	// without another repository read; deletion still invalidates it because the
-	// Asset lookup above runs first.
-	tag := `"` + object.Hash.String() + `"`
+	// A repository can replace bytes at the same Asset ID, so revalidate the
+	// cached response against the actual staged or Git object identity.
+	tag := `"` + identity + `"`
 	w.Header().Set("ETag", tag)
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", "private, no-cache")
 	if matchesETag(r.Header.Get("If-None-Match"), tag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -46,38 +44,38 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request, selector string
 	}
 }
 
-func (s *Server) openImage(ctx context.Context, selector string) (io.ReadCloser, domain.ContentObject, error) {
+func (s *Server) openImage(ctx context.Context, selector string) (io.ReadCloser, domain.ContentObject, string, error) {
 	st, asset, staged, err := s.imageSnapshot(ctx, selector)
 	if err != nil {
-		return nil, domain.ContentObject{}, err
+		return nil, domain.ContentObject{}, "", err
 	}
 	if staged != nil {
-		return staged, asset.Object, nil
+		return staged, asset.Object, "staged-" + selector, nil
 	}
 	location, err := s.service.Location(ctx)
 	if err != nil {
-		return nil, domain.ContentObject{}, err
+		return nil, domain.ContentObject{}, "", err
 	}
 	var git repository.Git
 	if location.Backend == "github" {
 		if err := s.ensureClone(ctx); err != nil {
-			return nil, domain.ContentObject{}, err
+			return nil, domain.ContentObject{}, "", err
 		}
 		if file, ok, err := localImage(s.service.Dir, asset); err != nil {
-			return nil, domain.ContentObject{}, err
+			return nil, domain.ContentObject{}, "", err
 		} else if ok {
-			return file, asset.Object, nil
+			return file, asset.Object, "sha256-" + asset.Object.Hash.String(), nil
 		}
 		local, err := localgit.Open(ctx, repository.CloneDir(s.service.Dir), location.Branch)
 		if err != nil {
-			return nil, domain.ContentObject{}, err
+			return nil, domain.ContentObject{}, "", err
 		}
 		// Explicit PicGo paths can be replaced in a later checkout. Use immutable
 		// Git bytes from the gallery snapshot, not a same-sized live path.
 		if _, err := local.Commit(ctx, st.Head); err == nil {
 			git = local
 		} else if ctx.Err() != nil {
-			return nil, domain.ContentObject{}, ctx.Err()
+			return nil, domain.ContentObject{}, "", ctx.Err()
 		}
 	}
 	if git == nil {
@@ -85,32 +83,49 @@ func (s *Server) openImage(ctx context.Context, selector string) (io.ReadCloser,
 		// remote bytes. Ordinary synced galleries, including PicGo, stay local.
 		git, err = s.backend(ctx)
 		if err != nil {
-			return nil, domain.ContentObject{}, err
+			return nil, domain.ContentObject{}, "", err
 		}
 	}
 	blob, err := s.imageBlob(ctx, git, st, repository.ObjectPath(*asset))
 	if err != nil {
-		return nil, domain.ContentObject{}, err
+		return nil, domain.ContentObject{}, "", err
 	}
 	if blob.Size != asset.Object.Size {
-		return nil, domain.ContentObject{}, fmt.Errorf("%w: cached image size differs", domain.ErrRepositoryCorrupt)
+		return nil, domain.ContentObject{}, "", fmt.Errorf("%w: cached image size differs", domain.ErrRepositoryCorrupt)
 	}
 	source, err := git.OpenBlob(ctx, repository.BlobID(blob.SHA))
 	if err != nil {
-		return nil, domain.ContentObject{}, err
+		return nil, domain.ContentObject{}, "", err
 	}
-	return source, asset.Object, nil
+	return source, asset.Object, "git-" + blob.SHA, nil
 }
 
 // imageSnapshot opens a staged file before a concurrent commit/reset can unlink
 // it. For committed assets, immutable Git IDs outlive the lock and live branch.
 func (s *Server) imageSnapshot(ctx context.Context, selector string) (index.State, *domain.Asset, io.ReadCloser, error) {
+	var empty index.State
+	st, views, err := s.service.ReadView(ctx)
+	if err != nil {
+		return empty, nil, nil, err
+	}
+	found := false
+	for i := range views {
+		view := &views[i]
+		if view.Asset.ID.String() == selector {
+			if view.State != "added" {
+				return st, &view.Asset, nil, nil
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		return empty, nil, nil, domain.ErrAssetNotFound
+	}
+	// Only staged payloads need protection from concurrent cleanup.
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
-	var empty index.State
-	// Open staged payloads while writers are excluded so cleanup cannot unlink
-	// the file between the database read and the open.
-	st, views, err := s.service.ReadView(ctx)
+	st, views, err = s.service.ReadView(ctx)
 	if err != nil {
 		return empty, nil, nil, err
 	}
@@ -122,7 +137,7 @@ func (s *Server) imageSnapshot(ctx context.Context, selector string) (index.Stat
 		if view.State != "added" {
 			return st, &view.Asset, nil, nil
 		}
-		payload := staging.PayloadPath(s.service.Dir, view.Asset.Namespace, view.Asset.Object)
+		payload := staging.PayloadPath(s.service.Dir, view.Asset)
 		file, err := os.Open(payload)
 		if errors.Is(err, os.ErrNotExist) && view.State == "added" {
 			// A publication may have consumed the payload between the snapshot and
@@ -143,8 +158,7 @@ func (s *Server) imageSnapshot(ctx context.Context, selector string) (index.Stat
 		}
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && view.Asset.Path != "" {
-				// Imported metadata references an already committed image and has
-				// no newly uploaded staging payload.
+				// A legacy import references committed bytes without a staging payload.
 				return st, &view.Asset, nil, nil
 			}
 			return empty, nil, nil, fmt.Errorf("%w: staged image unavailable: %v", domain.ErrRepositoryCorrupt, err)

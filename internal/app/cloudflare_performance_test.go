@@ -38,7 +38,7 @@ func TestCloudflareStagedPayloadAndFallback(t *testing.T) {
 	}
 	asset := views[0].Asset
 	key := repository.ObjectPath(asset)
-	path := staging.PayloadPath(s.Dir, asset.Namespace, asset.Object)
+	path := staging.PayloadPath(s.Dir, asset)
 	source := &countedBlobGit{Git: git, data: data}
 	mirror := newFakeMirror()
 	run := &cloudflareReconcile{service: s, repo: source, mirror: mirror, payloads: map[string]string{key: path}}
