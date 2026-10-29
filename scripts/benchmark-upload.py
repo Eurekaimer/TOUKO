@@ -41,6 +41,19 @@ def run(binary, state, *args, timeout=900):
     return proc, elapsed
 
 
+def retry(fn, *args, attempts=3):
+    """Transient GitHub/proxy failures are retried before they are recorded."""
+    last = None
+    for attempt in range(attempts):
+        proc, elapsed = fn(*args)
+        if proc.returncode == 0:
+            return proc, elapsed
+        last = (proc, elapsed)
+        if attempt + 1 < attempts:
+            time.sleep(3)
+    return last
+
+
 def configure_state(binary, state, repo, branch, r2, credentials):
     if os.path.exists(os.path.join(state, "config.json")):
         raise SystemExit(f"state already configured: {state}")
@@ -73,12 +86,12 @@ def measure(binary, state, images, out_path):
     with open(out_path, "w") as out:
         for index, image in enumerate(images):
             record = {"index": index, "file": os.path.basename(image), "size_bytes": os.path.getsize(image)}
-            proc, add_ms = run(binary, state, "add", image, "--namespace", "bench", "--json")
+            proc, add_ms = retry(run, binary, state, "add", image, "--namespace", "bench", "--json")
             record["add_ms"] = round(add_ms, 1)
             if proc.returncode != 0:
                 record.update(ok=False, commit_ms=0.0, total_ms=round(add_ms, 1), error=proc.stderr.strip()[:300])
             else:
-                proc, commit_ms = run(binary, state, "commit", "-m", "bench: upload image", "--json")
+                proc, commit_ms = retry(run, binary, state, "commit", "-m", "bench: upload image", "--json")
                 record["commit_ms"] = round(commit_ms, 1)
                 record["total_ms"] = round(add_ms + commit_ms, 1)
                 record["ok"] = proc.returncode == 0
@@ -92,7 +105,7 @@ def measure(binary, state, images, out_path):
                 flush=True,
             )
             if not record["ok"]:
-                break
+                continue
     return records
 
 
