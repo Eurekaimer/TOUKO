@@ -88,7 +88,9 @@
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
 | `AssetPath` | AssetID → `.touko/assets/<uuid>.json`。 | 纯函数；元数据路径与标题、原文件名无关。 |
-| `BuildObjectPath` | namespace/object → `objects/<namespace>/sha256/<前2位>/<后2位>/<hash>.<ext>`。 | 纯拼接，调用者应先验证 namespace/object；同 namespace 同 bytes 共 placement，跨 namespace 分开路由。 |
+| `AssetObjectPath` | namespace/asset-id/ext → `objects/<namespace>/<uuid>.<ext>`。 | 新上传默认路径；不计算或读取 hash，每个 Asset 独占一个 object。 |
+| `LegacyObjectPath` | namespace/object → `objects/<namespace>/sha256/<前2位>/<后2位>/<hash>.<ext>`。 | 仅供旧仓库在 Asset 无显式 path 时回退读取；新代码不产生该路径。 |
+| `DirectoryPath` | 上传目录 → 规范化目录前缀。 | 每段空格替换为 `-`，让 URL 无需转义；不做其他改写。 |
 | `ObjectPath` | Asset → 实际图片路径；非空 Path 优先，否则 BuildObjectPath。 | 纯函数，调用方先验证 Asset；导入、preview、verify、引用计数、URL 均使用它，不能重新假设 canonical。 |
 | `(Location).Validate` | 检查非空安全 branch、支持 backend 和 backend-specific 字段。 | localgit 必须绝对 path 且无 owner/name；github 必须 owner/name 且无 path。这里不是完整 Git branch validator，adapter 继续验证；不保存 token。 |
 | `(Location).RemoteURL`、`CloneDir` | GitHub Location → HTTPS clone URL；stateDir → `<state-dir>/clone`。 | 不携带凭据，复用同一位置派生规则，避免 CLI/Web 各自拼地址。 |

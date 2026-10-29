@@ -70,7 +70,7 @@ Windows 安装组件后若重检仍未发现 gh，请退出并重新打开 TOUKO
 ### A. 上传与预览
 
 1. 使用上传按钮或拖入 `logo/touko-logo.png`、`examples/images/red.png` 和 `blue.png`。上传接受 PNG、JPEG、GIF、WebP。
-2. Namespace 设为 `blog`。目标目录可留空使用 canonical `objects/...`，或填 `images/blog`，文件以内容 hash 命名，不是照搬本机文件名。可勾选“把 PNG / JPEG 转为 WebP”；只有编码结果更小时才替换原图，GIF 与已有 WebP 不重新编码。
+2. Namespace 设为 `blog`。目标目录可留空使用默认 `objects/<namespace>/<asset-id>.<ext>`，或填 `images/blog`，文件以 Asset UUID 命名（目录空格换成 `-`），不是照搬本机文件名。可勾选“把 PNG / JPEG 转为 WebP”；只有编码结果更小时才替换原图，GIF 与已有 WebP 不重新编码。
 3. 确认上传，图片以各自文件名作为默认标题进入待发布区；这一步不发布到 GitHub 或 R2。
 4. 在待发布列表逐张点击「编辑图片信息」，分别设置标题、标签和分类；也可从图片卡片打开详情。检查原文件名、实际仓库路径、UUID、hash、尺寸与 MIME。
 5. 此时去 GitHub 看分支 HEAD，**不应因为上传而产生 commit**。

@@ -45,3 +45,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# benchmark output
+benchmarks/results/

@@ -109,7 +109,7 @@ flowchart TD
 ```text
 .touko/repository.json
 .touko/assets/<asset-uuid>.json
-objects/<namespace>/sha256/<前2位>/<接着2位>/<完整hash>.<ext>
+objects/<namespace>/<asset-uuid>.<ext>（旧仓库仍按 sha256/<前2位>/<接着2位>/<完整hash>.<ext> 读取无显式 path 的 Asset）
 ```
 
 `ObjectPath(asset)` 优先取非空 `Asset.Path`，否则调用 `BuildObjectPath`。默认上传继续 canonical；`--directory` 上传使用 `<directory>/<hash>.<ext>`，导入 PicGo 则保留原路径，不搬动、不重传 bytes。所有读取、删除、引用计数与 URL 都必须使用实际路径，不能各处重新假设 canonical。

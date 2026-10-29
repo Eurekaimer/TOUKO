@@ -169,7 +169,7 @@ cat logo/touko-logo.png | /tmp/touko add - --name '剪贴板.png' --namespace no
 /tmp/touko commit -m 'images: upload into images/blog'
 ```
 
-`--directory` 是**仓库内目标目录**，不是本地输入目录；文件使用确定性内容 hash 命名，metadata 记录实际路径。留空保持默认 `objects/<namespace>/sha256/...`。目录须是规范相对 POSIX 路径（`/` 分隔），不能是绝对路径、含 `..`、反斜杠、控制字符或 `.git/.touko` 路径段。相同 bytes 不同最终路径是独立 placement；删除按实际完整路径计数。
+`--directory` 是**仓库内目标目录**，不是本地输入目录；文件以 Asset UUID 命名，metadata 记录实际路径，目录里的空格会换成 `-`。留空保持默认 `objects/<namespace>/<asset-uuid>.<ext>`。相同图片上传两次是两个 Asset、两个 object（Git 仍只存一份 blob）。目录须是规范相对 POSIX 路径（`/` 分隔），不能是绝对路径、含 `..`、反斜杠、控制字符或 `.git/.touko` 路径段。相同 bytes 不同最终路径是独立 placement；删除按实际完整路径计数。
 
 ### 原地导入旧图库 / PicGo
 
