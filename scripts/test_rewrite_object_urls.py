@@ -121,6 +121,28 @@ class RewriteObjectUrlsTest(unittest.TestCase):
         with open(self.note, encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "![photo](https://img.eurekaimer.icu/objects/default/new.png)\n")
 
+    def test_missing_root_does_not_change_other_files(self):
+        self.write([mapping_item()], "x https://img.eurekaimer.icu/%s\n" % OLD)
+        missing = os.path.join(self.directory.name, "missing")
+        result = self.run_script("--mapping", self.mapping, "--root", self.note, "--root", missing, "--apply")
+        self.assertNotEqual(result, 0)
+        with open(self.note, encoding="utf-8") as handle:
+            self.assertIn(OLD, handle.read())
+
+    def test_concurrent_file_edit_is_preserved(self):
+        self.write([mapping_item()], "x https://img.eurekaimer.icu/%s\n" % OLD)
+        original = REWRITE.write_atomic
+
+        def edit_before_write(path, text, info):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("user revision\n")
+            return original(path, text, info)
+
+        with mock.patch.object(REWRITE, "write_atomic", side_effect=edit_before_write):
+            self.assertNotEqual(self.run_script("--mapping", self.mapping, "--root", self.note, "--apply"), 0)
+        with open(self.note, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "user revision\n")
+
 
 if __name__ == "__main__":
     unittest.main()

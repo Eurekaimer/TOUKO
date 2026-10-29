@@ -271,7 +271,7 @@ def iter_files(root):
             and not (".obsidian" in parts and name in OBSIDIAN_VENDOR_DIRS)
         )
         for name in sorted(filenames):
-            if name.lower().endswith(SKIP_SUFFIXES) or name.endswith(".egg-info"):
+            if name == ".env" or name.startswith(".env.") or name.lower().endswith(SKIP_SUFFIXES) or name.endswith(".egg-info"):
                 continue
             path = os.path.join(dirpath, name)
             if os.path.islink(path) or not os.path.isfile(path):
@@ -304,6 +304,11 @@ def read_text(path):
 
 
 def write_atomic(path, text, info):
+    current = os.stat(path, follow_symlinks=False)
+    before = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    after = (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns)
+    if not stat.S_ISREG(current.st_mode) or before != after:
+        raise OSError("file changed while preparing URL rewrite")
     directory = os.path.dirname(path) or "."
     fd, temporary = tempfile.mkstemp(prefix=".touko-rewrite-", dir=directory)
     try:
@@ -327,6 +332,10 @@ def main():
     parser.add_argument("--root", action="append", required=True, help="directory to scan (repeatable)")
     parser.add_argument("--apply", action="store_true", help="write changes; requires migrated entries")
     args = parser.parse_args()
+    missing = [root for root in args.root if not os.path.exists(root)]
+    if missing:
+        print("error: roots do not exist: %s" % ", ".join(missing), file=sys.stderr)
+        return 2
 
     try:
         prefixes, unverified, skipped = load_mapping(args.mapping)
