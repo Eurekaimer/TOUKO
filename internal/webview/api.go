@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/Eurekaimer/TOUKO/internal/app"
 	"github.com/Eurekaimer/TOUKO/internal/delivery"
@@ -77,6 +78,15 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.preview(w, r, selector)
 		return
 	}
+	if path == "/api/state" {
+		result, err := s.state(r.Context())
+		if err != nil {
+			s.respondError(w, err)
+		} else {
+			s.json(w, result)
+		}
+		return
+	}
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	var result any
@@ -95,8 +105,6 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if err = decodeJSON(w, r, &input); err == nil {
 			err = s.service.Edit(r.Context(), selector, app.EditOptions{Title: input.Title, Tags: input.Tags, Collections: input.Collections})
 		}
-	case path == "/api/state":
-		result, err = s.state(r.Context())
 	case path == "/api/auth":
 		result, err = s.authentication(r.Context())
 	case path == "/api/repos":
@@ -524,10 +532,13 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) (any, error) {
 // particular call order in the publication coordinator.
 type lazyGit struct {
 	server *Server
+	mu     sync.Mutex
 	git    repository.Git
 }
 
 func (g *lazyGit) resolve(ctx context.Context) (repository.Git, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.git != nil {
 		return g.git, nil
 	}

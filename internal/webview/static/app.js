@@ -859,6 +859,8 @@ function updateActions() {
   $("open-import").disabled = busy;
   $("import-submit").disabled = busy || !initialized;
   $("open-upload").disabled = busy;
+  $("open-publish").disabled =
+    busy || !(view.changes.length || view.members.some((entry) => entry.publication));
   $("setup-action").disabled = busy;
   $("upload-submit").disabled = busy || !uploadFiles.length || !initialized;
   $("upload-paste").disabled = busy || clipboardBusy;
@@ -1474,6 +1476,39 @@ function renderGallery() {
       : "没有待发布的修改。";
   updateActions();
 }
+function renderPreviewChoices(field, selected) {
+  const target = $(`edit-${field}`);
+  target.replaceChildren();
+  const entries = counts(field).sort(([a, ac], [b, bc]) => bc - ac || a.localeCompare(b, "zh-CN"));
+  for (const [name, count] of entries) addPreviewChoice(target, name, selected.includes(name), count);
+  if (!entries.length) target.append(element("p", "choice-empty", "暂无已有选项"));
+}
+function addPreviewChoice(target, name, checked, count) {
+  const label = element("label", "choice-option");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.value = name;
+  input.checked = checked;
+  label.append(input, element("span", "", name));
+  if (count) label.append(element("small", "muted", String(count)));
+  target.append(label);
+}
+function addPreviewValues(field, inputID) {
+  const target = $(`edit-${field}`);
+  for (const name of list($(inputID).value)) {
+    const existing = [...target.querySelectorAll("input")].find((input) => input.value === name);
+    if (existing) existing.checked = true;
+    else {
+      target.querySelector(".choice-empty")?.remove();
+      addPreviewChoice(target, name, true);
+    }
+  }
+  $(inputID).value = "";
+}
+function selectedPreviewValues(field) {
+  return [...$(`edit-${field}`).querySelectorAll("input:checked")].map((input) => input.value);
+}
+
 function openPreview(key) {
   const entry = viewForKey(key);
   if (!entry) return;
@@ -1486,8 +1521,10 @@ function openPreview(key) {
   $("preview-image").alt = asset.title || asset.original_name;
   $("asset-path").textContent = assetPath(asset);
   $("edit-title").value = asset.title;
-  $("edit-tags").value = asset.tags.join(", ");
-  $("edit-collections").value = asset.collections.join(", ");
+  renderPreviewChoices("tags", asset.tags);
+  renderPreviewChoices("collections", asset.collections);
+  $("new-tag").value = "";
+  $("new-collection").value = "";
   $("preview-state").className = `asset-state ${entry.state}`;
   $("preview-state").textContent = stateNames[entry.state];
   $("asset-metadata").replaceChildren();
@@ -3059,6 +3096,7 @@ async function memberOperation(action, members, options = {}) {
   const results = [];
   const failed = [];
   for (const member of members) {
+    options.progress?.(member, results.length);
     try {
       // Capacity can report a stale local clone after successful publication.
       // Mirror repair reads the authoritative API and must not require a clone refresh.
@@ -3084,10 +3122,39 @@ async function runMemberOperation(action, options = {}) {
   clearError("page-error");
   clearError("pending-error");
   setBusy(true);
+  const progress = $("operation-progress");
+  const progressParent = progress.parentNode;
+  const progressNext = progress.nextSibling;
+  const activeDialog = document.querySelector("dialog[open]");
+  if (activeDialog) activeDialog.append(progress);
+  const started = Date.now();
+  let current = members[0];
+  let completed = 0;
+  const renderProgress = () => {
+    const detail = action === "commit"
+      ? "正在等待 GitHub 确认及已启用的 R2 镜像。"
+      : action === "cloudflare/sync"
+        ? "正在确认 Cloudflare R2 镜像。"
+        : "正在等待仓库操作完成。";
+    progress.textContent = `${memberName(current.id)} · 已处理 ${completed}/${members.length} 个成员 · 已用 ${Math.floor((Date.now() - started) / 1000)} 秒。${detail}`;
+  };
+  progress.hidden = false;
+  renderProgress();
+  const timer = setInterval(renderProgress, 1000);
   let value;
   try {
-    value = await memberOperation(action, members, options);
+    value = await memberOperation(action, members, {
+      ...options,
+      progress: (member, count) => {
+        current = member;
+        completed = count;
+        renderProgress();
+      },
+    });
   } finally {
+    clearInterval(timer);
+    progress.hidden = true;
+    progressParent.insertBefore(progress, progressNext);
     try {
       await refreshState();
     } catch (error) {
@@ -3152,6 +3219,7 @@ function bindEvents() {
   });
   $("clear-filters").addEventListener("click", resetFilters);
   $("open-pending").addEventListener("click", openPending);
+  $("open-publish").addEventListener("click", openPending);
   $("open-repo").addEventListener("click", openRepository);
   $("open-upload").addEventListener("click", () => openUpload());
   $("open-import").addEventListener("click", openImport);
@@ -3318,6 +3386,8 @@ function bindEvents() {
     $("preview-image").hidden = true;
     $("preview-image-error").hidden = false;
   });
+  $("add-tag").addEventListener("click", () => addPreviewValues("tags", "new-tag"));
+  $("add-collection").addEventListener("click", () => addPreviewValues("collections", "new-collection"));
   $("edit-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const entry = viewForKey(currentKey);
@@ -3328,8 +3398,8 @@ function bindEvents() {
       () =>
         apiMember(member, `assets/${entry.asset.id}/edit`, {
           title: $("edit-title").value,
-          tags: list($("edit-tags").value),
-          collections: list($("edit-collections").value),
+          tags: selectedPreviewValues("tags"),
+          collections: selectedPreviewValues("collections"),
         }),
       "edit-error",
       "修改已保存到待发布区",

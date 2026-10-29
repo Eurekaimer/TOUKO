@@ -269,9 +269,12 @@
             ><button type="button" class="button primary" id="open-upload">
               <svg class="icon"><use href="#i-upload" /></svg
               ><span>上传图片</span>
+            </button><button type="button" class="button secondary" id="open-publish" disabled>
+              <svg class="icon"><use href="#i-branch" /></svg><span>提交并发布</span>
             </button>
           </div>
         </header>
+        <div id="operation-progress" class="notice operation-progress" role="status" aria-live="polite" hidden></div>
         <div class="main-content">
           <!-- Hero: the one place the Bodoni italic is allowed to speak. No
                eyebrow, no rule — the headline and its gloss, then air. -->
@@ -848,14 +851,26 @@
         <form id="edit-form" class="preview-details">
           <div id="preview-state" class="asset-state"></div>
           <label>仓库真实路径<span id="asset-path" class="asset-path"></span></label>
-          <label>标题<input id="edit-title" /></label
-          ><label>标签<textarea id="edit-tags" rows="2"></textarea></label
-          ><label
-            >分类<textarea id="edit-collections" rows="2"></textarea>
-          </label>
-          <p class="field-help">
-            可以用中文逗号、英文逗号或换行分隔。保存会替换完整列表，留空就清空。
-          </p>
+          <label>标题<input id="edit-title" /></label>
+          <fieldset class="preview-choices">
+            <legend>标签</legend>
+            <div id="edit-tags" class="choice-list"></div>
+            <div class="choice-add">
+              <label for="new-tag">添加新标签</label>
+              <input id="new-tag" placeholder="可用逗号或换行分隔" />
+              <button type="button" class="button secondary" id="add-tag">添加</button>
+            </div>
+          </fieldset>
+          <fieldset class="preview-choices">
+            <legend>分类</legend>
+            <div id="edit-collections" class="choice-list"></div>
+            <div class="choice-add">
+              <label for="new-collection">添加新分类</label>
+              <input id="new-collection" placeholder="可用逗号或换行分隔" />
+              <button type="button" class="button secondary" id="add-collection">添加</button>
+            </div>
+          </fieldset>
+          <p class="field-help">取消选择并保存会移除；全部取消可清空。</p>
           <details class="metadata-details">
             <summary>图片与内容信息</summary>
             <dl id="asset-metadata"></dl>

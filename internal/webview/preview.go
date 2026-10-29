@@ -108,9 +108,8 @@ func (s *Server) imageSnapshot(ctx context.Context, selector string) (index.Stat
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	var empty index.State
-	// Previews read a database snapshot and the files in it. They must not queue
-	// behind a publication: WAL readers see the last committed state, and the
-	// staged payload is opened below before anything can unlink it.
+	// Open staged payloads while writers are excluded so cleanup cannot unlink
+	// the file between the database read and the open.
 	st, views, err := s.service.ReadView(ctx)
 	if err != nil {
 		return empty, nil, nil, err
