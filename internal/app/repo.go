@@ -85,7 +85,7 @@ func (s *Service) Initialize(ctx context.Context, r repository.Git) (SyncResult,
 	if err = s.Store.SavePublication(ctx, st.Publication); err != nil {
 		return SyncResult{}, err
 	}
-	return s.publishJournal(ctx, r, st)
+	return s.publishJournal(ctx, r, st, nil)
 }
 
 // Reset discards local unpublished work only after remote reads establish whether

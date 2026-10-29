@@ -6,6 +6,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 )
@@ -40,6 +41,16 @@ func readMetadata(ctx context.Context, r Reader, entry GitEntry, limit int) ([]b
 	return b, nil
 }
 func ReadSnapshot(ctx context.Context, r Reader, head domain.RepositoryHead) (Snapshot, error) {
+	return readSnapshot(ctx, r, head, nil)
+}
+
+// ReadSnapshotReusing reuses parsed metadata from a freshly validated base
+// only when its complete Git entry is unchanged.
+func ReadSnapshotReusing(ctx context.Context, r Reader, head domain.RepositoryHead, base Snapshot) (Snapshot, error) {
+	return readSnapshot(ctx, r, head, &base)
+}
+
+func readSnapshot(ctx context.Context, r Reader, head domain.RepositoryHead, base *Snapshot) (Snapshot, error) {
 	s := Snapshot{Head: head, Assets: make(map[domain.AssetID]domain.Asset)}
 	if head == "" {
 		return s, domain.ErrRepositoryUninitialized
@@ -74,51 +85,123 @@ func ReadSnapshot(ctx context.Context, r Reader, head domain.RepositoryHead) (Sn
 		}
 		return s, domain.ErrRepositoryUninitialized
 	}
-	data, err := readMetadata(ctx, r, manifest, MaxManifestBytes)
-	if err != nil {
-		return s, err
+	baseEntries := make(map[string]GitEntry)
+	baseAssets := make(map[string]domain.Asset)
+	if base != nil {
+		for _, entry := range base.Entries {
+			baseEntries[entry.Path] = entry
+		}
+		for _, asset := range base.Assets {
+			baseAssets[AssetPath(asset.ID)] = asset
+		}
 	}
-	s.Manifest, err = DecodeManifest(data)
-	if err != nil {
-		return s, err
+	if previous, ok := baseEntries[manifest.Path]; ok && previous == manifest {
+		s.Manifest = base.Manifest
+	} else {
+		data, err := readMetadata(ctx, r, manifest, MaxManifestBytes)
+		if err != nil {
+			return s, err
+		}
+		s.Manifest, err = DecodeManifest(data)
+		if err != nil {
+			return s, err
+		}
 	}
 	descriptions := make(map[domain.ObjectHash]domain.ContentObject)
 	pathDescriptions := make(map[string]domain.ContentObject)
+	var metadata []GitEntry
 	for _, entry := range s.Entries {
-		if !strings.HasPrefix(entry.Path, ".touko/assets/") {
-			continue
+		if strings.HasPrefix(entry.Path, ".touko/assets/") {
+			metadata = append(metadata, entry)
 		}
-		if entry.Type == "tree" {
-			return s, corrupt(fmt.Errorf("nested metadata directory %s", entry.Path))
-		}
-		data, err := readMetadata(ctx, r, entry, MaxMetadataBytes)
-		if err != nil {
+	}
+	for start := 0; start < len(metadata); start += 8 {
+		if err := ctx.Err(); err != nil {
 			return s, err
 		}
-		a, err := DecodeAsset(data, strings.TrimPrefix(entry.Path, ".touko/assets/"))
-		if err != nil {
-			return s, err
+		end := min(start+8, len(metadata))
+		type loaded struct {
+			data   []byte
+			asset  domain.Asset
+			reused bool
+			err    error
 		}
-		if s.Manifest.FormatVersion == 1 && a.Path != "" {
-			return s, corrupt(fmt.Errorf("explicit asset path requires repository format v2"))
+		results := make([]loaded, end-start)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		stopped := false
+		for i, entry := range metadata[start:end] {
+			mu.Lock()
+			if stopped {
+				mu.Unlock()
+				break
+			}
+			if err := ctx.Err(); err != nil {
+				results[i].err = err
+				stopped = true
+				mu.Unlock()
+				break
+			}
+			if entry.Type == "tree" {
+				results[i].err = corrupt(fmt.Errorf("nested metadata directory %s", entry.Path))
+				stopped = true
+				mu.Unlock()
+				continue
+			}
+			if previous, ok := baseEntries[entry.Path]; ok && previous == entry {
+				if asset, ok := baseAssets[entry.Path]; ok {
+					results[i].asset, results[i].reused = asset, true
+					mu.Unlock()
+					continue
+				}
+			}
+			wg.Add(1)
+			go func(i int, entry GitEntry) {
+				defer wg.Done()
+				results[i].data, results[i].err = readMetadata(ctx, r, entry, MaxMetadataBytes)
+				if results[i].err != nil {
+					mu.Lock()
+					stopped = true
+					mu.Unlock()
+				}
+			}(i, entry)
+			mu.Unlock()
 		}
-		if _, ok := s.Assets[a.ID]; ok {
-			return s, corrupt(fmt.Errorf("duplicate asset %s", a.ID))
+		wg.Wait()
+		for i, entry := range metadata[start:end] {
+			result := results[i]
+			if result.err != nil {
+				return s, result.err
+			}
+			a := result.asset
+			if !result.reused {
+				var err error
+				a, err = DecodeAsset(result.data, strings.TrimPrefix(entry.Path, ".touko/assets/"))
+				if err != nil {
+					return s, err
+				}
+			}
+			if s.Manifest.FormatVersion == 1 && a.Path != "" {
+				return s, corrupt(fmt.Errorf("explicit asset path requires repository format v2"))
+			}
+			if _, ok := s.Assets[a.ID]; ok {
+				return s, corrupt(fmt.Errorf("duplicate asset %s", a.ID))
+			}
+			if previous, ok := descriptions[a.Object.Hash]; ok && previous != a.Object {
+				return s, corrupt(fmt.Errorf("contradictory object description %s", a.Object.Hash))
+			}
+			descriptions[a.Object.Hash] = a.Object
+			objectPath := ObjectPath(a)
+			if previous, ok := pathDescriptions[objectPath]; ok && previous != a.Object {
+				return s, corrupt(fmt.Errorf("contradictory object descriptions for path %s", objectPath))
+			}
+			pathDescriptions[objectPath] = a.Object
+			e, ok := entries[objectPath]
+			if !ok || e.Type != "blob" || (e.Mode != "100644" && e.Mode != "100755") || e.Size != a.Object.Size {
+				return s, corrupt(fmt.Errorf("missing or invalid referenced object %s", objectPath))
+			}
+			s.Assets[a.ID] = a
 		}
-		if previous, ok := descriptions[a.Object.Hash]; ok && previous != a.Object {
-			return s, corrupt(fmt.Errorf("contradictory object description %s", a.Object.Hash))
-		}
-		descriptions[a.Object.Hash] = a.Object
-		objectPath := ObjectPath(a)
-		if previous, ok := pathDescriptions[objectPath]; ok && previous != a.Object {
-			return s, corrupt(fmt.Errorf("contradictory object descriptions for path %s", objectPath))
-		}
-		pathDescriptions[objectPath] = a.Object
-		e, ok := entries[objectPath]
-		if !ok || e.Type != "blob" || (e.Mode != "100644" && e.Mode != "100755") || e.Size != a.Object.Size {
-			return s, corrupt(fmt.Errorf("missing or invalid referenced object %s", objectPath))
-		}
-		s.Assets[a.ID] = a
 	}
 	return s, nil
 }

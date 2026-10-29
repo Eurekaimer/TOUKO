@@ -125,7 +125,7 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 	if err = s.Store.SavePublication(ctx, st.Publication); err != nil {
 		return CommitResult{}, err
 	}
-	result, err := s.publishJournal(ctx, r, st)
+	result, err := s.publishJournal(ctx, r, st, &base)
 	return CommitResult{Head: result.Head, ChangeCount: count, AssetCount: result.AssetCount, Cloudflare: result.Cloudflare}, err
 }
 
@@ -210,7 +210,7 @@ func (s *Service) recoverPublication(ctx context.Context, r repository.Git, st i
 		return SyncResult{}, &domain.ConflictError{Base: st.Publication.BaseHead, Remote: head, Reason: "head_changed"}
 	}
 	if retry {
-		return s.publishJournal(ctx, r, st)
+		return s.publishJournal(ctx, r, st, nil)
 	}
 	// Sync may abandon an unpublished candidate, but never the staged batch.
 	if err = s.Store.SavePublication(ctx, nil); err != nil {
@@ -218,8 +218,8 @@ func (s *Service) recoverPublication(ctx context.Context, r repository.Git, st i
 	}
 	return SyncResult{Head: st.Head, AssetCount: len(st.Assets)}, nil
 }
-func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index.State) (SyncResult, error) {
-	candidate, err := validateCandidate(ctx, r, st)
+func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index.State, base *repository.Snapshot) (SyncResult, error) {
+	candidate, err := validateCandidate(ctx, r, st, base)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -247,7 +247,7 @@ func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index
 	return s.finalizeCandidate(ctx, r, st, candidate)
 }
 func (s *Service) finishPublication(ctx context.Context, r repository.Git, st index.State) (SyncResult, error) {
-	candidate, err := validateCandidate(ctx, r, st)
+	candidate, err := validateCandidate(ctx, r, st, nil)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -293,9 +293,18 @@ func candidateCorrupt(reason string) error {
 // Rebuild the intended batch from durable staging and the immutable base. Check
 // the entire tree delta, not just gallery counts: deleted binaries and metadata
 // must be absent and unrelated files must retain their exact Git entries.
-func validateCandidate(ctx context.Context, r repository.Reader, st index.State) (repository.Snapshot, error) {
+func validateCandidate(ctx context.Context, r repository.Reader, st index.State, trustedBase *repository.Snapshot) (repository.Snapshot, error) {
 	p := st.Publication
-	snap, err := repository.ReadSnapshot(ctx, r, p.CandidateHead)
+	if trustedBase != nil && trustedBase.Head != p.BaseHead {
+		return repository.Snapshot{}, candidateCorrupt("trusted base differs from journal")
+	}
+	var snap repository.Snapshot
+	var err error
+	if trustedBase != nil {
+		snap, err = repository.ReadSnapshotReusing(ctx, r, p.CandidateHead, *trustedBase)
+	} else {
+		snap, err = repository.ReadSnapshot(ctx, r, p.CandidateHead)
+	}
 	if err != nil {
 		return snap, err
 	}
@@ -344,9 +353,15 @@ func validateCandidate(ctx context.Context, r repository.Reader, st index.State)
 		if st.BaseHead != p.BaseHead {
 			return snap, candidateCorrupt("staging base differs from journal")
 		}
-		base, e := repository.ReadSnapshot(ctx, r, p.BaseHead)
-		if e != nil {
-			return snap, e
+		var base repository.Snapshot
+		var e error
+		if trustedBase != nil {
+			base = *trustedBase
+		} else {
+			base, e = repository.ReadSnapshot(ctx, r, p.BaseHead)
+			if e != nil {
+				return snap, e
+			}
 		}
 		if e = sameRepository(st, base); e != nil {
 			return snap, e
