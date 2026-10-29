@@ -239,7 +239,7 @@ func (r *runtime) command() *cobra.Command {
 	root.PersistentFlags().StringVar(&r.stateDir, "state-dir", "", "Local state directory")
 	root.PersistentFlags().BoolVar(&r.json, "json", false, "Write JSON output")
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.AddCommand(r.repoCommand(), r.syncCommand(), r.reindexCommand(), r.importCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand(), r.authCommand(), r.urlCommand(), r.serveCommand())
+	root.AddCommand(r.repoCommand(), r.migrateCommand(), r.syncCommand(), r.reindexCommand(), r.importCommand(), r.addCommand(), r.editCommand(), r.removeCommand(), r.statusCommand(), r.resetCommand(), r.listCommand(), r.findCommand(), r.showCommand(), r.commitCommand(), r.verifyCommand(), r.authCommand(), r.urlCommand(), r.serveCommand())
 	root.AddCommand(r.cloudflareCommand())
 	root.AddCommand(&cobra.Command{Use: "version", Short: "Show version and source commit", Args: arguments(cobra.NoArgs), RunE: func(cmd *cobra.Command, args []string) error {
 		if r.json {
