@@ -278,8 +278,10 @@ publication 的三个字段是 `BaseHead`、`CandidateHead`、`CandidateTree`。
 | `unknownPublication` | journal 与底层 error → 含 candidate ID、`run sync` 的包装错误。 | 保留底层错误链；告诉用户结果未知，不宣称远端失败，不鼓励盲目重传。 |
 | `(*Service).recoverPublication` | State、retry → SyncResult。 | 已发布走 finishPublication；HEAD 既非 base 又无 candidate 祖先关系则 conflict 且保留 stage/journal。HEAD 仍 base：retry=true（commit/init）重用原 candidate 发布；retry=false（sync）只清 journal、保留 stage，不新建第二个 commit。 |
 | `(*Service).publishJournal` | durable journal 对应 State → 发布/收尾结果。 | 先 validateCandidate，再复读 HEAD；若不再是 base，转 recovery，绝不盲目写 ref。UpdateRef 报错后 read-back：已 candidate/后代则照常 finalize；关系查询失败为 unknown；其他 HEAD 为 conflict；仍 base 返回原发布错误。journal 在成功收尾前不丢。 |
-| `(*Service).finishPublication` | 已被证明发布的候选 → SyncResult。 | validateCandidate 后 finalizeCandidate，不再次 UpdateRef；处理超时丢响应、进程退出或 SQLite 落账失败。 |
-| `(*Service).finalizeCandidate` | 已验证候选 → 最新合法SyncResult。 | 再证candidate可见；后代HEAD重读Snapshot并验identity。Save先committed cache后durable清stage/journal，再cleanup；SQL或workspace失败均报published head和本地记账错误，旧durable证据用于sync恢复，不能重发。cleanup失败时已记账，只报本地清理问题。 |
+| `(*Service).finalizePublished` | journal + 已发布关系 → SyncResult。 | validateCandidate 后取当前 HEAD 的快照（后代则重读并验 identity），再 finalizeSnapshot；用于恢复、reset。 |
+| `(*Service).finalizeSnapshot` | 已确认的 Snapshot → 最新合法SyncResult。 | 不再发请求：Save先committed cache后durable清stage/journal，再cleanup；SQL或workspace失败均报published head和本地记账错误，旧durable证据用于sync恢复，不能重发。cleanup失败时已记账，只报本地清理问题。 |
+| `plannedSnapshot` | base、plan、已上传 blob、candidate HEAD/tree → Snapshot。 | 普通提交的本地状态：base entries 施加删除/新增/metadata 写入，manifest 若有写入则解码；随后检查每个 Asset 都有匹配 blob entry。不回读服务端。 |
+| `(*Service).publish` | 已验证或本地构造的 candidate → SyncResult。 | HEAD 仍是 base 才 UpdateRef(CAS)；成功即 finalizeSnapshot，不在成功路径回读；失败才用 publicationRelation 判断结果，未知则保留 journal。 |
 | `candidateCorrupt` | 失败原因 → 带 publication candidate 上下文的 `ErrRepositoryCorrupt`。 | 与普通 head conflict 分开：候选本身不符合 durable 意图，不可重试发布。 |
 | `validateCandidate` | Reader、含 journal 的 State → 完整验证过的候选 Snapshot。 | 只读 Git，不改 SQL/ref；验证失败保留 stage/journal，阻止发布或清账。不是只比 Asset 数；详见下节。 |
 

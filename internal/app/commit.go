@@ -91,6 +91,7 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 		return CommitResult{Head: head, AssetCount: len(base.Assets)}, nil
 	}
 	changes := make([]repository.TreeChange, 0, len(plan.NewObjects)+len(plan.MetadataWrites)+len(plan.Deletions))
+	blobs := make(map[string]repository.BlobID, len(plan.NewObjects)+len(plan.MetadataWrites))
 	for _, p := range plan.ReusedObjects {
 		if err = repository.VerifyObject(ctx, r, p.Blob, p.Object); err != nil {
 			return CommitResult{}, err
@@ -101,6 +102,7 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 		if err != nil {
 			return CommitResult{}, err
 		}
+		blobs[p.Path] = blob
 		changes = append(changes, repository.TreeChange{Path: p.Path, Blob: &blob})
 	}
 	for _, write := range plan.MetadataWrites {
@@ -108,6 +110,7 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 		if err != nil {
 			return CommitResult{}, err
 		}
+		blobs[write.Path] = blob
 		changes = append(changes, repository.TreeChange{Path: write.Path, Blob: &blob})
 	}
 	for _, path := range plan.Deletions {
@@ -121,12 +124,66 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 	if err != nil {
 		return CommitResult{}, err
 	}
+	// The tree and commit were just accepted with the exact entries and parent
+	// we sent, so the local state comes from the plan instead of re-reading it.
+	snap, err := plannedSnapshot(base, plan, blobs, candidate, tree)
+	if err != nil {
+		return CommitResult{}, err
+	}
 	st.Publication = &index.Publication{BaseHead: head, CandidateHead: candidate, CandidateTree: string(tree)}
 	if err = s.Store.SavePublication(ctx, st.Publication); err != nil {
 		return CommitResult{}, err
 	}
-	result, err := s.publishJournal(ctx, r, st, &base)
+	result, err := s.publish(ctx, r, st, snap)
 	return CommitResult{Head: result.Head, ChangeCount: count, AssetCount: result.AssetCount, Cloudflare: result.Cloudflare}, err
+}
+
+// plannedSnapshot is the local view of what the accepted writes produce. The
+// authoritative read happens at the start of every commit, so a wrong entry
+// here cannot corrupt a later plan; recovery still re-reads and validates.
+func plannedSnapshot(base repository.Snapshot, plan repository.CommitPlan, blobs map[string]repository.BlobID, head domain.RepositoryHead, tree repository.TreeID) (repository.Snapshot, error) {
+	snap := repository.Snapshot{Head: head, Tree: tree, Assets: plan.FinalAssets, Manifest: base.Manifest}
+	entries := make(map[string]repository.GitEntry, len(base.Entries)+len(plan.NewObjects)+len(plan.MetadataWrites))
+	for _, entry := range base.Entries {
+		entries[entry.Path] = entry
+	}
+	for _, path := range plan.Deletions {
+		delete(entries, path)
+	}
+	for _, p := range plan.NewObjects {
+		blob, ok := blobs[p.Path]
+		if !ok {
+			return repository.Snapshot{}, fmt.Errorf("planned object %s has no blob", p.Path)
+		}
+		entries[p.Path] = repository.GitEntry{Path: p.Path, Mode: "100644", Type: "blob", SHA: string(blob), Size: p.Object.Size}
+	}
+	for _, write := range plan.MetadataWrites {
+		blob, ok := blobs[write.Path]
+		if !ok {
+			return repository.Snapshot{}, fmt.Errorf("planned write %s has no blob", write.Path)
+		}
+		entries[write.Path] = repository.GitEntry{Path: write.Path, Mode: "100644", Type: "blob", SHA: string(blob), Size: int64(len(write.Data))}
+		if write.Path == repository.ManifestPath {
+			manifest, err := repository.DecodeManifest(write.Data)
+			if err != nil {
+				return repository.Snapshot{}, err
+			}
+			snap.Manifest = manifest
+		}
+	}
+	// Cheap local check: every asset the plan publishes must have a real blob
+	// entry. This catches a wrong construction without reading the server back.
+	for _, asset := range snap.Assets {
+		entry, ok := entries[repository.ObjectPath(asset)]
+		if !ok || entry.Path == "" || entry.Type != "blob" || entry.Size != asset.Object.Size {
+			return repository.Snapshot{}, fmt.Errorf("planned entry for %s is inconsistent", repository.ObjectPath(asset))
+		}
+	}
+	snap.Entries = make([]repository.GitEntry, 0, len(entries))
+	for _, entry := range entries {
+		snap.Entries = append(snap.Entries, entry)
+	}
+	return snap, nil
 }
 
 type stagedReader struct {
@@ -204,7 +261,7 @@ func (s *Service) recoverPublication(ctx context.Context, r repository.Git, st i
 		return SyncResult{}, unknownPublication(st.Publication, err)
 	}
 	if published {
-		return s.finishPublication(ctx, r, st)
+		return s.finalizePublished(ctx, r, st, head)
 	}
 	if head != st.Publication.BaseHead {
 		return SyncResult{}, &domain.ConflictError{Base: st.Publication.BaseHead, Remote: head, Reason: "head_changed"}
@@ -223,6 +280,13 @@ func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index
 	if err != nil {
 		return SyncResult{}, err
 	}
+	return s.publish(ctx, r, st, candidate)
+}
+
+// publish updates the branch. A confirmed update is not read back: the adapter
+// enforces the expected old value, so an ambiguous outcome is the only case that
+// needs the authoritative relationship query.
+func (s *Service) publish(ctx context.Context, r repository.Git, st index.State, candidate repository.Snapshot) (SyncResult, error) {
 	p := st.Publication
 	head, err := r.Head(ctx)
 	if err != nil {
@@ -237,50 +301,62 @@ func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index
 			return SyncResult{}, unknownPublication(p, readErr)
 		}
 		if published {
-			return s.finalizeCandidate(ctx, r, st, candidate)
+			snap, err := currentSnapshot(ctx, r, candidate, head)
+			if err != nil {
+				return SyncResult{}, err
+			}
+			return s.finalizeSnapshot(ctx, r, st, snap)
 		}
 		if head != p.BaseHead {
 			return SyncResult{}, &domain.ConflictError{Base: p.BaseHead, Remote: head, Reason: "head_changed"}
 		}
 		return SyncResult{}, err
 	}
-	return s.finalizeCandidate(ctx, r, st, candidate)
+	return s.finalizeSnapshot(ctx, r, st, candidate)
 }
-func (s *Service) finishPublication(ctx context.Context, r repository.Git, st index.State) (SyncResult, error) {
+
+// finalizePublished validates a journal whose candidate is already published
+// and records the head that is current, so a descendant is never mistaken for
+// the candidate.
+func (s *Service) finalizePublished(ctx context.Context, r repository.Git, st index.State, head domain.RepositoryHead) (SyncResult, error) {
 	candidate, err := validateCandidate(ctx, r, st, nil)
 	if err != nil {
 		return SyncResult{}, err
 	}
-	return s.finalizeCandidate(ctx, r, st, candidate)
-}
-func (s *Service) finalizeCandidate(ctx context.Context, r repository.Git, st index.State, candidate repository.Snapshot) (SyncResult, error) {
-	head, published, err := publicationRelation(ctx, r, st.Publication)
+	snap, err := currentSnapshot(ctx, r, candidate, head)
 	if err != nil {
-		return SyncResult{}, unknownPublication(st.Publication, err)
-	}
-	if !published {
-		return SyncResult{}, &domain.ConflictError{Base: st.Publication.BaseHead, Remote: head, Reason: "head_changed"}
-	}
-	snap := candidate
-	if head != candidate.Head {
-		snap, err = repository.ReadSnapshot(ctx, r, head)
-		if err != nil {
-			return SyncResult{}, err
-		}
-		if snap.Manifest.ID != candidate.Manifest.ID {
-			return SyncResult{}, fmt.Errorf("%w: descendant repository identity differs", domain.ErrConflict)
-		}
-	}
-	if err = sameRepository(st, snap); err != nil {
 		return SyncResult{}, err
 	}
-	result := SyncResult{Head: snap.Head, AssetCount: len(snap.Assets)}
+	return s.finalizeSnapshot(ctx, r, st, snap)
+}
+
+// currentSnapshot follows a confirmed published candidate to the head that is
+// actually current, so a descendant is recorded instead of the candidate.
+func currentSnapshot(ctx context.Context, r repository.Reader, candidate repository.Snapshot, head domain.RepositoryHead) (repository.Snapshot, error) {
+	if head == candidate.Head {
+		return candidate, nil
+	}
+	snap, err := repository.ReadSnapshot(ctx, r, head)
+	if err != nil {
+		return repository.Snapshot{}, err
+	}
+	if snap.Manifest.ID != candidate.Manifest.ID {
+		return repository.Snapshot{}, fmt.Errorf("%w: descendant repository identity differs", domain.ErrConflict)
+	}
+	return snap, nil
+}
+func (s *Service) finalizeSnapshot(ctx context.Context, r repository.Git, st index.State, snap repository.Snapshot) (SyncResult, error) {
+	if err := sameRepository(st, snap); err != nil {
+		return SyncResult{}, err
+	}
+	head := snap.Head
+	result := SyncResult{Head: head, AssetCount: len(snap.Assets)}
 	next := snapshotState(st, snap, true)
-	if err = s.Store.Save(ctx, next); err != nil {
+	if err := s.Store.Save(ctx, next); err != nil {
 		return result, fmt.Errorf("published head %s; local index update failed; run sync: %w", head, err)
 	}
 	result.Cloudflare = s.cloudflarePublication(ctx, r, st, snap)
-	if err = s.cleanup(ctx, next); err != nil {
+	if err := s.cleanup(ctx, next); err != nil {
 		return result, fmt.Errorf("published head %s; local payload cleanup failed: %w", head, err)
 	}
 	return result, nil

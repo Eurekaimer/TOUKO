@@ -223,8 +223,8 @@ CLI commitCommand → Service.Commit
   → VerifyObject(复用对象) / uploadStaged(新对象)
   → CreateBlob(metadata) → CreateTree(base.Tree) → CreateCommit(parent=B)
   → Store.SavePublication(B,C,tree)
-  → publishJournal → validateCandidate → 再读 Head → UpdateRef(B,C)
-  → finalizeCandidate → 确认 C 已在当前分支祖先链
+  → publishJournal → 提交路径由计划构造快照 → 再读 Head → UpdateRef(B,C)
+  → finalizeSnapshot → 按已确认的写入记账（恢复路径才重读验证）
   → Store.Save(新快照 + 清 stage/journal) → optional Cloudflare mirror → cleanup
 ```
 
@@ -236,7 +236,7 @@ CLI commitCommand → Service.Commit
 
 **发布阶段。** 创建 blob、tree 和 detached commit 还没有使修改出现在分支 HEAD 中。只有 `UpdateRef` 是对外发布点。candidate 以 stage base 为唯一 parent；tree 基于原 tree，只应用计划差异，所以 README 等非 TOUKO 文件仍在。
 
-`validateCandidate` 不是只看“Asset 数量相同”：它重建预期计划，核对 journal 的 tree、parent、metadata bytes、object 映射、应删除路径和其他叶子条目的完全保留。它在发布前以及恢复路径上防止将错误 candidate 当成成功。
+`validateCandidate` 不是只看“Asset 数量相同”：它重建预期计划，核对 journal 的 tree、parent、metadata bytes、object 映射、应删除路径和其他叶子条目的完全保留。恢复、reset、sync 仍走它；普通提交不再回读 candidate，而是由已接受的写入构造状态并做本地一致性检查。
 
 | 失败窗口 | remote | cache | stage/journal | 正确处理 |
 | --- | --- | --- | --- | --- |

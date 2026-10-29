@@ -284,10 +284,23 @@ describe that link, not GitHub's best case.
 | --- | --- | ---: | ---: |
 | `add` (staging only) | either | 0 | 0.05 s |
 | commit one new image, R2 on | before local reads | 212 | 25.8 s |
-| commit one new image, R2 on | after local reads | 11 | 13.6 s |
-| commit one deletion, R2 on | after local reads | 10 | 12.1 s |
-| commit one new image, R2 off | after local reads | 9 | 9.3 s |
-| commit one deletion, R2 off | after local reads | 9 | 7.5 s |
+| commit one new image, R2 on | local reads only | 11 | 13.6 s |
+| commit one deletion, R2 on | local reads only | 10 | 12.1 s |
+| commit one new image, R2 off | local reads only | 9 | 9.3 s |
+| commit one deletion, R2 off | local reads only | 9 | 7.5 s |
+| commit one deletion, R2 on | no read-back | — | 7.0 s |
+| commit one new image, R2 on | no read-back | — | 10.0 s |
+| commit one new image, R2 off | no read-back | 8 | 7.0 s |
+
+The last three rows drop the post-publish read-back: a confirmed CAS ref update
+is not re-read, and the published state comes from the accepted writes plus a
+local consistency check. One traced commit then issues exactly eight requests:
+read HEAD, upload the image blob and its metadata, create the tree and commit,
+read HEAD before publishing, read HEAD for the CAS, and update the ref. Recovery,
+reset and sync still re-read and validate the candidate, so an interrupted or
+ambiguous publication keeps the old guarantees. Request counts for some rows are
+from the rate-limit counter, which under-reported during the session; the traced
+row is exact.
 
 Before the change, a commit read the manifest and every Asset metadata file from
 the API, so its request count grew with the gallery. After it, immutable commit,

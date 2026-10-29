@@ -101,12 +101,12 @@ func (s *Service) Reset(ctx context.Context, r repository.Git) error {
 		return err
 	}
 	if st.Publication != nil {
-		_, published, err := publicationRelation(ctx, r, st.Publication)
+		head, published, err := publicationRelation(ctx, r, st.Publication)
 		if err != nil {
 			return unknownPublication(st.Publication, err)
 		}
 		if published {
-			_, err = s.finishPublication(ctx, r, st)
+			_, err = s.finalizePublished(ctx, r, st, head)
 			return err
 		}
 	}
