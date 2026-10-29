@@ -1723,9 +1723,13 @@ progress {
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
   padding: 6px 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  gap: 0 12px;
 }
-.choice-option {
+.dialog .choice-option {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
   margin: 0;
@@ -1750,7 +1754,7 @@ progress {
   gap: 8px;
   margin-top: 8px;
 }
-.choice-add label {
+.dialog .choice-add label {
   flex-basis: 100%;
   margin: 0;
 }

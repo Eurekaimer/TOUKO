@@ -584,7 +584,7 @@ function toast(message) {
     $("toast").hidden = true;
   }, 4500);
 }
-function responseError(data, status) {
+function responseError(data, status, logFailed = false) {
   const code = data?.error?.code;
   let message = data?.error?.message || `请求失败（HTTP ${status}）`;
   if (code === "conflict")
@@ -599,6 +599,7 @@ function responseError(data, status) {
   if (code === "forbidden")
     message +=
       "\n当前 GitHub 账号无权执行这个操作。可以换一个账号重新授权，或联系仓库管理员授予权限；重新登录本身不会自动获得写权限。";
+  if (logFailed) message += "\n无法写入本机失败日志，请检查工作区目录权限。";
   const error = new Error(message);
   // Keep the server code and HTTP status so callers can distinguish a missing
   // login (401) from a real permission failure (403) instead of matching text.
@@ -657,7 +658,9 @@ async function api(path, body, prefix = viewPrefix) {
       `本地服务返回了无效响应（HTTP ${response.status}）。请检查终端。`,
     );
   }
-  if (!response.ok) throw responseError(data, response.status);
+  if (!response.ok) throw responseError(data, response.status, response.headers.get("X-Touko-Log-Error") === "1");
+  if (response.headers.get("X-Touko-Log-Error") === "1")
+    toast("操作已完成，但无法写入本机失败日志；请检查工作区目录权限。");
   return data;
 }
 // apiMember talks to one owner workspace using that member's own mutation token.
@@ -684,7 +687,9 @@ async function apiMember(member, path, body) {
       `成员 ${member.id.slice(0, 8)} 返回了无效响应（HTTP ${response.status}）。`,
     );
   }
-  if (!response.ok) throw responseError(data, response.status);
+  if (!response.ok) throw responseError(data, response.status, response.headers.get("X-Touko-Log-Error") === "1");
+  if (response.headers.get("X-Touko-Log-Error") === "1")
+    toast("操作已完成，但无法写入本机失败日志；请检查工作区目录权限。");
   return data;
 }
 function setBusy(value) {
@@ -869,6 +874,7 @@ function updateActions() {
   $("reset-staged").disabled =
     busy || !(view.changes.length || view.members.some((entry) => entry.publication));
   $("retry-operation").hidden = busy || !operationRetry?.failed.length;
+  $("retry-pending").hidden = busy || !operationRetry?.failed.length;
   $("remove-selected").disabled = busy || !selected.size;
   const cloudflare = cloudflareEnabledMembers();
   const cloudflareSync = $("cloudflare-sync-all");
@@ -1617,10 +1623,13 @@ function renderOperationResults() {
   const panel = $("operation-panel");
   if (!panel) return;
   const target = $("operation-results");
+  const pendingResults = $("pending-member-results");
+  pendingResults?.replaceChildren();
+  $("retry-pending").hidden = busy || !operationRetry?.failed.length;
+  if (pendingResults) pendingResults.hidden = !operationRetry;
   target.replaceChildren();
   if (!operationRetry) {
     panel.hidden = true;
-    $("pending-member-results")?.replaceChildren();
     return;
   }
   panel.hidden = false;
@@ -1635,7 +1644,7 @@ function renderOperationResults() {
       ),
     );
     target.append(item);
-    $("pending-member-results")?.append(item.cloneNode(true));
+    pendingResults?.append(item.cloneNode(true));
   }
   $("retry-operation").hidden = busy || !operationRetry.failed.length;
   $("retry-operation").textContent = `重试失败成员（${operationRetry.failed.length}）`;
@@ -1822,9 +1831,11 @@ function uploadRequest(data, files, sequence) {
         return;
       }
       if ((request.status >= 200 && request.status < 300) || request.status === 207) {
+        if (request.getResponseHeader("X-Touko-Log-Error") === "1")
+          toast("部分结果未能写入本机失败日志，请检查工作区目录权限。");
         $("upload-progress-text").textContent = "本机处理完成，正在刷新图库状态…";
         resolve(body);
-      } else reject(responseError(body, request.status));
+      } else reject(responseError(body, request.status, request.getResponseHeader("X-Touko-Log-Error") === "1"));
     };
     request.onerror = () =>
       reject(new Error("连接中断，请刷新确认暂存状态后再继续。请先刷新核对暂存，不要自动重发整批。"));
@@ -3102,9 +3113,9 @@ async function memberOperation(action, members, options = {}) {
   for (const member of members) {
     options.progress?.(member, results.length);
     try {
-      // Capacity can report a stale local clone after successful publication.
-      // Mirror repair reads the authoritative API and must not require a clone refresh.
-      if (member.error && action !== "cloudflare/sync") throw new Error(member.error);
+      // Capacity and clone state are advisory; the requested operation must
+      // perform its own authoritative checks.
+      if (member.error && !member.location) throw new Error(member.error);
       if (options.skipUninitialized && !member.initialized)
         throw new Error("尚未初始化");
       const value = await options.run(member);
@@ -3168,12 +3179,12 @@ async function runMemberOperation(action, options = {}) {
   }
   if (!value) return null;
   if (value.failed.length) {
-    showError(
-      "page-error",
-      new Error(
-        `${value.failed.length} 个仓库成员未完成，已在结果中列出；它们的暂存内容仍保留。请修复后只重试失败成员。`,
-      ),
-    );
+    const details = value.results.filter((row) => !row.ok)
+      .map((row) => `${memberName(row.workspace)}：${row.error || "操作失败"}`).join("\n");
+    const message = `${value.failed.length} 个仓库成员未完成：\n${details}\n请检查原因后只重试失败成员。`;
+    showError("page-error", message);
+    if ($("pending-dialog").open) showError("pending-error", message);
+    toast("操作未完成，请查看失败原因。");
     return value;
   }
   if (options.success) toast(options.success);
@@ -3564,6 +3575,7 @@ function bindEvents() {
         toast("GitHub 已发布；Cloudflare 镜像未完成，请用「同步 Cloudflare」重试（不会重复提交）。");
     }
   });
+  $("retry-pending").addEventListener("click", () => $("retry-operation").click());
   $("retry-operation").addEventListener("click", async () => {
     if (!operationRetry || busy) return;
     const action = operationRetry.action;
@@ -3589,7 +3601,15 @@ function bindEvents() {
             ? apiMember(member, "cloudflare/sync", { dry_run: false })
             : apiMember(member, action, {}),
     });
-    if (value && !value.failed.length) operationRetry = null;
+    if (value && !value.failed.length) {
+      operationRetry = null;
+      if (action === "commit") {
+        $("commit-message").value = "";
+        if ($("pending-dialog").open) $("pending-dialog").close();
+        if (value.results.some((row) => row.ok && cloudflareResultNote(row.value?.cloudflare)))
+          toast("GitHub 已发布；Cloudflare 镜像未完成，请用「同步 Cloudflare」重试。");
+      }
+    }
     renderOperationResults();
   });
   $("dismiss-operation")?.addEventListener("click", () => {
