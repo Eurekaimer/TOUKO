@@ -307,6 +307,25 @@ three-repeat estimate.
 | New / GitHub only | 193 records, 10 failures, then stopped; later records may contain multiple images | Invalid | Invalid | Invalid |
 | New / GitHub + R2 | Same-corpus run incomplete | — | — | — |
 
+### Public delivery check for one existing image
+
+On 2026-10-29, a Go `time.Since` probe fetched the same existing legacy-path
+image from GitHub Raw, jsDelivr and Cloudflare R2. Each measured response was
+HTTP 200, contained 135,294 bytes and matched the SHA-256 in its old path.
+This checks the existing URL only, not a migrated URL.
+
+| Provider | Measured GET times after one attempted warmup (ms) |
+| --- | --- |
+| GitHub Raw | 1,291.4; 734.1; 402.3 |
+| jsDelivr | 8,322.3; 617.2; 209.2 |
+| Cloudflare R2 | 418.7; 817.8; 330.9 |
+
+The GitHub and jsDelivr warmup requests failed with EOF. In particular, the
+first jsDelivr measured request was much slower than the other two. These
+single-image observations are not an upload benchmark or evidence of typical
+CDN performance. The individual records, including warmup failures, are in
+`benchmarks/results/cdn-probe-20261029T121547Z.json`.
+
 ### Single-image publication against a real gallery
 
 The same machine, a 200-Asset public gallery, one 57 KB PNG, and Cloudflare R2
