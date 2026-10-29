@@ -21,12 +21,12 @@ func sampleAsset(t testing.TB) domain.Asset {
 }
 func TestCanonicalPlacementAndMetadata(t *testing.T) {
 	a := sampleAsset(t)
-	path := BuildObjectPath(a.Namespace, a.Object)
+	path := LegacyObjectPath(a.Namespace, a.Object)
 	h := a.Object.Hash.String()
 	if path != "objects/blog/sha256/"+h[:2]+"/"+h[2:4]+"/"+h+".png" {
 		t.Fatal(path)
 	}
-	if path == BuildObjectPath("notes", a.Object) {
+	if path == LegacyObjectPath("notes", a.Object) {
 		t.Fatal("namespace must route placement")
 	}
 	data, err := EncodeAsset(a)
@@ -85,7 +85,7 @@ func FuzzDecodeAsset(f *testing.F) {
 		if err != nil || round.ID != got.ID || round.Object != got.Object {
 			t.Fatalf("round trip: %v", err)
 		}
-		if !strings.HasPrefix(BuildObjectPath(got.Namespace, got.Object), "objects/"+string(got.Namespace)+"/sha256/") {
+		if !strings.HasPrefix(LegacyObjectPath(got.Namespace, got.Object), "objects/"+string(got.Namespace)+"/sha256/") {
 			t.Fatal("escaped placement")
 		}
 	})

@@ -64,7 +64,7 @@ func assertBatchGallery(t *testing.T, ctx context.Context, r repository.Git, s *
 	paths := []string{repository.ManifestPath}
 	for id, asset := range expected {
 		paths = append(paths, repository.AssetPath(id))
-		objects[repository.BuildObjectPath(asset.Namespace, asset.Object)] = true
+		objects[repository.ObjectPath(asset)] = true
 	}
 	for path := range objects {
 		paths = append(paths, path)
@@ -262,7 +262,7 @@ func TestCommitDeleteAndAddSameBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objectPath := repository.BuildObjectPath(original.Namespace, original.Object)
+	objectPath := repository.ObjectPath(original)
 	var originalBlob string
 	for _, entry := range before.Entries {
 		if entry.Path == objectPath {
@@ -288,10 +288,65 @@ func TestCommitDeleteAndAddSameBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each asset owns its path. Identical bytes still share one Git blob, so the
+	// replacement is published at its own path with the same SHA while the
+	// removed asset's path disappears.
+	replacementPath := repository.ObjectPath(replacement)
+	present := false
 	for _, entry := range after.Entries {
-		if entry.Path == objectPath && entry.SHA != originalBlob {
-			t.Fatalf("replacement changed shared object blob: %s, want %s", entry.SHA, originalBlob)
+		if entry.Path == objectPath {
+			t.Fatalf("removed asset kept its object path %s", objectPath)
 		}
+		if entry.Path == replacementPath {
+			present = true
+			if entry.SHA != originalBlob {
+				t.Fatalf("replacement changed bytes: %s, want %s", entry.SHA, originalBlob)
+			}
+		}
+	}
+	if !present {
+		t.Fatalf("replacement object %s missing", replacementPath)
+	}
+}
+
+// The asset-id layout intentionally stops sharing placements: the same bytes
+// uploaded twice are two assets with two paths and two objects.
+func TestDuplicateBytesGetIndependentObjects(t *testing.T) {
+	ctx, r, s := realRepository(t)
+	first := stageImage(t, ctx, s)
+	second := stageImage(t, ctx, s)
+	if first.ID == second.ID || first.Object != second.Object {
+		t.Fatalf("fixture must reuse bytes with new identity: %#v %#v", first.ID, second.ID)
+	}
+	if first.Path == second.Path || first.Path == "" || second.Path == "" {
+		t.Fatalf("assets do not own distinct paths: %q %q", first.Path, second.Path)
+	}
+	head := mustCommit(t, ctx, s, r).Head
+	snap, err := repository.ReadSnapshot(ctx, r, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs := map[string]string{}
+	for _, entry := range snap.Entries {
+		blobs[entry.Path] = entry.SHA
+	}
+	if blobs[first.Path] == "" || blobs[first.Path] != blobs[second.Path] {
+		t.Fatalf("duplicate bytes must keep one blob at two paths: %#v", blobs)
+	}
+	if err := s.Remove(ctx, []string{first.ID.String()}); err != nil {
+		t.Fatal(err)
+	}
+	head = mustCommit(t, ctx, s, r).Head
+	snap, err = repository.ReadSnapshot(ctx, r, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := map[string]bool{}
+	for _, entry := range snap.Entries {
+		remaining[entry.Path] = true
+	}
+	if remaining[first.Path] || !remaining[second.Path] {
+		t.Fatalf("deleting one asset removed the wrong path: %#v", remaining)
 	}
 }
 

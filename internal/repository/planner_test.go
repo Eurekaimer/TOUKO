@@ -44,7 +44,7 @@ func TestPlanDeleteSharedObject(t *testing.T) {
 	b := cloneIdentity(t, a)
 	s := planBase(t, a, b)
 	p := mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID})
-	if len(p.FinalAssets) != 1 || p.FinalAssets[b.ID].ID != b.ID || slices.Contains(p.Deletions, BuildObjectPath(a.Namespace, a.Object)) || !slices.Contains(p.Deletions, AssetPath(a.ID)) {
+	if len(p.FinalAssets) != 1 || p.FinalAssets[b.ID].ID != b.ID || slices.Contains(p.Deletions, LegacyObjectPath(a.Namespace, a.Object)) || !slices.Contains(p.Deletions, AssetPath(a.ID)) {
 		t.Fatal(p)
 	}
 	if len(s.Assets) != 2 {
@@ -55,7 +55,7 @@ func TestPlanDeleteLastReference(t *testing.T) {
 	a := sampleAsset(t)
 	s := planBase(t, a)
 	p := mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID})
-	if len(p.FinalAssets) != 0 || !slices.Contains(p.Deletions, BuildObjectPath(a.Namespace, a.Object)) {
+	if len(p.FinalAssets) != 0 || !slices.Contains(p.Deletions, LegacyObjectPath(a.Namespace, a.Object)) {
 		t.Fatal(p)
 	}
 }
@@ -64,7 +64,7 @@ func TestPlanDeleteAndAddSameBytes(t *testing.T) {
 	b := cloneIdentity(t, a)
 	s := planBase(t, a)
 	p := mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID}, domain.Change{Kind: domain.Add, AssetID: b.ID, Asset: &b})
-	if len(p.FinalAssets) != 1 || p.FinalAssets[b.ID].ID != b.ID || len(p.NewObjects) != 0 || len(p.ReusedObjects) != 1 || slices.Contains(p.Deletions, BuildObjectPath(a.Namespace, a.Object)) {
+	if len(p.FinalAssets) != 1 || p.FinalAssets[b.ID].ID != b.ID || len(p.NewObjects) != 0 || len(p.ReusedObjects) != 1 || slices.Contains(p.Deletions, LegacyObjectPath(a.Namespace, a.Object)) {
 		t.Fatal(p)
 	}
 }
@@ -74,7 +74,7 @@ func TestPlanNamespaceReferenceIsolation(t *testing.T) {
 	b.Namespace = "notes"
 	s := planBase(t, a, b)
 	p := mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID})
-	if !slices.Contains(p.Deletions, BuildObjectPath(a.Namespace, a.Object)) || slices.Contains(p.Deletions, BuildObjectPath(b.Namespace, b.Object)) {
+	if !slices.Contains(p.Deletions, LegacyObjectPath(a.Namespace, a.Object)) || slices.Contains(p.Deletions, LegacyObjectPath(b.Namespace, b.Object)) {
 		t.Fatal(p)
 	}
 }
@@ -110,7 +110,7 @@ func TestPlanMetadataEditAndEmptyBatch(t *testing.T) {
 	}
 	b.Title = "edited"
 	p = mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID}, domain.Change{Kind: domain.Update, AssetID: b.ID, Asset: &b})
-	if len(p.MetadataWrites) != 1 || p.FinalAssets[b.ID].Title != "edited" || len(p.FinalAssets) != 1 || slices.Contains(p.Deletions, BuildObjectPath(a.Namespace, a.Object)) {
+	if len(p.MetadataWrites) != 1 || p.FinalAssets[b.ID].Title != "edited" || len(p.FinalAssets) != 1 || slices.Contains(p.Deletions, LegacyObjectPath(a.Namespace, a.Object)) {
 		t.Fatal(p)
 	}
 }

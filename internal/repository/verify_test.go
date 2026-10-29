@@ -59,7 +59,7 @@ func TestVerifyRejectsCorruptObject(t *testing.T) {
 	id, _ := domain.NewAssetID()
 	now := time.Now().UTC()
 	a := domain.Asset{ID: id, Namespace: "blog", Object: obj, CreatedAt: now, UpdatedAt: now}
-	s := repository.Snapshot{Head: "fixed", Assets: map[domain.AssetID]domain.Asset{id: a}, Entries: []repository.GitEntry{{Path: repository.BuildObjectPath(a.Namespace, obj), Mode: "100644", Type: "blob", SHA: string(wrong), Size: obj.Size}}}
+	s := repository.Snapshot{Head: "fixed", Assets: map[domain.AssetID]domain.Asset{id: a}, Entries: []repository.GitEntry{{Path: repository.LegacyObjectPath(a.Namespace, obj), Mode: "100644", Type: "blob", SHA: string(wrong), Size: obj.Size}}}
 	if _, err = repository.VerifySnapshot(ctx, r, s); !errors.Is(err, domain.ErrHashMismatch) {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestVerifyRejectsCorruptObject(t *testing.T) {
 	other.ID, _ = domain.NewAssetID()
 	other.Namespace = "notes"
 	s.Assets[other.ID] = other
-	s.Entries = append(s.Entries, repository.GitEntry{Path: repository.BuildObjectPath(other.Namespace, obj), Mode: "100644", Type: "blob", SHA: string(good), Size: obj.Size})
+	s.Entries = append(s.Entries, repository.GitEntry{Path: repository.LegacyObjectPath(other.Namespace, obj), Mode: "100644", Type: "blob", SHA: string(good), Size: obj.Size})
 	result, err := repository.VerifySnapshot(ctx, r, s)
 	if err != nil || result.Assets != 2 || result.Objects != 2 || result.Head != "fixed" {
 		t.Fatal(result, err)

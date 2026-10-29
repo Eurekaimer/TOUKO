@@ -73,7 +73,7 @@ func TestFreshSyncRestoresCompleteMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head := publishRaw(t, ctx, r, []repository.TreeChange{{Path: repository.AssetPath(id), Blob: blob(t, ctx, r, metadata)}, {Path: repository.BuildObjectPath(a.Namespace, a.Object), Blob: blob(t, ctx, r, data)}})
+	head := publishRaw(t, ctx, r, []repository.TreeChange{{Path: repository.AssetPath(id), Blob: blob(t, ctx, r, metadata)}, {Path: repository.LegacyObjectPath(a.Namespace, a.Object), Blob: blob(t, ctx, r, data)}})
 	result, err := s.Sync(ctx, r)
 	if err != nil || result.Head != head || result.AssetCount != 1 {
 		t.Fatal(result, err)

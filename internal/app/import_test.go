@@ -79,7 +79,7 @@ func TestImportLegacyPreservesPathsAndPublishesRecoverableV2(t *testing.T) {
 		}
 	}
 	for _, asset := range snap.Assets {
-		if _, exists := entries[repository.BuildObjectPath(asset.Namespace, asset.Object)]; exists {
+		if _, exists := entries[repository.LegacyObjectPath(asset.Namespace, asset.Object)]; exists {
 			t.Fatal("import copied original image to canonical objects")
 		}
 		body, err := r.OpenBlob(ctx, repository.BlobID(entries[repository.ObjectPath(asset)].SHA))
@@ -210,7 +210,7 @@ func TestAddDirectoryControlsActualPublishedLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	asset := views[0].Asset
-	want := "img/new/" + asset.Object.Hash.String() + ".png"
+	want := "img/new/" + asset.ID.String() + ".png"
 	if repository.ObjectPath(asset) != want || asset.Path != want {
 		t.Fatalf("directory ignored: %#v", asset)
 	}

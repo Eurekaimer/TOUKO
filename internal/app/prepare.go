@@ -124,8 +124,11 @@ func PrepareInput(result image.Result, name string, opts AddOptions) (PreparedIn
 	}
 	now := time.Now().UTC()
 	a := domain.Asset{ID: id, Namespace: ns, Object: result.Object, OriginalName: original, Title: title, Tags: normalize(opts.Tags), Collections: normalize(opts.Collections), CreatedAt: now, UpdatedAt: now}
+	// Every new asset records its own path: the Asset ID names the file, so the
+	// URL, the GitHub blob and the R2 key are one identity with no hashing.
+	a.Path = repository.AssetObjectPath(ns, id, a.Object.Ext)
 	if opts.Directory != "" {
-		a.Path = path.Join(opts.Directory, a.Object.Hash.String()+"."+a.Object.Ext)
+		a.Path = path.Join(repository.DirectoryPath(opts.Directory), id.String()+"."+a.Object.Ext)
 	}
 	if err := a.Validate(); err != nil {
 		return PreparedInput{}, err

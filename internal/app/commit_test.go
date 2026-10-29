@@ -399,7 +399,7 @@ func TestRecoveryRejectsCandidateMetadataAndDeletionCorruption(t *testing.T) {
 				}
 				changes = []repository.TreeChange{{Path: repository.AssetPath(asset.ID), Blob: blob(t, ctx, r, data)}}
 			case "deleted_object":
-				path := repository.BuildObjectPath(asset.Namespace, asset.Object)
+				path := repository.ObjectPath(asset)
 				for _, entry := range baseSnapshot.Entries {
 					if entry.Path == path {
 						id := repository.BlobID(entry.SHA)
