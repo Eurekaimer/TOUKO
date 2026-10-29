@@ -100,7 +100,8 @@
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
 | `readMetadata` | Reader、tree entry、上限 → metadata bytes。 | 必须是 `100644/blob`、大小合法；限量读并 Close，校验实际长度等于 tree size。读取/关闭失败向上传递。 |
-| `ReadSnapshot` | Reader、固定 HEAD → manifest、Assets、tree、完整 Entries。 | 验证安全/重复路径、完整 metadata、UUID/文件名、hash 描述、真实 ObjectPath 引用的 blob/mode/size；v1 非空 path 拒绝，v2 允许 canonical 与 explicit 混用。图片接受普通 `100644/100755`，不接受 symlink。无 manifest 为 uninitialized；失败不写 cache，不下载全部图片。 |
+| `ReadSnapshot` | Reader、固定 HEAD → manifest、Assets、tree、完整 Entries。 | 验证安全/重复路径、完整 metadata、UUID/文件名、hash 描述、真实 ObjectPath 引用的 blob/mode/size；v1 非空 path 拒绝，v2 允许 canonical 与 explicit 混用。图片接受普通 `100644/100755`，不接受 symlink。无 manifest 为 uninitialized；失败不写 cache，不下载全部图片。Asset metadata 每批最多 8 个并发读取，单线程按 `Entries` 顺序解码和校验；错误或取消后不再启动新读取，按原顺序返回第一个错误。 |
+| `ReadSnapshotReusing` | Reader、候选 HEAD、已完整验证的 base Snapshot → Snapshot。 | 仅当 manifest 或某条 asset metadata 的完整 Git entry（path/type/mode/size/SHA）与 base 相同才复用其解析结果；新增或变化的条目仍从候选 SHA 读取。候选的引用、版本、重复与冲突校验全部重跑。只用于刚刚成功读取的 base（正常 commit），journal 恢复仍用 `ReadSnapshot`。 |
 
 ### [`planner.go`](../internal/repository/planner.go)
 
@@ -666,6 +667,9 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `localgit.Update` | `fetch` 分支后 `reset --hard` + `clean -fd`，使工作树与远端**严格一致**（远端删除的文件会消失）。只用于 TOUKO 管理的目录。 |
 | `localgit.WorkingCopy` | 缺失则 Clone，然后 Open；读命令用它。 |
 | `localgit.runCredentialed` | Git命令经credential protocol与继承fd3传凭据，不进URL/argv/env/文件，等待子进程结束；错误经redact。 |
+| `localgit.RemoteHead` | `git ls-remote --refs --exit-code -- <remote> refs/heads/<branch>`，只读核对远端分支，不写 ref/FETCH_HEAD；输出有上限且按sha1校验，异常行拒绝。 |
+| `localgit.FetchCommit` | `git fetch --depth=1 --no-tags --no-write-fetch-head --no-auto-maintenance -- <remote> <sha>`，只补齐缺失对象（含 shallow 边界更新），不移动 checkout、分支引用或待发布内容；凭据仍走fd3。 |
+| `webview.(*Server).capacityReader` | 单工作区/统一图库容量读取：clone HEAD 等于索引 HEAD 直接用本地对象；落后时先用 `RemoteHead` 核对，`FetchCommit` 补固定提交，返回每次 `Head` 都重新核对的 reader。clone 缺失、Git 失败或超过 30 秒回退 GitHub API；真实 HEAD 变化报 conflict，不把旧 clone 当新状态。 |
 | `localgit.validateRemote`、`validateBranch`、`redact` | 拒绝嵌入凭据/危险选项及非法branch，错误脱敏；不修改用户全局Git配置。 |
 | `webview.(*Server).ensureClone` | cloneOnce下复用已有副本；缺失时用运行时凭据首次Clone。绝不fetch已有clone，不能把“缺失时创建可能联网”写成所有预览都离线。 |
 | `webview.localImage` | canonical从checkout读取并验regular/size；显式Path不读可变同名文件，而由openImage按immutable Git blob读取。未命中可回退其他固定快照读取。 |

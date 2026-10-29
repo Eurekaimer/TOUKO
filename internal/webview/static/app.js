@@ -1803,25 +1803,41 @@ function uploadFields() {
   }
   return data;
 }
-function uploadRequest(data, files, sequence) {
+function uploadRequest(data, sequence) {
   $("upload-progress-area").hidden = false;
   $("upload-progress").value = 0;
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
+    const started = Date.now();
+    let phase = "正在向本机发送文件";
+    let finished = false;
+    const showProgress = () => {
+      if (sequence === uploadSequence)
+        $("upload-progress-text").textContent = `${phase}（已用 ${Math.floor((Date.now() - started) / 1000)} 秒）`;
+    };
     request.open("POST", apiURL("upload", view.kind === "library" ? viewPrefix : `/w/${firstUsableMember().id}`));
     request.setRequestHeader("X-Touko-CSRF", view.csrf);
+    const timer = setInterval(showProgress, 1000);
+    const stopTimer = () => clearInterval(timer);
+    showProgress();
     request.upload.onprogress = ({ lengthComputable, loaded, total }) => {
       if (sequence !== uploadSequence || !lengthComputable) return;
       $("upload-progress").value = Math.round((loaded / total) * 100);
-      $("upload-progress-text").textContent =
-        loaded === total
-          ? (view.kind === "library"
-              ? "正在校验图片、检查成员仓库容量并保存到本机…"
-              : "正在校验图片并保存到本机…")
-          : `上传至本机 ${Math.round((loaded / total) * 100)}%`;
-      $("upload-progress-text").textContent += files.length ? "" : "";
+      phase = `上传至本机 ${Math.round((loaded / total) * 100)}%`;
+      showProgress();
+    };
+    request.upload.onload = () => {
+      if (finished || sequence !== uploadSequence) return;
+      // The browser has finished sending bytes, not the capacity check.
+      $("upload-progress").removeAttribute("value");
+      phase = view.kind === "library"
+        ? "文件已送到本机，正在校验图片和检查成员仓库容量"
+        : "文件已送到本机，正在校验图片并保存";
+      showProgress();
     };
     request.onload = () => {
+      finished = true;
+      stopTimer();
       let body;
       try {
         body = JSON.parse(request.responseText);
@@ -1836,11 +1852,20 @@ function uploadRequest(data, files, sequence) {
         resolve(body);
       } else reject(responseError(body, request.status, request.getResponseHeader("X-Touko-Log-Error") === "1"));
     };
-    request.onerror = () =>
+    request.onerror = () => {
+      stopTimer();
       reject(new Error("连接中断，请刷新确认暂存状态后再继续。请先刷新核对暂存，不要自动重发整批。"));
-    request.onabort = () =>
+    };
+    request.onabort = () => {
+      stopTimer();
       reject(new Error("上传已取消，请刷新确认当前状态。"));
-    request.send(data);
+    };
+    try {
+      request.send(data);
+    } catch (error) {
+      stopTimer();
+      reject(error);
+    }
   });
 }
 function upload() {
@@ -1848,7 +1873,7 @@ function upload() {
   const data = uploadFields();
   files.forEach((file) => data.append("files", file, file.name));
   const sequence = ++uploadSequence;
-  return uploadRequest(data, files, sequence).then((body) => {
+  return uploadRequest(data, sequence).then((body) => {
     if (sequence !== uploadSequence) return body;
     if (view.kind !== "library") return body;
     // A library answers per input index: keep only the inputs that failed, so a
@@ -3146,7 +3171,7 @@ async function runMemberOperation(action, options = {}) {
   let completed = 0;
   const renderProgress = () => {
     const detail = action === "commit"
-      ? "正在等待 GitHub 确认及已启用的 R2 镜像。"
+      ? "正在等待仓库确认及已启用的 R2 镜像。"
       : action === "cloudflare/sync"
         ? "正在确认 Cloudflare R2 镜像。"
         : "正在等待仓库操作完成。";

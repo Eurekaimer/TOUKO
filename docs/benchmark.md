@@ -243,6 +243,35 @@ not thresholds. Warm page cache and this synthetic corpus apply.
 rewrite repository metadata. This baseline records that shape; it does not make
 those operations targets for speculative optimization.
 
+### Remote-path comparison with injected latency
+
+Four behaviours cannot be measured by the local CLI harness, so they were
+measured with Go test fixtures on a 100-Asset gallery: an in-process Git Data
+API serving a real bare repository, a real local clone, and 100 ms charged per
+HTTP request or mirror call. The clone's GitHub URL was rewritten to the local
+bare repository, so the production Git path ran without network. Numbers are
+single-run descriptions of this machine, not thresholds.
+
+| Path | Requests / calls | Wall time |
+| --- | ---: | ---: |
+| Capacity preview through GitHub API | 103 HTTP | 1.63 s |
+| Capacity preview through local Git objects | 0 HTTP | 26 ms |
+| Candidate metadata reads without reuse | 102 blob reads | 305 ms |
+| Candidate metadata reads reusing the base | 1 blob read | 25 ms |
+| R2 sync of 100 objects (4 at a time) | 300 mirror ops | 11.8 s |
+
+The last row is not directly comparable to a serial implementation that was not
+run; its serial floor is 300 × 100 ms = 30 s, so the measured wall time shows
+that batches really overlap. The R2 row also made 204 API requests because a
+full sync reads the metadata snapshot and every image blob not available
+locally; an automatic post-commit mirror of new adds reads the staged payload
+instead.
+
+These fixtures establish request counts and proportional cost. They do not
+measure real GitHub or R2 latency, rate limits, browser rendering, image
+encoding, or a complete five-second publish; an isolated writable remote was
+not available, so no end-to-end remote timing is claimed here.
+
 ### Large-gallery rendering check
 
 The gallery mounts at most 60 cards first and appends another batch when the

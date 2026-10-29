@@ -739,7 +739,7 @@ const libraryMaxImageBytes int64 = 20_000_000
 type uploadTarget struct {
 	server    *Server
 	id        string
-	reader    repository.Git
+	reader    repository.Reader
 	preview   *app.Capacity
 	projected int64
 	paths     map[string]domain.ContentObject

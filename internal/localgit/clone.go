@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Eurekaimer/TOUKO/internal/domain"
 )
 
 // credentialHelper answers Git's credential protocol by reading the secret from
@@ -102,10 +105,62 @@ func Update(ctx context.Context, dir, branch, token string) error {
 	return nil
 }
 
+// RemoteHead reads the exact branch advertised by remote without changing refs.
+func RemoteHead(ctx context.Context, dir, remote, branch, token string) (domain.RepositoryHead, error) {
+	if err := validateRemote(remote); err != nil {
+		return "", err
+	}
+	if err := validateBranch(branch); err != nil {
+		return "", err
+	}
+	ref := "refs/heads/" + branch
+	args := []string{"ls-remote", "--refs", "--exit-code", "--", remote, ref}
+	if token != "" {
+		args = append([]string{"-c", "credential.helper=", "-c", "credential.helper=" + credentialHelper}, args...)
+	}
+	var out cappedOutput
+	stderr, err := runCredentialedOutput(ctx, dir, token, &out, args...)
+	if err != nil {
+		return "", fmt.Errorf("git ls-remote: %w: %s", err, redact(stderr, token))
+	}
+	fields := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\t")
+	if len(fields) != 2 || fields[1] != ref {
+		return "", fmt.Errorf("git ls-remote returned an unexpected branch")
+	}
+	id, err := parseID([]byte(fields[0]))
+	return domain.RepositoryHead(id), err
+}
+
+// FetchCommit adds an advertised commit and its current tree to the object
+// database without downloading full history. Git may update shallow boundaries;
+// it never moves the checkout, writes FETCH_HEAD, or updates any reference.
+func FetchCommit(ctx context.Context, dir, remote string, head domain.RepositoryHead, token string) error {
+	if err := validateRemote(remote); err != nil {
+		return err
+	}
+	if err := validateID(string(head)); err != nil {
+		return err
+	}
+	args := []string{"fetch", "--depth=1", "--no-tags", "--no-write-fetch-head", "--no-auto-maintenance", "--", remote, string(head)}
+	if token != "" {
+		args = append([]string{"-c", "credential.helper=", "-c", "credential.helper=" + credentialHelper}, args...)
+	}
+	stderr, err := runCredentialed(ctx, dir, token, args...)
+	if err != nil {
+		return fmt.Errorf("git fetch: %w: %s", err, redact(stderr, token))
+	}
+	return nil
+}
+
 // runCredentialed runs one Git command with the optional credential helper and
 // returns the trimmed stderr for error reporting.
 func runCredentialed(ctx context.Context, dir, token string, args ...string) (string, error) {
+	return runCredentialedOutput(ctx, dir, token, nil, args...)
+}
+
+func runCredentialedOutput(ctx context.Context, dir, token string, stdout io.Writer, args ...string) (string, error) {
 	cmd := command(ctx, dir, args...)
+	cmd.Stdout = stdout
 	if token != "" {
 		read, write, err := os.Pipe()
 		if err != nil {

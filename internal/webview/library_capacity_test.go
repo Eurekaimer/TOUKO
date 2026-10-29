@@ -3,6 +3,7 @@ package webview
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 )
@@ -18,6 +20,14 @@ import (
 func TestLibraryUploadUsesAuthoritativeReaderWhenCloneMissingOrStale(t *testing.T) {
 	for _, stale := range []bool{false, true} {
 		t.Run(map[bool]string{false: "missing", true: "stale"}[stale], func(t *testing.T) {
+			if stale {
+				// The fake GitHub API is in-process. Refuse external Git traffic
+				// so this case deterministically exercises the API fallback.
+				t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+				t.Setenv("https_proxy", "http://127.0.0.1:1")
+				t.Setenv("NO_PROXY", "")
+				t.Setenv("no_proxy", "")
+			}
 			f := newCloudflareFixture(t, false)
 			ctx := t.Context()
 			clone := repository.CloneDir(f.service.Dir)
@@ -95,5 +105,80 @@ func TestLibraryUploadUsesAuthoritativeReaderWhenCloneMissingOrStale(t *testing.
 				t.Fatalf("staging: %v", err)
 			}
 		})
+	}
+}
+
+func TestGitCapacityReaderFetchesWithoutMovingCheckoutAndRechecksHead(t *testing.T) {
+	ctx := t.Context()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	git, err := localgit.Init(ctx, remote, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := git.CreateBlob(ctx, strings.NewReader("old"), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := git.CreateTree(ctx, "", []repository.TreeChange{{Path: "README", Blob: &blob}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := git.CreateCommit(ctx, tree, "", "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = git.UpdateRef(ctx, "", old); err != nil {
+		t.Fatal(err)
+	}
+	clone := filepath.Join(t.TempDir(), "clone")
+	if err = localgit.Clone(ctx, remote, clone, "main", ""); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(clone, "untracked")
+	if err = os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	local, err := localgit.Open(ctx, clone, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := git.CreateCommit(ctx, tree, old, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = git.UpdateRef(ctx, old, next); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := gitCapacityReader(ctx, local, clone, remote, "main", "", next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := reader.Head(ctx); err != nil || got != next {
+		t.Fatalf("initial head: %s %v", got, err)
+	}
+	if _, err := reader.Commit(ctx, next); err != nil {
+		t.Fatalf("fetched commit: %v", err)
+	}
+	if got, err := local.Head(ctx); err != nil || got != old {
+		t.Fatalf("checkout moved: %s %v", got, err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "keep" {
+		t.Fatalf("untracked file changed: %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(clone, ".git", "FETCH_HEAD")); !os.IsNotExist(err) {
+		t.Fatalf("fetch wrote FETCH_HEAD: %v", err)
+	}
+	latest, err := git.CreateCommit(ctx, tree, next, "latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = git.UpdateRef(ctx, next, latest); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := reader.Head(ctx); err != nil || got != latest {
+		t.Fatalf("head was not rechecked: %s %v", got, err)
+	}
+	if _, err := gitCapacityReader(ctx, local, clone, remote, "main", "", next); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("stale base was accepted: %v", err)
 	}
 }

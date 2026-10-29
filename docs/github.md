@@ -50,6 +50,10 @@ ID=$(/tmp/touko add logo/touko-logo.png --namespace blog --tag demo --output id)
 
 首次 GitHub 读操作会建立浅克隆（`--depth 1`）。已有 clone 时预览和 `verify` 只读本地当前快照，不 fetch，不是“远端最新”证明；普通 `sync` 先更新 clone，再在**同一次调用**中索引新的固定 HEAD。发布结果未知的 journal 通过 API 恢复，不用浅克隆判断远端提交；`commit`、`repo init` 仍用 GitHub API 写入，不执行 `git push`。认证/仓库发现/列表同样会访问 API。
 
+统一图库上传的容量检查优先复用本地 Git 对象；clone 落后时通过 Git 核对远端分支，必要时浅取固定提交，但不 reset 或 clean 工作树。Git 不可用或 clone 缺失时仍回退 API；完整流程与超时边界见 [上传与预览](webview.md#a-上传与预览)。上传阶段只暂存，不向 GitHub 或 Cloudflare 发布；R2 镜像在 GitHub 确认发布后才开始。
+
+Git 本身可以实现远端发布，但不能仅把 API 调用替换成 `git commit`/`git push`：现有发布流程还要求检查暂存基准、非强制更新分支、保存中断恢复 journal、确认远端是否接收，以及在浅克隆历史不完整时证明 candidate 的关系。仓库发现、登录信息和权限列表目前也通过 GitHub API。当前版本没有把这些路径切换成纯 Git，也不因上传时优先使用 Git 就声称提交、认证或 R2 已经摆脱 API。
+
 ### PicGo 旧路径纳管与上传目录
 
 ```bash
