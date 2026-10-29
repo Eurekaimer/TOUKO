@@ -42,3 +42,4 @@ Ledger version 1 stores repository/source identities and sorted entries (`key,ob
 
 Ledger reads are strict and bounded to 64 MiB; writes use private 0700 directories, 0600 temporary files, file sync/close and the existing platform durable rename. Reindex leaves this optional directory intact. A corrupt ledger stops that target's R2 mutations but does not break GitHub publication, reset or gallery reads; the damaged file is not overwritten. Preserve a backup and restore it, or back up and move that one optional file outside the workspace before rebuilding receipts. Losing it permits current-asset backfill but cannot safely discover unknown historical orphans; TOUKO never scans or prunes a bucket to guess them.
 
+`migration/url-mapping.csv` 与 `url-mapping.json` 由 `touko migrate paths` 写入，记录一次 URL 迁移的新旧路径和公网链接；它们不是 source of truth，可随时重新生成。

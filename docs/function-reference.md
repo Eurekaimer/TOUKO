@@ -285,6 +285,8 @@ publication 的三个字段是 `BaseHead`、`CandidateHead`、`CandidateTree`。
 | `plannedSnapshot` | base、plan、已上传 blob、candidate HEAD/tree → Snapshot。 | 普通提交的本地状态：base entries 施加删除/新增/metadata 写入，manifest 若有写入则解码；随后检查每个 Asset 都有匹配 blob entry。不回读服务端。 |
 | `(*Service).publish` | 已验证或本地构造的 candidate → SyncResult。 | HEAD 仍是 base 才 UpdateRef(CAS)；成功即 finalizeSnapshot，不在成功路径回读；失败才用 publicationRelation 判断结果，未知则保留 journal。 |
 | `candidateCorrupt` | 失败原因 → 带 publication candidate 上下文的 `ErrRepositoryCorrupt`。 | 与普通 head conflict 分开：候选本身不符合 durable 意图，不可重试发布。 |
+| `(*Service).MigratePaths` | Git adapter、dryRun/prune → MigrateResult。 | 持锁；要求无 journal 且 HEAD 等于索引；一次提交把全部 Asset 改写为 AssetObjectPath，复制字节、保留旧 object、逐个 VerifyObject，启用 R2 时再同步；prune 只删无引用的 objects/。 |
+| `WriteURLMapping` | 目录 + items → csv/json 路径。 | 固定列顺序，含新旧 GitHub/R2 URL；dry-run 不写。 |
 | `validateCandidate` | Reader、含 journal 的 State → 完整验证过的候选 Snapshot。 | 只读 Git，不改 SQL/ref；验证失败保留 stage/journal，阻止发布或清账。不是只比 Asset 数；详见下节。 |
 
 #### `validateCandidate` 逐段理解
@@ -486,6 +488,7 @@ Cobra 命令构造函数返回 `*cobra.Command`；真正业务发生在其匿名
 
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
+| `(*runtime).migrateCommand` | `migrate paths [--dry-run] [--prune-old] [--output DIR]` → MigrateResult。 | 用 commitReader 读写；非 dry-run 后写 `url-mapping.csv|json`；失败保留旧布局。 |
 | `(*runtime).commitCommand` | 要求非空 `-m MESSAGE`，调 Service.Commit。 | JSON 输出 CommitResult；ChangeCount=0 人类输出 nothing staged；出现业务/网络错误不打印成功。journal、重试和 ref 全由 app 负责。 |
 | `(*runtime).verifyCommand` | reader → Service.Verify结果。 | GitHub验证现有clone而不fetch（缺失clone的创建可能联网）；不把staged bytes当committed，不保证最新远端。校验失败不返回成功。 |
 

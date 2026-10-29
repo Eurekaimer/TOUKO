@@ -130,7 +130,7 @@ touko url <UUID> --provider cloudflare
 
 ## 文档
 
-[CLI 用法](docs/usage.md) · [Webview](docs/webview.md) · [架构](docs/code-guide.md) · [函数导航](docs/function-reference.md) · [仓库格式](docs/repository-format.md) · [本地状态](docs/local-state.md) · [发布协议](docs/publication.md) · [Benchmark](docs/benchmark.md)
+[CLI 用法](docs/usage.md) · [URL 迁移](docs/migration.md) · [Webview](docs/webview.md) · [架构](docs/code-guide.md) · [函数导航](docs/function-reference.md) · [仓库格式](docs/repository-format.md) · [本地状态](docs/local-state.md) · [发布协议](docs/publication.md) · [Benchmark](docs/benchmark.md)
 
 ## 边界
 
