@@ -39,7 +39,7 @@ jobs:
         run: go test -race ./...
       - name: Vet
         run: go vet ./...
-      - name: URL rewrite checks
-        run: python3 -m unittest discover -s scripts -p 'test_rewrite_object_urls.py'
+      - name: Python utility checks
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Isolated CLI smoke
         run: bash examples/demo.sh
