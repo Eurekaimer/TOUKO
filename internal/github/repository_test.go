@@ -674,6 +674,63 @@ func TestCompareAndRejectedRefDistinguishConflict(t *testing.T) {
 	}
 }
 
+func TestUpdateRefRejectsBaseAheadOfCurrentHead(t *testing.T) {
+	a, r := newAPI(t)
+	ctx := context.Background()
+	current, err := a.git.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := a.git.Commit(ctx, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := a.git.CreateCommit(ctx, commit.Tree, current, "previous base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := a.git.CreateCommit(ctx, commit.Tree, base, "new candidate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.UpdateRef(ctx, base, candidate)
+	var conflict *domain.ConflictError
+	if !errors.As(err, &conflict) || conflict.Base != base || conflict.Remote != current {
+		t.Fatalf("expected a conflict after the branch was reset, got %v", err)
+	}
+	head, err := a.git.Head(ctx)
+	if err != nil || head != current {
+		t.Fatalf("reset branch was changed: %s, %v", head, err)
+	}
+}
+
+func TestUpdateRefStopsWhenHeadCannotBeRead(t *testing.T) {
+	a, r := newAPI(t)
+	ctx := context.Background()
+	base, err := a.git.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit, err := a.git.Commit(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := a.git.CreateCommit(ctx, commit.Tree, base, "candidate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.fault("GET", "/git/ref/heads/", 503)
+	err = r.UpdateRef(ctx, base, candidate)
+	var api *gh.APIError
+	if !errors.As(err, &api) || api.Status != 503 {
+		t.Fatalf("expected HEAD read failure, got %v", err)
+	}
+	head, err := a.git.Head(ctx)
+	if err != nil || head != base {
+		t.Fatalf("branch changed after failed HEAD read: %s, %v", head, err)
+	}
+}
+
 type blockedSource struct {
 	started   chan struct{}
 	closed    chan struct{}
