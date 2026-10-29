@@ -453,17 +453,6 @@ func (m *workspaceSet) memberState(ctx context.Context, id string) (libraryMembe
 	member.Publication = state["publication"]
 	member.LocalRead = state["local_read"]
 	member.Cloudflare, _ = state["cloudflare"].(*app.CloudflareStatus)
-	if member.Initialized && member.Publication == nil {
-		if reader, readErr := server.reader(ctx); readErr == nil {
-			if capacity, capacityErr := server.service.PreviewPrepared(ctx, reader, nil, app.DefaultCapacityBytes); capacityErr == nil {
-				member.Capacity = &capacity
-			} else {
-				member.Error = capacityErr.Error()
-			}
-		} else {
-			member.Error = readErr.Error()
-		}
-	}
 	return member, nil
 }
 
@@ -780,21 +769,28 @@ func (t *uploadTarget) assign(index int, input app.PreparedInput) {
 // member that fits it. Every file is ingested exactly once; nothing is staged
 // until the whole batch has been validated.
 func (m *workspaceSet) libraryUpload(w http.ResponseWriter, r *http.Request, libraryID string) {
+	fail := func(err error) {
+		status, code, message := errorDetail(err)
+		if logErr := m.root.recordOperationFailure("/api/upload", status, code, message); logErr != nil {
+			w.Header().Set("X-Touko-Log-Error", "1")
+		}
+		m.root.respondError(w, err)
+	}
 	library, err := m.libraryByID(libraryID)
 	if err != nil {
-		m.root.respondError(w, err)
+		fail(err)
 		return
 	}
 	ctx := r.Context()
 	parsed, err := parseUploadBatch(w, r, m.root.service.Dir, libraryMaxImageBytes)
 	if err != nil {
-		m.root.respondError(w, err)
+		fail(err)
 		return
 	}
 	defer parsed.discard()
 	options, err := parsed.options()
 	if err != nil {
-		m.root.respondError(w, err)
+		fail(err)
 		return
 	}
 	prepared := make([]app.PreparedInput, 0, len(parsed.files))
@@ -804,7 +800,7 @@ func (m *workspaceSet) libraryUpload(w http.ResponseWriter, r *http.Request, lib
 			for _, done := range prepared {
 				os.Remove(done.Payload.TempPath)
 			}
-			m.root.respondError(w, err)
+			fail(err)
 			return
 		}
 		prepared = append(prepared, item)
@@ -836,7 +832,7 @@ func (m *workspaceSet) libraryUpload(w http.ResponseWriter, r *http.Request, lib
 			targets = append(targets, target)
 			continue
 		}
-		reader, err := server.reader(ctx)
+		reader, err := server.capacityReader(ctx)
 		if err != nil {
 			target.err = err
 			targets = append(targets, target)
@@ -925,6 +921,13 @@ func (m *workspaceSet) libraryUpload(w http.ResponseWriter, r *http.Request, lib
 	status := http.StatusOK
 	if len(failed) > 0 {
 		status = http.StatusMultiStatus
+		for _, item := range failed {
+			code, _ := item["code"].(string)
+			message, _ := item["message"].(string)
+			if logErr := m.root.recordOperationFailure("/api/upload", status, code, message); logErr != nil {
+				w.Header().Set("X-Touko-Log-Error", "1")
+			}
+		}
 	}
 	m.root.jsonStatus(w, status, map[string]any{"results": results, "failed": failed})
 }

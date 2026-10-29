@@ -38,6 +38,7 @@ type Server struct {
 	// Queue this server's state operations; the filesystem lock still rejects
 	// competing CLI processes. Original-image streaming runs outside this gate.
 	workMu      sync.Mutex
+	logMu       sync.Mutex
 	cacheMu     sync.Mutex
 	cachedTree  repository.TreeID
 	cachedBlobs map[string]repository.GitEntry
@@ -179,6 +180,17 @@ func (s *Server) fail(w http.ResponseWriter, status int, code, message string) {
 	s.failExtra(w, status, code, message, nil)
 }
 func (s *Server) failExtra(w http.ResponseWriter, status int, code, message string, extra map[string]any) {
+	message = s.redactMessage(message)
+	body := map[string]any{"error": map[string]string{"code": code, "message": message}}
+	for key, value := range extra {
+		body[key] = value
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func (s *Server) redactMessage(message string) string {
 	owner := s.authOwner()
 	owner.authMu.Lock()
 	token, authToken := owner.token, owner.authToken
@@ -189,13 +201,7 @@ func (s *Server) failExtra(w http.ResponseWriter, status int, code, message stri
 			message = strings.ReplaceAll(message, secret, "[redacted]")
 		}
 	}
-	body := map[string]any{"error": map[string]string{"code": code, "message": message}}
-	for key, value := range extra {
-		body[key] = value
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	return message
 }
 
 // r2Secrets returns this workspace's stored R2 pair for response scrubbing.

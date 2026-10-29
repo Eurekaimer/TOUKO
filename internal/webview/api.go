@@ -237,8 +237,26 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
+		if loggedOperation(path) {
+			status, code, message := errorDetail(err)
+			if logErr := s.recordOperationFailure(path, status, code, message); logErr != nil {
+				w.Header().Set("X-Touko-Log-Error", "1")
+			}
+		}
 		s.respondError(w, err)
 		return
+	}
+	var mirror *app.CloudflareResult
+	switch value := result.(type) {
+	case app.CommitResult:
+		mirror = value.Cloudflare
+	case app.SyncResult:
+		mirror = value.Cloudflare
+	}
+	if mirror != nil && (mirror.Status == "failed" || mirror.Status == "pending") {
+		if logErr := s.recordOperationFailure(path, 200, "cloudflare_incomplete", mirror.ErrorCode); logErr != nil {
+			w.Header().Set("X-Touko-Log-Error", "1")
+		}
 	}
 	if result == nil {
 		result = map[string]bool{"ok": true}

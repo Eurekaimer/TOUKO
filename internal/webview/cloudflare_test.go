@@ -495,6 +495,10 @@ func TestCloudflareAPIPartialFailureAndSecurity(t *testing.T) {
 	if strings.Contains(out.Body.String(), "r2-test-secret") || strings.Contains(out.Body.String(), "r2-test-access") {
 		t.Fatal("R2 credentials leaked into the error response")
 	}
+	logData, err := os.ReadFile(filepath.Join(f.service.Dir, "operation-errors.jsonl"))
+	if err != nil || !bytes.Contains(logData, []byte("access_denied")) || bytes.Contains(logData, []byte("r2-test-secret")) {
+		t.Fatalf("mirror failure diagnostic missing or unsafe: %q %v", logData, err)
+	}
 	// An R2 access failure must not look like a GitHub authentication failure.
 	if f.server.login.snapshot().Status != loginIdle {
 		t.Fatalf("R2 failure started GitHub login: %q", f.server.login.snapshot().Status)

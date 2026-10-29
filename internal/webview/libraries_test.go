@@ -329,3 +329,35 @@ func TestLibraryStateStaysReadableDuringPublication(t *testing.T) {
 		t.Fatalf("write during publication: %d, want 409", mutation.Code)
 	}
 }
+
+func TestLibraryStateDoesNotCloneOrCheckCapacity(t *testing.T) {
+	f, url, members, _ := createLibraryFixture(t)
+	server, err := f.server.spaces.open(t.Context(), members[0], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(server.service.Dir, "config.json")
+	if err := os.WriteFile(config, []byte(`{"backend":"github","owner":"owner","name":"gallery","branch":"main"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	response := libraryCall(t, f, "GET", url+"api/state", nil, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("library state: %d %s", response.Code, response.Body.String())
+	}
+	var state struct {
+		Members []struct {
+			Initialized bool   `json:"initialized"`
+			Error       string `json:"error"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Members) != 2 || !state.Members[0].Initialized || state.Members[0].Error != "" {
+		t.Fatalf("library state depends on unavailable Git: %+v", state.Members)
+	}
+	if _, err := os.Stat(repository.CloneDir(server.service.Dir)); !os.IsNotExist(err) {
+		t.Fatalf("state created a clone: %v", err)
+	}
+}

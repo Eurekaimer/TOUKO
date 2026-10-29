@@ -612,6 +612,10 @@ func TestSingleWorkspaceUploadDoesNotNeedCloneAndCommitChecksHead(t *testing.T) 
 		t.Fatal(err)
 	}
 	f.request("POST", "/api/commit", map[string]string{"message": "publish"}, 409)
+	logData, err := os.ReadFile(filepath.Join(f.service.Dir, "operation-errors.jsonl"))
+	if err != nil || !bytes.Contains(logData, []byte(`"code":"conflict"`)) || !bytes.Contains(logData, []byte("head_changed")) {
+		t.Fatalf("conflict was not recorded: %q %v", logData, err)
+	}
 	st, err := f.service.Store.Load(ctx)
 	if err != nil || len(st.Changes) != 1 {
 		t.Fatalf("conflicting commit lost staged image: %v", err)
