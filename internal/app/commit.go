@@ -54,28 +54,10 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 	if err = mutable(st); err != nil {
 		return CommitResult{}, err
 	}
-	head, err := r.Head(ctx)
-	if err != nil {
-		return CommitResult{}, err
-	}
-	if head != st.BaseHead {
-		remote, err := repository.ReadSnapshot(ctx, r, head)
-		if err != nil {
-			return CommitResult{}, err
-		}
-		if err = sameRepository(st, remote); err != nil {
-			return CommitResult{}, err
-		}
-		for _, c := range stagedChanges(st).Changes {
-			if c.Kind == domain.Update {
-				if _, exists := remote.Assets[c.AssetID]; !exists {
-					id := c.AssetID
-					return CommitResult{}, &domain.ConflictError{Base: st.BaseHead, Remote: head, AssetID: &id, Reason: "delete_modify"}
-				}
-			}
-		}
-		return CommitResult{}, &domain.ConflictError{Base: st.BaseHead, Remote: head, Reason: "head_changed"}
-	}
+	// The staged base was captured when the first change was made. Reading it
+	// here needs no HEAD probe: the ref update later rejects a non-fast-forward,
+	// and only that failure needs the remote relationship.
+	head := st.BaseHead
 	base, err := repository.ReadSnapshot(ctx, r, head)
 	if err != nil {
 		return CommitResult{}, err
@@ -283,19 +265,12 @@ func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index
 	return s.publish(ctx, r, st, candidate)
 }
 
-// publish updates the branch. A confirmed update is not read back: the adapter
-// enforces the expected old value, so an ambiguous outcome is the only case that
+// publish updates the branch. The adapter rejects a non-fast-forward, and the
+// candidate's parent is the base, so a rejected update is the only case that
 // needs the authoritative relationship query.
 func (s *Service) publish(ctx context.Context, r repository.Git, st index.State, candidate repository.Snapshot) (SyncResult, error) {
 	p := st.Publication
-	head, err := r.Head(ctx)
-	if err != nil {
-		return SyncResult{}, unknownPublication(p, err)
-	}
-	if head != p.BaseHead {
-		return s.recoverPublication(ctx, r, st, false)
-	}
-	if err = r.UpdateRef(ctx, p.BaseHead, p.CandidateHead); err != nil {
+	if err := r.UpdateRef(ctx, p.BaseHead, p.CandidateHead); err != nil {
 		head, published, readErr := publicationRelation(ctx, r, p)
 		if readErr != nil {
 			return SyncResult{}, unknownPublication(p, readErr)
@@ -308,11 +283,28 @@ func (s *Service) publish(ctx context.Context, r repository.Git, st index.State,
 			return s.finalizeSnapshot(ctx, r, st, snap)
 		}
 		if head != p.BaseHead {
-			return SyncResult{}, &domain.ConflictError{Base: p.BaseHead, Remote: head, Reason: "head_changed"}
+			return SyncResult{}, staleConflict(ctx, r, st, head)
 		}
 		return SyncResult{}, err
 	}
 	return s.finalizeSnapshot(ctx, r, st, candidate)
+}
+
+// staleConflict explains a rejected ref update: an edited Asset that the remote
+// deleted is delete_modify, everything else is head_changed.
+func staleConflict(ctx context.Context, r repository.Reader, st index.State, head domain.RepositoryHead) error {
+	base := st.Publication.BaseHead
+	if snap, err := repository.ReadSnapshot(ctx, r, head); err == nil {
+		for _, c := range stagedChanges(st).Changes {
+			if c.Kind == domain.Update {
+				if _, exists := snap.Assets[c.AssetID]; !exists {
+					id := c.AssetID
+					return &domain.ConflictError{Base: base, Remote: head, AssetID: &id, Reason: "delete_modify"}
+				}
+			}
+		}
+	}
+	return &domain.ConflictError{Base: base, Remote: head, Reason: "head_changed"}
 }
 
 // finalizePublished validates a journal whose candidate is already published

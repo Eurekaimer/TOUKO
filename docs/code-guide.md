@@ -218,12 +218,12 @@ CLI addCommand
 ```text
 CLI commitCommand → Service.Commit
   → Lock / Load / 优先恢复旧 publication
-  → Head 与 staging base 比较
-  → ReadSnapshot(B) → PlanCommit
+  → ReadSnapshot(staging base) → PlanCommit
+  （不先读 HEAD：发布时的 fast-forward 检查就是过期 base 的拒绝）
   → VerifyObject(复用对象) / uploadStaged(新对象)
   → CreateBlob(metadata) → CreateTree(base.Tree) → CreateCommit(parent=B)
   → Store.SavePublication(B,C,tree)
-  → publishJournal → 提交路径由计划构造快照 → 再读 Head → UpdateRef(B,C)
+  → 由计划构造快照 → UpdateRef(B,C)（非 fast-forward 会被拒绝）
   → finalizeSnapshot → 按已确认的写入记账（恢复路径才重读验证）
   → Store.Save(新快照 + 清 stage/journal) → optional Cloudflare mirror → cleanup
 ```
@@ -240,7 +240,7 @@ CLI commitCommand → Service.Commit
 
 | 失败窗口 | remote | cache | stage/journal | 正确处理 |
 | --- | --- | --- | --- | --- |
-| 远程 HEAD 已不是 B | R 不变 | 仍 B | stage 保留，尚未上传本次 blobs | conflict；如果 staged update 的 Asset 已被远程删除，reason 为 `delete_modify` |
+| 远程 HEAD 已不是 B | R 不变 | 仍 B | stage 保留；本次 blobs 可能已上传但不可达 | ref 更新被拒绝后只读一次关系：conflict；staged update 的 Asset 已被远程删除时 reason 为 `delete_modify` |
 | blob/tree/commit 准备失败 | 仍 B | 仍 B | stage 保留；尚未保存 journal 时 journal 为空 | 修复原因后重试；可能已有不可达 Git 对象，不代表发布了部分 gallery |
 | journal 保存失败 | 仍 B | 仍 B | stage 保留；以耐久文件实际状态为准，目录 sync 错误也显式返回 | 不允许继续 UpdateRef |
 | UpdateRef 明确没发布 | 一般仍 B | 仍 B | stage 与 candidate journal 保留 | commit 可重试同一 candidate；sync 可确认后取消未发布 journal |

@@ -282,31 +282,28 @@ describe that link, not GitHub's best case.
 
 | Operation | Build | API requests | Wall |
 | --- | --- | ---: | ---: |
-| `add` (staging only) | either | 0 | 0.05 s |
-| commit one new image, R2 on | before local reads | 212 | 25.8 s |
-| commit one new image, R2 on | local reads only | 11 | 13.6 s |
-| commit one deletion, R2 on | local reads only | 10 | 12.1 s |
-| commit one new image, R2 off | local reads only | 9 | 9.3 s |
-| commit one deletion, R2 off | local reads only | 9 | 7.5 s |
-| commit one deletion, R2 on | no read-back | — | 7.0 s |
-| commit one new image, R2 on | no read-back | — | 10.0 s |
-| commit one new image, R2 off | no read-back | 8 | 7.0 s |
+| `add` (staging only) | any | 0 | 0.05 s |
+| commit one new image, R2 on | API metadata reads | 212 | 25.8 s |
+| commit one new image, R2 on | local object reads | 11 | 13.6 s |
+| commit one deletion, R2 on | local object reads | 10 | 12.1 s |
+| commit one new image, R2 off | local object reads | 9 | 9.3 s |
+| commit one new image, R2 on | final | 5 + 5 R2 | 7.0 s |
+| commit one deletion, R2 on | final | 4 + 2 R2 | 5.6 s |
+| commit one new image, R2 off | final | 5 | 6.0 s |
 
-The last three rows drop the post-publish read-back: a confirmed CAS ref update
-is not re-read, and the published state comes from the accepted writes plus a
-local consistency check. One traced commit then issues exactly eight requests:
-read HEAD, upload the image blob and its metadata, create the tree and commit,
-read HEAD before publishing, read HEAD for the CAS, and update the ref. Recovery,
-reset and sync still re-read and validate the candidate, so an interrupted or
-ambiguous publication keeps the old guarantees. Request counts for some rows are
-from the rate-limit counter, which under-reported during the session; the traced
-row is exact.
+The final build plans against the staged base and publishes with a fast-forward
+only ref update, so a stale base is rejected without any HEAD probe. One traced
+image commit issues exactly five API requests: upload the image blob and its
+metadata, create the tree and commit, update the ref. A deletion issues three
+(tree, commit, ref), plus one authoritative HEAD read when the R2 mirror must
+confirm the object is really unreferenced. Recovery, reset and sync still read
+and validate the published relationship; only the confirmed path skips it.
 
-Before the change, a commit read the manifest and every Asset metadata file from
-the API, so its request count grew with the gallery. After it, immutable commit,
-tree and blob reads come from the clone and a one-image commit costs about nine
-requests: read HEAD, upload the image blob and its metadata, create the tree and
-commit, re-read the candidate commit and tree, update the ref, re-read HEAD.
+The dropped HEAD probes are not checks that disappeared: staging records the base
+in `workspace.json`, the adapter rejects a non-fast-forward, and a rejection
+reads the remote relationship once to classify `head_changed` or `delete_modify`.
+Uploading blobs before that rejection is wasted on a conflict but harmless; they
+stay unreferenced.
 
 The remaining wall time is almost entirely request latency: nine requests at
 0.5–1 s each plus three R2 calls. PicGo is faster because its GitHub uploader

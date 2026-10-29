@@ -329,6 +329,9 @@ func (r *Repository) CreateCommit(ctx context.Context, tree repository.TreeID, p
 	return domain.RepositoryHead(result.SHA), nil
 }
 
+// UpdateRef moves the branch only when the change is a fast-forward. The
+// candidate's sole parent is the expected head, so that rule is exactly an
+// expected-old-value check; a rejected update reads HEAD only to explain why.
 func (r *Repository) UpdateRef(ctx context.Context, expected, next domain.RepositoryHead) error {
 	if err := r.writeAllowed(); err != nil {
 		return err
@@ -342,18 +345,11 @@ func (r *Repository) UpdateRef(ctx context.Context, expected, next domain.Reposi
 	if err := checkID(string(next)); err != nil {
 		return err
 	}
-	current, err := r.Head(ctx)
-	if err != nil {
-		return err
-	}
-	if current != expected {
-		return &domain.ConflictError{Base: expected, Remote: current, Reason: "head_changed"}
-	}
 	input := struct {
 		SHA   domain.RepositoryHead `json:"sha"`
 		Force bool                  `json:"force"`
 	}{SHA: next, Force: false}
-	err = r.json(ctx, http.MethodPatch, r.path()+"/git/refs/heads/"+escapeBranch(r.location.Branch), input, nil)
+	err := r.json(ctx, http.MethodPatch, r.path()+"/git/refs/heads/"+escapeBranch(r.location.Branch), input, nil)
 	if err == nil {
 		return nil
 	}

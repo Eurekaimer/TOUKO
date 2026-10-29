@@ -115,6 +115,19 @@ touko url <UUID> --provider cloudflare
 
 只有状态为已同步、且服务端实时 HEAD 校验通过的图片才返回 Cloudflare 链接。暂存中的图片不能复制。自定义域名的绑定、DNS 和缓存由 Cloudflare 管理，TOUKO 不代为配置。
 
+## 性能
+
+一次 `commit` 只发必要的写请求：单图 = 5 个 GitHub API 请求（图片 blob、metadata blob、tree、commit、更新 ref），删除 = 3 个（开启 R2 时另有 1 次删除前确认）。图库里有 200 张还是 2000 张都不增加请求数。基准数据来自 200 张图的公开仓库、同一台机器与网络（GitHub 每请求 0.3–0.9 s）：
+
+| 操作 | GitHub 请求 | R2 调用 | 耗时 |
+| --- | ---: | ---: | ---: |
+| `add`（仅暂存，不联网） | 0 | 0 | 0.05 s |
+| 提交一张新图，镜像开 | 5 | 5 | 7.0 s |
+| 提交一张新图，镜像关 | 5 | 0 | 6.0 s |
+| 删除一张图，镜像开 | 4 | 2 | 5.6 s |
+
+剩余时间主要是网络往返：每个 GitHub 请求 0.3–0.9 s，R2 写入还要回读校验。完整的请求清单、方法、对比历史和限制见 [Benchmark](docs/benchmark.md#single-image-publication-against-a-real-gallery)。
+
 ## 文档
 
 [CLI 用法](docs/usage.md) · [Webview](docs/webview.md) · [架构](docs/code-guide.md) · [函数导航](docs/function-reference.md) · [仓库格式](docs/repository-format.md) · [本地状态](docs/local-state.md) · [发布协议](docs/publication.md) · [Benchmark](docs/benchmark.md)

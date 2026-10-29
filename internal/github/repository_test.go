@@ -666,7 +666,7 @@ func TestCompareAndRejectedRefDistinguishConflict(t *testing.T) {
 	}
 	a.fault("", "", 0)
 	if e = r.UpdateRef(ctx, base, right); !errors.Is(e, domain.ErrConflict) {
-		t.Fatal("stale preflight accepted", e)
+		t.Fatal("stale base accepted", e)
 	}
 	h, e = a.git.Head(ctx)
 	if e != nil || h != left {

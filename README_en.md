@@ -115,6 +115,25 @@ touko url <UUID> --provider cloudflare
 
 A Cloudflare URL is returned only for a synced receipt that still matches a live HEAD request. Staged images cannot be copied. Domain binding, DNS and cache settings belong to Cloudflare.
 
+## Performance
+
+One `commit` sends only the writes it needs: 5 GitHub API requests for one image
+(image blob, metadata blob, tree, commit, ref update), 3 for a deletion
+(plus one confirmation read before the mirror deletes an object). A
+200-Asset gallery and a 2000-Asset gallery cost the same. Measured on a 200-Asset
+public gallery on one machine and network (0.3-0.9 s per GitHub request):
+
+| Operation | GitHub requests | R2 calls | Wall |
+| --- | ---: | ---: | ---: |
+| `add` (staging only, offline) | 0 | 0 | 0.05 s |
+| commit one new image, mirror on | 5 | 5 | 7.0 s |
+| commit one new image, mirror off | 5 | 0 | 6.0 s |
+| delete one image, mirror on | 4 | 2 | 5.6 s |
+
+The rest is round trips: each GitHub request costs 0.3-0.9 s here, and an R2
+write is read back before it is trusted. Request lists, method and limits are in
+[Benchmark](docs/benchmark.md#single-image-publication-against-a-real-gallery).
+
 ## Documentation
 
 [CLI](docs/usage.md) · [Webview](docs/webview.md) · [Architecture](docs/code-guide.md) · [Function reference](docs/function-reference.md) · [Repository format](docs/repository-format.md) · [Local state](docs/local-state.md) · [Publication](docs/publication.md) · [Benchmark](docs/benchmark.md)
