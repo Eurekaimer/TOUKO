@@ -61,10 +61,10 @@ def configure_state(binary, state, repo, branch, r2, credentials):
     args = ["repo", "use", repo, "--json"]
     if branch:
         args += ["--branch", branch]
-    proc, _ = run(binary, state, *args)
+    proc, _ = retry(run, binary, state, *args)
     if proc.returncode != 0:
         raise SystemExit(f"repo use failed: {proc.stderr.strip()}")
-    proc, _ = run(binary, state, "repo", "init", "--json")
+    proc, _ = retry(run, binary, state, "repo", "init", "--json")
     if proc.returncode != 0 and "already" not in (proc.stderr + proc.stdout):
         raise SystemExit(f"repo init failed: {proc.stderr.strip()}")
     if r2:
@@ -76,7 +76,7 @@ def configure_state(binary, state, repo, branch, r2, credentials):
         os.makedirs(target, mode=0o700, exist_ok=True)
         shutil.copyfile(credentials, os.path.join(target, "credentials.json"))
         os.chmod(os.path.join(target, "credentials.json"), 0o600)
-    proc, _ = run(binary, state, "sync", "--json")
+    proc, _ = retry(run, binary, state, "sync", "--json")
     if proc.returncode != 0:
         raise SystemExit(f"sync failed: {proc.stderr.strip()}")
 
@@ -86,12 +86,12 @@ def measure(binary, state, images, out_path):
     with open(out_path, "w") as out:
         for index, image in enumerate(images):
             record = {"index": index, "file": os.path.basename(image), "size_bytes": os.path.getsize(image)}
-            proc, add_ms = retry(run, binary, state, "add", image, "--namespace", "bench", "--json")
+            proc, add_ms = run(binary, state, "add", image, "--namespace", "bench", "--json")
             record["add_ms"] = round(add_ms, 1)
             if proc.returncode != 0:
                 record.update(ok=False, commit_ms=0.0, total_ms=round(add_ms, 1), error=proc.stderr.strip()[:300])
             else:
-                proc, commit_ms = retry(run, binary, state, "commit", "-m", "bench: upload image", "--json")
+                proc, commit_ms = run(binary, state, "commit", "-m", "bench: upload image", "--json")
                 record["commit_ms"] = round(commit_ms, 1)
                 record["total_ms"] = round(add_ms + commit_ms, 1)
                 record["ok"] = proc.returncode == 0
