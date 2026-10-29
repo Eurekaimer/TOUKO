@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.eurekaimer.icu/objects/default/sha256/fa/93/fa93a8ca741cfa57253de4eed814435452ee5fce2863932f0112f7e94455041a.webp" alt="TOUKO" width="220" />
+<img src="https://img.eurekaimer.icu/objects/default/005181d9-b6c0-4a0e-84cf-eb4de76f998a.webp" alt="TOUKO" width="220" />
 
 # TOUKO
 
