@@ -65,6 +65,7 @@ import shlex
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -119,11 +120,13 @@ def assets(device):
 
 def public_url(kind, asset):
     """Local derivation only; confirms routing without relying on CDN propagation."""
-    object_path = f"objects/{asset['namespace']}/sha256/{asset['object']['hash'][:2]}/{asset['object']['hash'][2:4]}/{asset['object']['hash']}.{asset['object']['ext']}"
+    object_path = f"objects/{asset['namespace']}/{asset['id']}.{asset['object']['ext']}"
+    require(asset.get('path') == object_path, f'asset path does not match its UUID: {asset.get("path")}')
     owner, name = repository.split('/', 1)
+    encoded_branch = urllib.parse.quote(actual_branch, safe='')
     if kind == 'github':
-        return f'https://raw.githubusercontent.com/{owner}/{name}/refs/heads/{actual_branch}/{object_path}'
-    return f'https://cdn.jsdelivr.net/gh/{owner}/{name}@{actual_branch}/{object_path}'
+        return f'https://raw.githubusercontent.com/{owner}/{name}/refs/heads/{encoded_branch}/{object_path}'
+    return f'https://cdn.jsdelivr.net/gh/{owner}/{name}@{encoded_branch}/{object_path}'
 
 
 # --- 1. authentication and repository identity -----------------------------

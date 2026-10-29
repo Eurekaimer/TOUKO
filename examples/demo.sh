@@ -100,18 +100,29 @@ def head():
     return git('rev-parse', 'refs/heads/main')
 
 
+def tree_entries():
+    """Map every current immutable tree path to its Git blob SHA."""
+    entries = {}
+    for row in filter(None, git('ls-tree', '-r', '-z', head()).split('\0')):
+        meta, path = row.split('\t', 1)
+        entries[path] = meta.split()[2]
+    return entries
+
+
 def paths():
     """Read all current immutable tree paths using Git's NUL-delimited output."""
-    return set(filter(None, git('ls-tree', '-r', '-z', '--name-only', head()).split('\0')))
+    return set(tree_entries())
 
 
-def tree_counts(metadata, objects):
-    """Require exact metadata and physical placement counts at the latest HEAD."""
-    current = paths()
+def tree_counts(metadata, objects, blobs):
+    """Require exact metadata, placement and distinct-blob counts at the latest HEAD."""
+    current = tree_entries()
     require(len([p for p in current if p.startswith('.touko/assets/')]) == metadata,
             f'Expected {metadata} asset metadata paths')
-    require(len([p for p in current if p.startswith('objects/')]) == objects,
-            f'Expected {objects} object paths')
+    object_paths = [p for p in current if p.startswith('objects/')]
+    require(len(object_paths) == objects, f'Expected {objects} object paths')
+    require(len({current[p] for p in object_paths}) == blobs,
+            f'Expected {blobs} distinct object blobs')
 
 
 def assets(device):
@@ -135,10 +146,11 @@ def verify(device, asset_count, object_count):
 
 
 def placement(asset):
-    """Derive the format-v1 namespace placement for an Asset's content hash."""
-    obj = asset['object']
-    digest = obj['hash']
-    return f'objects/{asset["namespace"]}/sha256/{digest[:2]}/{digest[2:4]}/{digest}.{obj["ext"]}'
+    """Require the asset-id path recorded in metadata and return it."""
+    expected = f'objects/{asset["namespace"]}/{asset["id"]}.{asset["object"]["ext"]}'
+    require(asset.get('path') == expected,
+            f'Asset {asset["id"]} must own {expected!r}, got {asset.get("path")!r}')
+    return expected
 
 
 def filesystem_state():
@@ -185,8 +197,8 @@ def main():
             'The four-Asset batch did not publish exactly one commit')
     require(git('rev-list', '--parents', '-n', '1', head()).split() == [head(), initial_head],
             'Batch commit must have the staging base as its sole parent')
-    tree_counts(4, 3)
-    verify(a, 4, 3)
+    tree_counts(4, 4, 3)
+    verify(a, 4, 4)
     original = assets(a)
     require(set(original) == set(ids), 'Published gallery omitted an Asset')
     for asset_id, (filename, title, tag) in zip(ids, specifications):
@@ -197,12 +209,19 @@ def main():
                 asset['object']['mime'] == 'image/png' and
                 (asset['object']['width'], asset['object']['height']) == (64, 48),
                 'Published sample metadata differs from the input')
-    require(original[red1]['object'] == original[red2]['object'], 'Repeated red content was not deduplicated')
+        placement(asset)
+    require(original[red1]['object'] == original[red2]['object'],
+            'Repeated red content must keep identical content metadata')
     require(len({asset['object']['hash'] for asset in original.values()}) == 3,
             'The three generated samples must have distinct content hashes')
     red_path = placement(original[red1])
+    red2_path = placement(original[red2])
+    require(red_path != red2_path, 'Duplicate bytes must not share one placement')
+    shared_red_blob = tree_entries()[red_path]
+    require(tree_entries()[red2_path] == shared_red_blob,
+            'Duplicate bytes must still share one Git blob')
     clean(a)
-    print('PASS four Asset adds -> one commit -> three physical objects', flush=True)
+    print('PASS four Asset adds -> one commit -> four placements sharing three blobs', flush=True)
 
     document(b, 'repo', 'use', '--local', str(gallery))
     document(b, 'sync')
@@ -216,7 +235,12 @@ def main():
     document(b, 'edit', red1, '--title', 'stale edit')
     document(a, 'rm', red1)
     document(a, 'commit', '-m', 'demo: remove first shared red Asset')
-    tree_counts(3, 3)
+    tree_counts(3, 3, 3)
+    current = paths()
+    require(red_path not in current and red2_path in current,
+            'Removing one Asset must not remove the other red placement')
+    require(tree_entries()[red2_path] == shared_red_blob,
+            'Surviving Asset lost the shared Git blob')
     after_first_delete = head()
     conflict = document(b, 'commit', '-m', 'demo: stale edit must fail', expected=3)
     require(conflict['error']['code'] == 'conflict', 'Stale edit did not report structured conflict')
@@ -232,8 +256,10 @@ def main():
 
     document(a, 'rm', red2)
     document(a, 'commit', '-m', 'demo: remove last red reference')
-    tree_counts(2, 2)
-    require(red_path not in paths(), 'Last-reference removal left the current red placement')
+    tree_counts(2, 2, 2)
+    current = paths()
+    require(red_path not in current and red2_path not in current,
+            'Last-reference removal left a current red placement')
     document(c, 'repo', 'use', '--local', str(gallery))
     document(c, 'sync')
     remaining = {asset_id: original[asset_id] for asset_id in [blue, green]}
