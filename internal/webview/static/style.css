@@ -1899,6 +1899,11 @@ progress {
 }
 .pending-row > div {
   min-width: 0;
+  flex: 1;
+}
+.pending-row .pending-edit {
+  flex: none;
+  margin-left: auto;
 }
 .pending-row strong {
   display: block;

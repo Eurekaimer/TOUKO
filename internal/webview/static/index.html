@@ -683,7 +683,7 @@
       <form id="upload-form">
         <div class="dialog-body">
           <p class="muted intro">
-            图片先进入待发布区，确认后再一起提交到仓库。
+            图片先进入待发布区，不会立即上传到 GitHub 或 Cloudflare。加入后可逐张修改标题、标签和分类。
           </p>
           <label class="drop-zone" id="drop-zone"
             ><svg class="icon large-icon"><use href="#i-upload" /></svg
@@ -721,26 +721,7 @@
                 pattern="[a-z0-9][a-z0-9_-]{0,62}"
                 required
                 maxlength="63"
-              /><small>小写字母、数字、下划线或连字符</small></label
-            ><label
-              >标题（可选）<input
-                name="title"
-                id="upload-title"
-                placeholder="留空使用文件名"
-              /><small>填写后应用于本批所有图片</small></label
-            ><label
-              >标签<textarea
-                id="upload-tags"
-                rows="2"
-                placeholder="日常，心动，灵感"
-              ></textarea></label
-            ><label
-              >分类<textarea
-                id="upload-collections"
-                rows="2"
-                placeholder="生活手帖，旅行记录"
-              ></textarea>
-            </label>
+              /><small>小写字母、数字、下划线或连字符</small></label>
           </div>
           <label>目标目录（可选）<input id="upload-directory" placeholder="例如 images/blog，留空使用默认内容路径" />
             <small>相对仓库根目录，使用 / 分隔；图片以内容哈希命名，不覆盖原文件名。</small>
@@ -764,9 +745,6 @@
               GIF 与已有 WebP 保持原样，避免丢失动画或二次压缩。</small
             >
           </div>
-          <p class="field-help">
-            标签和分类可以用中文逗号、英文逗号或换行分隔。分类之间是平级关系，不分层级。
-          </p>
           <div id="upload-progress-area" class="progress-area" hidden>
             <progress id="upload-progress" max="100" value="0"></progress
             ><span id="upload-progress-text">等待上传</span>
@@ -958,7 +936,7 @@
       <form id="commit-form">
         <div class="dialog-body">
           <p class="muted intro">
-            这些修改只保存在本机。提交会把整批改变一起发布到仓库。
+            这些修改只保存在本机。可逐张编辑图片信息；提交会按仓库发布整批修改。
           </p>
           <div id="publication-warning" class="notice warning" hidden></div>
           <div id="pending-base" class="pending-base"></div>

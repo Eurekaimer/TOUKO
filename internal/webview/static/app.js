@@ -909,7 +909,7 @@ function renderWorkspace() {
   if (library) {
     const heads = members.filter((entry) => entry.head);
     $("head-indicator").textContent = heads.length
-      ? `${heads.length} / ${members.length} 个成员已初始化，${changes.length ? "有修改待发布" : "没有待发布修改"}`
+      ? `${heads.length} / ${members.length} 个仓库已初始化 · ${changes.length} 项待发布修改`
       : "成员尚未初始化";
     $("head-indicator").title = members
       .map((entry) => `${memberName(entry.id)}: ${entry.head || "未初始化"}${entry.error ? ` (${entry.error})` : ""}`)
@@ -1607,6 +1607,12 @@ function renderPending() {
       element("span", `change-label ${change.kind}`, changeNames[change.kind]),
       detail,
     );
+    const key = keyOfID(workspace, change.asset_id);
+    if (viewForKey(key)) {
+      const edit = button("编辑图片信息", "text-button pending-edit", () => openPreview(key));
+      edit.setAttribute("aria-label", `编辑 ${change.asset?.title || change.asset?.original_name || change.asset_id} 的图片信息`);
+      row.append(edit);
+    }
     $("pending-list").append(row);
   }
   if (!view.changes.length)
@@ -1791,17 +1797,10 @@ function uploadFields() {
   const data = new FormData();
   data.append("namespace", $("upload-namespace").value.trim());
   data.append("directory", $("upload-directory").value.trim());
-  if ($("upload-title").value.trim())
-    data.append("title", $("upload-title").value);
-  data.append("tags", JSON.stringify(list($("upload-tags").value)));
   if ($("upload-webp").checked) {
     data.append("convert_webp", "true");
     data.append("webp_quality", $("upload-webp-quality").value);
   }
-  data.append(
-    "collections",
-    JSON.stringify(list($("upload-collections").value)),
-  );
   return data;
 }
 function uploadRequest(data, files, sequence) {
@@ -3151,7 +3150,8 @@ async function runMemberOperation(action, options = {}) {
       : action === "cloudflare/sync"
         ? "正在确认 Cloudflare R2 镜像。"
         : "正在等待仓库操作完成。";
-    progress.textContent = `${memberName(current.id)} · 已处理 ${completed}/${members.length} 个成员 · 已用 ${Math.floor((Date.now() - started) / 1000)} 秒。${detail}`;
+    const pendingCount = action === "commit" ? ` · ${view.changes.length} 项待发布修改` : "";
+    progress.textContent = `${memberName(current.id)} · 已处理 ${completed}/${members.length} 个仓库${pendingCount} · 已用 ${Math.floor((Date.now() - started) / 1000)} 秒。${detail}`;
   };
   progress.hidden = false;
   renderProgress();
@@ -3466,16 +3466,14 @@ function bindEvents() {
   $("upload-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!uploadFiles.length) return;
-    const value = await mutate(
-      upload,
-      "upload-error",
-      view.kind === "library" ? "图片已加入对应成员的待发布区" : "图片已加入待发布区，还没有写入仓库",
-    );
+    const value = await mutate(upload, "upload-error");
     if (value) {
       if (value.failed?.length) {
-        toast(`${value.failed.length} 张未能加入待发布区，已保留在队列中`);
+        toast(`${value.results?.length || 0} 张已暂存，${value.failed.length} 张失败并保留在队列中`);
       } else {
         $("upload-dialog").close();
+        const count = value.results?.length ?? value.assets?.length ?? 0;
+        toast(`${count} 张图片已加入待发布区，尚未提交`);
       }
     }
   });
@@ -3558,11 +3556,11 @@ function bindEvents() {
     const value = await runMemberOperation("commit", {
       members: pending,
       run: (member) => apiMember(member, "commit", { message }),
-      success: "有待发布修改的成员已提交",
+      success: "",
       describe: (result) => {
         const head = `HEAD ${String(result.head || "").slice(0, 8)}`;
         const note = cloudflareResultNote(result.cloudflare);
-        return note ? `${head} · ${note}` : head;
+        return `${result.change_count || 0} 项修改 · ${head}${note ? ` · ${note}` : ""}`;
       },
     });
     if (!value) return;
@@ -3571,8 +3569,12 @@ function bindEvents() {
       $("pending-dialog").close();
       // A mirror failure never turns publication into a failed member and is
       // never retried by re-committing; point at the separate sync action.
-      if (value.results.some((row) => row.ok && cloudflareResultNote(row.value?.cloudflare)))
+      if (value.results.some((row) => row.ok && cloudflareResultNote(row.value?.cloudflare))) {
         toast("GitHub 已发布；Cloudflare 镜像未完成，请用「同步 Cloudflare」重试（不会重复提交）。");
+      } else {
+        const changes = value.results.reduce((total, row) => total + (row.value?.change_count || 0), 0);
+        toast(`${changes} 项修改已提交到 ${value.results.length} 个仓库`);
+      }
     }
   });
   $("retry-pending").addEventListener("click", () => $("retry-operation").click());
