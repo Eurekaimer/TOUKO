@@ -117,22 +117,21 @@ A Cloudflare URL is returned only for a synced receipt that still matches a live
 
 ## Performance
 
-One `commit` sends only the writes it needs: 5 GitHub API requests for one image
-(image blob, metadata blob, tree, commit, ref update), 3 for a deletion
-(plus one confirmation read before the mirror deletes an object). A
-200-Asset gallery and a 2000-Asset gallery cost the same. Measured on a 200-Asset
-public gallery on one machine and network (0.3-0.9 s per GitHub request):
+The four-way remote comparison using 200 real images is incomplete. The newer
+run continued after failures, so later commits may contain several staged images
+and cannot be treated as valid single-image measurements.
 
-| Operation | GitHub requests | R2 calls | Wall |
-| --- | ---: | ---: | ---: |
-| `add` (staging only, offline) | 0 | 0 | 0.05 s |
-| commit one new image, mirror on | 5 | 5 | 7.0 s |
-| commit one new image, mirror off | 5 | 0 | 6.0 s |
-| delete one image, mirror on | 4 | 2 | 5.6 s |
+| Version / mirror | Observed result | Mean per image |
+| --- | --- | ---: |
+| Old / GitHub only | 196 successful, 1 failed; one attempt | 8,796.2 ms |
+| Old / GitHub + R2 | Same-corpus run incomplete | — |
+| New / GitHub only | 193 records, 10 failures, then stopped | Not valid |
+| New / GitHub + R2 | Same-corpus run incomplete | — |
 
-The rest is round trips: each GitHub request costs 0.3-0.9 s here, and an R2
-write is read back before it is trusted. Request lists, method and limits are in
-[Benchmark](docs/benchmark.md#single-image-publication-against-a-real-gallery).
+Three passes over the same images measured **0.111 ms/image** for one in-memory
+SHA-256 pass, excluding disk, conversion and network. Historical single-image
+request counts, methodology and limits are in [Benchmark](docs/benchmark.md).
+The current client adds a pre-publication HEAD read.
 
 ## Documentation
 

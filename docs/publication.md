@@ -8,8 +8,8 @@
 2. Plan against the base recorded when staging began. A remote deletion of a locally edited Asset produces `delete_modify`, never resurrection; that is classified when the ref update is rejected, so no HEAD request is needed before uploading.
 3. Read the immutable base snapshot and run the pure final-reference planner. Empty plans create no commit.
 4. Stream payloads serially, recheck SHA-256/size and verify reused remote placements. Create the tree from the base tree; create a detached commit whose sole parent is staging base.
-5. Persist `{BaseHead,CandidateHead,CandidateTree}` as the publication journal in `workspace.json` **before** publishing the ref. Publish with non-force protection: the candidate's sole parent is the staged base, so a fast-forward-only update is exactly an expected-old-value check.
-6. The tree, commit and blob SHAs returned by the accepted writes are the published state: no candidate re-read and no post-update HEAD read are needed, because a stale base cannot be a fast-forward. Record that state, commit the cache transaction, then durably replace the workspace to clear changes/journal. Release unreferenced staged payloads only after Save succeeds.
+5. Persist `{BaseHead,CandidateHead,CandidateTree}` as the publication journal in `workspace.json` **before** publishing the ref. The GitHub adapter reads the current HEAD and rejects a mismatch, then requests a non-forced update.
+6. On a successful update, record the tree, commit and blob SHAs returned by the accepted writes; commit the cache transaction, then durably replace the workspace to clear changes/journal. Release unreferenced staged payloads only after Save succeeds.
 
 Snapshot metadata reads run with at most eight concurrent requests; validation
 and errors remain ordered. During an ordinary commit, unchanged Git entries can
@@ -24,10 +24,10 @@ from the local clone when it already holds them. A missing object falls back to
 the API per object, and the clone's own ref is never moved. When a previous API
 commit left the clone behind, its indexed commit is fetched once (depth 1,
 without FETCH_HEAD) before reading; a failed fetch simply means the API answers
-instead. This keeps a one-image commit at five API requests regardless of
-gallery size (two blobs, tree, commit, ref update) and a deletion at three
-(tree, commit, ref update), instead of one metadata request per Asset. R2
-mirroring adds its own calls: a PUT plus existence and read-back checks.
+instead. With a locally available base and no extra manifest write, an image
+commit needs five API writes plus one pre-publication HEAD read; missing local
+objects, recovery or format upgrades can require more. R2 mirroring adds its own
+calls, including checks needed to establish ownership and verify the upload.
 
 A published remote commit is not rolled back when local bookkeeping fails. Errors identify the published/candidate HEAD; `sync` reconciles it. Save is deliberately cache-first: failed workspace replacement can leave new cache beside old durable stage/journal, which recovery must retain rather than interpret as a second batch. A directory-sync failure after rename is reported, not represented as guaranteed rollback. Payload-cleanup errors must not be read as remote publication failure.
 

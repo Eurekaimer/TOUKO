@@ -266,7 +266,7 @@
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
 | `stagedChanges` | State.Changes map → 按 AssetID 排序的 ChangeSet，附 BaseHead。 | 纯转换；planner 和恢复重建使用相同输入次序。 |
-| `(*Service).Commit` | ctx、Git adapter、message → CommitResult。 | 持锁；优先恢复 journal，空 stage 则 sync、不创建 commit。先比较 remote HEAD/stage base，远端删掉本机待 update 的 Asset 时报告 `delete_modify`，其他 stale base 为 `head_changed`，均不上传。读取 base/PlanCommit，验证 reuse，串行上传 objects/metadata，创建 tree/单 parent candidate，SavePublication 后 publishJournal。失败阶段不同，可能留下 detached Git 对象或 journal，但不会把它们说成已发布。 |
+| `(*Service).Commit` | ctx、Git adapter、message → CommitResult。 | 持锁；优先恢复 journal，空 stage 则 sync、不创建 commit。按暂存 base 读取快照和计划、验证 reuse、串行上传 objects/metadata、创建 tree/单 parent candidate，再持久化 publication journal 并发布。GitHub 在更新 ref 前检查 HEAD；冲突可能已留下不可达对象，但保留暂存并报告原因。 |
 | `(*stagedReader).Read` | reader → 读出 bytes，同时更新 digest/size。 | 检查 ctx；仅保留摘要和计数，不缓存图片。uploadStaged 用它确认 adapter 真正消费的流。 |
 | `(*Service).uploadStaged` | ObjectPlacement → BlobID。 | 打开本地 PayloadPath，先查 size，再限量流式 CreateBlob，Close 后比 SHA-256/size；磁盘损坏在 UpdateRef 前失败。失败可能已创建不可达 blob，但 stage rows 和远端分支不因此推进。 |
 
@@ -279,11 +279,11 @@ publication 的三个字段是 `BaseHead`、`CandidateHead`、`CandidateTree`。
 | `publicationRelation` | 读当前 HEAD；等于 candidate 为 published，等于 base 为未发布；其余非空 HEAD 用 IsAncestor(candidate, head) 判断。返回 `(head, published, error)`。 | 只有成功祖先查询才能证明后代已包含 candidate；网络/adapter 错误原样返回，不能删 journal。空 HEAD 不是已发布。 |
 | `unknownPublication` | journal 与底层 error → 含 candidate ID、`run sync` 的包装错误。 | 保留底层错误链；告诉用户结果未知，不宣称远端失败，不鼓励盲目重传。 |
 | `(*Service).recoverPublication` | State、retry → SyncResult。 | 已发布走 finishPublication；HEAD 既非 base 又无 candidate 祖先关系则 conflict 且保留 stage/journal。HEAD 仍 base：retry=true（commit/init）重用原 candidate 发布；retry=false（sync）只清 journal、保留 stage，不新建第二个 commit。 |
-| `(*Service).publishJournal` | durable journal 对应 State → 发布/收尾结果。 | 先 validateCandidate，再复读 HEAD；若不再是 base，转 recovery，绝不盲目写 ref。UpdateRef 报错后 read-back：已 candidate/后代则照常 finalize；关系查询失败为 unknown；其他 HEAD 为 conflict；仍 base 返回原发布错误。journal 在成功收尾前不丢。 |
+| `(*Service).publishJournal` | durable journal 对应 State → 发布/收尾结果。 | 先 validateCandidate，再调用 publish。GitHub adapter 更新 ref 前检查 HEAD；失败后 read-back：已 candidate/后代则照常 finalize，关系查询失败为 unknown，其他 HEAD 为 conflict。journal 在成功收尾前不丢。 |
 | `(*Service).finalizePublished` | journal + 已发布关系 → SyncResult。 | validateCandidate 后取当前 HEAD 的快照（后代则重读并验 identity），再 finalizeSnapshot；用于恢复、reset。 |
 | `(*Service).finalizeSnapshot` | 已确认的 Snapshot → 最新合法SyncResult。 | 不再发请求：Save先committed cache后durable清stage/journal，再cleanup；SQL或workspace失败均报published head和本地记账错误，旧durable证据用于sync恢复，不能重发。cleanup失败时已记账，只报本地清理问题。 |
 | `plannedSnapshot` | base、plan、已上传 blob、candidate HEAD/tree → Snapshot。 | 普通提交的本地状态：base entries 施加删除/新增/metadata 写入，manifest 若有写入则解码；随后检查每个 Asset 都有匹配 blob entry。不回读服务端。 |
-| `(*Service).publish` | 已验证或本地构造的 candidate → SyncResult。 | HEAD 仍是 base 才 UpdateRef(CAS)；成功即 finalizeSnapshot，不在成功路径回读；失败才用 publicationRelation 判断结果，未知则保留 journal。 |
+| `(*Service).publish` | 已验证或本地构造的 candidate → SyncResult。 | 调用 UpdateRef；local Git 使用原子 CAS，GitHub 先读 HEAD 再非强制更新，但不能保证外部 force/reset 竞争下的严格 CAS。成功后 finalize；失败才用 publicationRelation 判断结果，未知则保留 journal。 |
 | `candidateCorrupt` | 失败原因 → 带 publication candidate 上下文的 `ErrRepositoryCorrupt`。 | 与普通 head conflict 分开：候选本身不符合 durable 意图，不可重试发布。 |
 | `(*Service).MigratePaths` | Git adapter、dryRun/prune → MigrateResult。 | 持锁；要求无 journal 且 HEAD 等于索引；一次提交把全部 Asset 改写为 AssetObjectPath，复制字节、保留旧 object、逐个 VerifyObject，启用 R2 时再同步；prune 只删无引用的 objects/。 |
 | `WriteURLMapping` | 目录 + items → csv/json 路径。 | 固定列顺序，含新旧 GitHub/R2 URL；dry-run 不写。 |
@@ -546,16 +546,16 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `cli` | 为一次真实 binary 调用附加独立 device state-dir；每次进程退出体现磁盘持久性。 |
 | `document` | 追加 --json；成功读 stdout，预期错误要求 stdout 为空并解码 stderr。 |
 | `git` | 只读检查实际 bare repository，不依赖 CLI 人类措辞。 |
-| `head` / `paths` | 从真实 ref/tree 读取当前发布 SHA 与 NUL 分隔 leaf paths。 |
-| `tree_counts` | 精确检查 metadata 与物理 object placement 数量，发现部分发布或误删。 |
+| `tree_entries` / `paths` | 从真实 ref/tree 读取当前发布 SHA 与 NUL 分隔 leaf paths，并映射路径到 Git blob。 |
+| `tree_counts` | 精确检查 metadata、物理 object placement 与唯一 blob 数量，发现部分发布、误删或 blob 共享回归。 |
 | `assets` | 检查全为 committed，并按 UUID 比较完整 Asset metadata，而非只比较长度。 |
 | `clean` | 要求 status changes=[]，判断没有未发布修改。 |
 | `verify` | 要求 verifier 的 head/assets/objects 与真实 Git 和预期一致。 |
-| `placement` | 依照 format v1 从 Asset 描述派生路径，以检查末引用删除。 |
+| `placement` | 要求 Asset metadata 记录 `objects/<namespace>/<uuid>.<ext>`，用于检查 UUID 路径归属与末引用删除。 |
 | `filesystem_state` | 记录 scratch 树条目、mode、size、mtime，证明非空目标拒绝没有写入。 |
 | `main` | 按四图单批提交→fresh device→stale edit conflict→末引用删除→scratch SQLite 重建→Unicode stdin→delivery preflight→拒绝重跑的顺序完成验收。保留结果并打印可继续操作的命令；不接触 token、不清历史。 |
 
-`examples/images/` 三张 64×48 RGB PNG 为自生成红/绿/蓝图案，hash 不同；重复 add red 证明同内容去重，不额外复制 fixture。用户 `logo/touko-logo.png` 不属于脚本生成物，只有用户执行打印的 add 命令时才被读取。
+`examples/images/` 三张 64×48 RGB PNG 为自生成红/绿/蓝图案，hash 不同；重复 add red 产生两个独立 Asset/UUID 路径与一个共享 Git blob，不额外复制 fixture。用户 `logo/touko-logo.png` 不属于脚本生成物，只有用户执行打印的 add 命令时才被读取。
 
 ## 14. `internal/webview`：本地图库边界与浏览器控制器
 

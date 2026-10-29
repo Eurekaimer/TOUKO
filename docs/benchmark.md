@@ -272,6 +272,41 @@ measure real GitHub or R2 latency, rate limits, browser rendering, image
 encoding, or a complete five-second publish; an isolated writable remote was
 not available, so no end-to-end remote timing is claimed here.
 
+### SHA-256 cost on 200 real images
+
+On 2026-10-29, Go's monotonic `time.Since` measured an in-memory
+`sha256.Sum256` over the same 200-image corpus, 49,518,825 input bytes per
+pass. After one untimed warmup, three passes produced 600 image measurements:
+
+| Metric | Milliseconds per image |
+| --- | ---: |
+| Mean | 0.111020 |
+| Median | 0.023384 |
+| P95 | 0.181539 |
+
+The ignored files `benchmarks/results/hash-microbenchmark-20261029T120203Z.{json,csv,md}`
+contain the individual measurements. This measures hashing cached bytes only:
+it excludes disk I/O, WebP conversion, staging, GitHub and R2, and is not an
+upload benchmark. It shows the scale of one SHA-256 pass on this machine, not
+the exact total hashing overhead of an upload.
+
+The attempted remote comparison is incomplete. The old Git-only run recorded
+196 successful images and one failure; the new Git-only run was stopped after
+193 records, including 10 failures. Its script continued after failed commits,
+so later successful commits could include previously staged images. The other
+samples used different datasets. These records are retained under
+`benchmarks/results/`, but cannot establish the requested four-group comparison.
+
+The old-run figures below exclude the failed attempt; they are not a
+three-repeat estimate.
+
+| Group | Result | Mean per image | Total measured time | Throughput |
+| --- | --- | ---: | ---: | ---: |
+| Old / GitHub only | 196 successful, 1 failed; one attempt | 8,796.2 ms | 1,724,064.4 ms | 0.012 MB/s |
+| Old / GitHub + R2 | Same-corpus run incomplete | — | — | — |
+| New / GitHub only | 193 records, 10 failures, then stopped; later records may contain multiple images | Invalid | Invalid | Invalid |
+| New / GitHub + R2 | Same-corpus run incomplete | — | — | — |
+
 ### Single-image publication against a real gallery
 
 The same machine, a 200-Asset public gallery, one 57 KB PNG, and Cloudflare R2
@@ -291,26 +326,27 @@ describe that link, not GitHub's best case.
 | commit one deletion, R2 on | final | 4 + 2 R2 | 5.6 s |
 | commit one new image, R2 off | final | 5 | 6.0 s |
 
-The final build plans against the staged base and publishes with a fast-forward
-only ref update, so a stale base is rejected without any HEAD probe. One traced
-image commit issues exactly five API requests: upload the image blob and its
-metadata, create the tree and commit, update the ref. A deletion issues three
-(tree, commit, ref), plus one authoritative HEAD read when the R2 mirror must
-confirm the object is really unreferenced. Recovery, reset and sync still read
-and validate the published relationship; only the confirmed path skips it.
+The observed fast path plans against the staged base and uses a non-forced ref
+update; one traced image commit made five API writes: image and metadata blobs,
+tree, commit and ref. A deletion made three writes (tree, commit, ref), plus an
+authoritative HEAD read when the R2 mirror needed to confirm the object was
+unreferenced. A format upgrade, missing local snapshot, recovery, reset or sync
+can require additional requests.
+The current client has since restored one pre-publication HEAD read to detect
+an already-rewound branch, so the historical request counts above are not the
+current complete request counts.
 
-The dropped HEAD probes are not checks that disappeared: staging records the base
-in `workspace.json`, the adapter rejects a non-fast-forward, and a rejection
-reads the remote relationship once to classify `head_changed` or `delete_modify`.
-Uploading blobs before that rejection is wasted on a conflict but harmless; they
-stay unreferenced.
 
-The remaining wall time is almost entirely request latency: nine requests at
-0.5–1 s each plus three R2 calls. PicGo is faster because its GitHub uploader
-issues a single `PUT /repos/{owner}/{repo}/contents/{path}` and lets GitHub
-create the commit; it reads no base snapshot, keeps no atomic multi-file batch,
-writes no TOUKO manifest, and confirms nothing after the write. Matching that
-request count would require dropping those properties, not tuning this code.
+GitHub's non-forced update rejects non-fast-forward changes, but it is not an
+expected-old compare-and-swap. In particular, an external force reset to an
+ancestor of the staged base can still permit a fast-forward to the candidate.
+Protect the branch against external force pushes; the staged base alone is not
+proof of strict compare-and-swap.
+
+Network round trips are a likely contributor to these single observations; they
+do not split time by stage. PicGo's GitHub uploader issues one
+`PUT /repos/{owner}/{repo}/contents/{path}` and lets GitHub create the commit;
+it does not maintain TOUKO's multi-file atomic batch and manifest.
 
 Two network observations from the same session, neither caused by the client: one
 tree read hit the 45 s HTTP timeout, and for several minutes every request body

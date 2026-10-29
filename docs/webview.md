@@ -116,7 +116,7 @@ Windows 安装组件后若重检仍未发现 gh，请退出并重新打开 TOUKO
 1. 点击顶部「提交并发布」或打开待发布列表，检查新增/修改/删除内容；「上传图片」仍仅暂存。发布或同步期间显示当前仓库、已处理仓库数、待发布修改数和经过秒数，并等待 GitHub 确认及已启用的 R2 镜像；这不是传输百分比。
 2. 输入有意义的 commit message，例如 `webview: add Touko sample images`，确认提交。
 3. 成功后待发布列表清空，卡片变成已提交，HEAD 更新。
-4. 在 GitHub 文件页确认 `.touko/repository.json`、`.touko/assets/<uuid>.json` 及实际图片路径；默认上传位于 `objects/blog/sha256/...`，指定目录和旧图则使用详情所示路径。README 仍在。
+4. 在 GitHub 文件页确认 `.touko/repository.json`、`.touko/assets/<uuid>.json` 及实际图片路径；新上传默认位于 `objects/blog/<asset-uuid>.<ext>`，指定目录和旧图则使用详情所示路径。README 仍在。
 5. 执行界面的完整校验；其 asset/object 数量应与当前本地引用一致。**校验不 fetch**，不是读取远端最新 HEAD；想更新远端状态用“同步”，它先更新 clone 再在同一次操作中刷新图库。普通“刷新”也不替代同步。
 6. public repo 可选择 GitHub 或 jsDelivr provider，并复制链接或 Markdown。Markdown 对 alt 中的特殊字符和换行做转义处理；浏览器剪贴板权限被拒时，生成结果仍显示在可选中文本框中，按提示手动复制，不会谎报复制成功。先打开 raw GitHub 链接检查图像；jsDelivr 可能尚未传播，不能因此重复提交。未发布新图的链接带有明确提示，不能当作已发布 URL。
 
