@@ -58,7 +58,7 @@ bash examples/demo.sh
 bash examples/demo.sh /tmp/my-touko-demo
 ```
 
-脚本不是只打印命令：它实际构建 CLI、创建 bare Git、通过独立进程执行 add/commit/sync/edit/rm/verify，检查四个 Asset 共用三个对象、过期编辑冲突、共享/末引用删除、第三设备恢复、SQLite 重建和 Unicode stdin。使用脚本输出的 ROOT 路径；目录保留，不自动删除。相同非空目标再次运行会拒绝，避免覆盖你的数据。
+脚本不是只打印命令：它实际构建 CLI、创建 bare Git、通过独立进程执行 add/commit/sync/edit/rm/verify，检查四个独立路径、三个 Git blob、过期编辑冲突、分别删除、第三设备恢复、SQLite 重建和 Unicode stdin。使用脚本输出的 ROOT 路径；目录保留，不自动删除。相同非空目标再次运行会拒绝，避免覆盖你的数据。
 
 ```bash
 # 把下面路径换成脚本实际输出的 ROOT，不要原样使用占位路径。
@@ -85,7 +85,7 @@ printf 'Asset ID: %s\n' "$ID"
 "$ROOT/touko" --state-dir "$ROOT/device-a" verify
 ```
 
-`add` 不发布远端。UUID 是图片记录身份，不是文件路径或 hash。再次上传相同 bytes 得到新 UUID；默认路径下同 namespace 共用一份 binary。`--output id` 只输出 UUID，适合 shell 捕获，不能和 `--json` 合用；在旧 Git 图库原地纳管已有图片用后文的 `import`。
+`add` 不发布远端。每次上传都生成新 UUID，并以它命名独立对象路径；相同 bytes 在 Git 内部仍可共用 blob，但链接和删除互不影响。`--output id` 只输出 UUID，适合 shell 捕获，不能和 `--json` 合用；在旧 Git 图库原地纳管已有图片用后文的 `import`。
 
 ## 4. 从零建一个自己的离线 gallery
 
@@ -190,7 +190,7 @@ LEGACY_STATE="$HOME/.local/share/touko-legacy"
 
 支持按真实 header 识别 PNG/JPEG/GIF，包括 Unicode 名和**无后缀**图片。导入只新增待发布 metadata，保留原路径与原 Git blob，不移动、不复制到 canonical objects、不重新上传；原路径旧链接不因导入而改变。已有 metadata 管理的路径、非普通文件/非图片会计入 skipped，`.touko` 不扫描；重复导入不创建重复记录。无法读取、损坏或不安全路径等失败不会留下部分导入。结果给出 imported/skipped 数量，检查后仍需显式 `commit`。
 
-**版本警告：导入和非空 `add --directory` 会产生显式 `path`；首次发布这样的 metadata 将 manifest 从 v1 升级到 v2，升级与 metadata 在同一个 commit 中完成。旧客户端会 fail-closed 拒绝 v2，发布前先升级其他设备。** 现有 v1 仍可读取，默认 canonical 上传不强制升级。导入后执行 `rm` 并提交会删除其原路径（仅当最后一个路径引用消失）；不是“只取消纳管”，且不会清理未知文件。
+**版本警告：新上传和显式路径导入首次发布时，将 manifest 从 v1 原子升级到 v2；路径迁移会升级为 v3。旧客户端会 fail-closed 拒绝较新格式，发布前先升级并重启其他设备。** 现有 v1 仍可读取。导入后执行 `rm` 并提交会删除其原路径（仅当最后一个路径引用消失）；不是“只取消纳管”，且不会清理未知文件。
 
 ## 7. 删除、撤销与多设备
 

@@ -77,7 +77,7 @@
 | `corrupt` | 将底层格式问题包装为 `ErrRepositoryCorrupt`。 | `%w` 保留领域错误，内部原始原因以文本呈现；便于统一拒绝损坏快照。 |
 | `decode` | 对给定 max 的 byte slice 严格解码单个 JSON 值到目标。 | 拒绝超限、未知字段、尾随 JSON；不跳过坏字段构造部分对象。 |
 | `encode` | JSON 编码并追加换行。 | 无 IO；稳定字段结构来自 Go struct，而不是 map。 |
-| `ValidateManifest` | 接受 format v1/v2、`sha256`、非零 RepositoryID。 | 未知版本按 corruption 失败；不会自动重写仓库。初始化仍 v1，必要升级由 planner 原子纳入发布。 |
+| `ValidateManifest` | 接受 format v1/v2/v3、`sha256`、非零 RepositoryID。 | 未知版本按 corruption 失败；初始化 v1，首次显式 path 升级 v2，路径迁移升级 v3 以阻止旧客户端删除旧 R2 key。 |
 | `EncodeManifest` | 验证后输出 manifest JSON bytes。 | 无 IO；初始化和 SQL 保存共享同一编码。 |
 | `DecodeManifest` | 以 64 KiB 上限解码并验证 manifest。 | 超限/不支持格式包装 corruption。 |
 | `EncodeAsset` | 验证 Asset；时间转 UTC；nil tags/collections 编成 `[]`；输出带换行 JSON。 | 不改调用者 struct 本身；输出超过 1 MiB 为 corruption。planner 与 index 使用同一编码比较最终 metadata。 |
@@ -90,8 +90,8 @@
 | `AssetPath` | AssetID → `.touko/assets/<uuid>.json`。 | 纯函数；元数据路径与标题、原文件名无关。 |
 | `AssetObjectPath` | namespace/asset-id/ext → `objects/<namespace>/<uuid>.<ext>`。 | 新上传默认路径；不计算或读取 hash，每个 Asset 独占一个 object。 |
 | `LegacyObjectPath` | namespace/object → `objects/<namespace>/sha256/<前2位>/<后2位>/<hash>.<ext>`。 | 仅供旧仓库在 Asset 无显式 path 时回退读取；新代码不产生该路径。 |
-| `DirectoryPath` | 上传目录 → 规范化目录前缀。 | 每段空格替换为 `-`，让 URL 无需转义；不做其他改写。 |
-| `ObjectPath` | Asset → 实际图片路径；非空 Path 优先，否则 BuildObjectPath。 | 纯函数，调用方先验证 Asset；导入、preview、verify、引用计数、URL 均使用它，不能重新假设 canonical。 |
+| `DirectoryPath` | 上传目录 → 规范化目录前缀。 | 每段按 `unicode.IsSpace` 把所有空白替换为 `-`（含非 ASCII 空格），让 URL 无需转义；不做其他改写。 |
+| `ObjectPath` | Asset → 实际图片路径；非空 Path 优先，否则 `LegacyObjectPath`。 | 纯函数，调用方先验证 Asset；导入、preview、verify、引用计数、URL 均使用它，不能重新假设 canonical。 |
 | `(Location).Validate` | 检查非空安全 branch、支持 backend 和 backend-specific 字段。 | localgit 必须绝对 path 且无 owner/name；github 必须 owner/name 且无 path。这里不是完整 Git branch validator，adapter 继续验证；不保存 token。 |
 | `(Location).RemoteURL`、`CloneDir` | GitHub Location → HTTPS clone URL；stateDir → `<state-dir>/clone`。 | 不携带凭据，复用同一位置派生规则，避免 CLI/Web 各自拼地址。 |
 
@@ -102,7 +102,7 @@
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
 | `readMetadata` | Reader、tree entry、上限 → metadata bytes。 | 必须是 `100644/blob`、大小合法；限量读并 Close，校验实际长度等于 tree size。读取/关闭失败向上传递。 |
-| `ReadSnapshot` | Reader、固定 HEAD → manifest、Assets、tree、完整 Entries。 | 验证安全/重复路径、完整 metadata、UUID/文件名、hash 描述、真实 ObjectPath 引用的 blob/mode/size；v1 非空 path 拒绝，v2 允许 canonical 与 explicit 混用。图片接受普通 `100644/100755`，不接受 symlink。无 manifest 为 uninitialized；失败不写 cache，不下载全部图片。Asset metadata 每批最多 8 个并发读取，单线程按 `Entries` 顺序解码和校验；错误或取消后不再启动新读取，按原顺序返回第一个错误。 |
+| `ReadSnapshot` | Reader、固定 HEAD → manifest、Assets、tree、完整 Entries。 | 验证安全/重复路径、完整 metadata、UUID/文件名、hash 描述、真实 ObjectPath 引用的 blob/mode/size；v1 非空 path 拒绝，v2/v3 允许 canonical 与 explicit 混用。图片接受普通 `100644/100755`，不接受 symlink。无 manifest 为 uninitialized；失败不写 cache，不下载全部图片。Asset metadata 每批最多 8 个并发读取，单线程按 `Entries` 顺序解码和校验；错误或取消后不再启动新读取，按原顺序返回第一个错误。 |
 | `ReadSnapshotReusing` | Reader、候选 HEAD、已完整验证的 base Snapshot → Snapshot。 | 仅当 manifest 或某条 asset metadata 的完整 Git entry（path/type/mode/size/SHA）与 base 相同才复用其解析结果；新增或变化的条目仍从候选 SHA 读取。候选的引用、版本、重复与冲突校验全部重跑。只用于刚刚成功读取的 base（正常 commit），journal 恢复仍用 `ReadSnapshot`。 |
 
 ### [`planner.go`](../internal/repository/planner.go)
@@ -121,9 +121,7 @@
 
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
-| `(contextReader).Read` | 先检查 ctx，再从底层 reader 读。 | 为流式验证增加取消检查；底层阻塞 IO 仍依赖 adapter 的 context/Close。 |
-| `(*countedHash).Write` | 写入 hash 并累计实际字节数。 | 修改局部摘要状态，不保存 bytes。 |
-| `VerifyObject` | 固定 BlobID 与预期 ContentObject → error。 | OpenBlob 后通过 TeeReader 同时计算 SHA-256/size，DecodeConfig 读取图片 header，再 drain 剩余数据，最后 Close。size/hash 不符为 `ErrHashMismatch`；格式/尺寸不符为 corruption。最多读预期 size+1，避免错误对象无限流入。 |
+| `VerifyObject` | 固定 BlobID 与预期 ContentObject → error。 | 要求 ContentObject 带 hash；OpenBlob 后委托 `image.Verify` 流式计算 SHA-256/size、读取 header 并 drain，最后 Close。size/hash 不符为 `ErrHashMismatch`；格式/尺寸不符为 corruption；无 hash 直接 corruption。最多读预期 size+1。 |
 | `VerifySnapshot` | Snapshot → `VerifyResult{Head, Assets, Objects}`。 | 验证每个 unique placement；相同 Git BlobID 已验且描述一致时可复用结果。Objects 数的是物理 placement，不是 Git blob 数。逐个流式处理，不修改远端或本地 stage。 |
 
 ## 4. `internal/image` 与 `internal/staging`：从输入到可靠 payload
@@ -142,11 +140,11 @@
 
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
-| `PayloadPath` | stateDir、namespace、object → 尽可能绝对化的 `stage/objects/<ns>/<hash>.<ext>` 路径。 | 无文件写入；这是本地 payload 路径，不是远程 canonical object path。 |
-| `Install` | Ingest Result → `(path, created, error)`。 | 调用者必须持有操作锁。验证 namespace、描述和 temp bytes；目录 0700、payload 0600；已有目的文件先验证 size/hash，不覆盖不同 bytes；新文件原子 Rename。通常消费并删除 temp，成功 rename 后由目标持有 bytes；无法解析 temp 绝对路径或发现 source 就是 destination 时先拒绝，不将 destination 删除。created=false 表示复用已存在 payload。 |
-| `verifyFile` | 文件路径、对象描述、是否 sync → error。 | Lstat 拒绝非 regular file/尺寸不符；限量流式 SHA-256 校验。syncFile=true 时以读写方式打开、chmod 0600、Sync 后 Close；hash/size 错误为 `ErrHashMismatch`。Install 用它验证新旧文件。 |
+| `PayloadPath` | stateDir、Asset → 尽可能绝对化的 `stage/objects/<ns>/<hash>.<ext>` 路径。 | 无文件写入；这是本地 payload 路径，不是远程 canonical object path。旧 pending Asset 凭 hash 继续可读。 |
+| `PayloadPathFor` | stateDir、namespace、object → 同一 staging 路径。 | 纯函数；commit 在没有完整 Asset 时使用。 |
+| `Install` | stateDir、Asset、Ingest Result → `(path, created, error)`。 | 调用者必须持有操作锁。要求 Asset 有 ID 和 content hash，描述必须等于 ingest Result；验证 namespace、描述和 temp bytes；目录 0700、payload 0600；已有目的文件先验证 size/hash，不覆盖不同 bytes；新文件原子 Rename。通常消费并删除 temp，成功 rename 后由目标持有 bytes；created=false 表示复用已存在 payload。 |
+| `verifyFile` | 文件路径、对象描述、是否 sync → error。 | Lstat 拒绝非 regular file/尺寸不符；委托 `image.Verify` 做限量流式 SHA-256、header 核对。syncFile=true 时以读写方式打开、chmod 0600、Sync 后 Close；hash/size 错误为 `ErrHashMismatch`。Install 用它验证新旧文件。 |
 | `Cleanup` | stateDir、绝对 payload 引用集合 → error。 | 只遍历 `stage/objects`，只删除无引用 regular files；不触碰 `.lock`、config、DB、ingest tmp，不跟随文件符号链接去删其他区域。目录不存在视为无事可做；取消/删除失败向上传递。 |
-| `(contextReader).Read` | 读取前后检查取消。 | 供 verifyFile 使用；避免清理/验证在取消后继续长时间计算。 |
 
 ## 5. `internal/index`：committed cache 与耐久工作区
 
@@ -268,7 +266,7 @@
 | `stagedChanges` | State.Changes map → 按 AssetID 排序的 ChangeSet，附 BaseHead。 | 纯转换；planner 和恢复重建使用相同输入次序。 |
 | `(*Service).Commit` | ctx、Git adapter、message → CommitResult。 | 持锁；优先恢复 journal，空 stage 则 sync、不创建 commit。按暂存 base 读取快照和计划、验证 reuse、串行上传 objects/metadata、创建 tree/单 parent candidate，再持久化 publication journal 并发布。GitHub 在更新 ref 前检查 HEAD；冲突可能已留下不可达对象，但保留暂存并报告原因。 |
 | `(*stagedReader).Read` | reader → 读出 bytes，同时更新 digest/size。 | 检查 ctx；仅保留摘要和计数，不缓存图片。uploadStaged 用它确认 adapter 真正消费的流。 |
-| `(*Service).uploadStaged` | ObjectPlacement → BlobID。 | 打开本地 PayloadPath，先查 size，再限量流式 CreateBlob，Close 后比 SHA-256/size；磁盘损坏在 UpdateRef 前失败。失败可能已创建不可达 blob，但 stage rows 和远端分支不因此推进。 |
+| `(*Service).uploadStaged` | ObjectPlacement → BlobID。 | 要求对象带 hash；打开本地 PayloadPathFor，先查 size，再限量流式 CreateBlob，Close 后比 SHA-256/size；同尺寸篡改在 UpdateRef 前失败。失败可能已创建不可达 blob，但 stage rows 和远端分支不因此推进。 |
 
 ### 同文件：publication journal 的恢复状态机
 
@@ -285,8 +283,8 @@ publication 的三个字段是 `BaseHead`、`CandidateHead`、`CandidateTree`。
 | `plannedSnapshot` | base、plan、已上传 blob、candidate HEAD/tree → Snapshot。 | 普通提交的本地状态：base entries 施加删除/新增/metadata 写入，manifest 若有写入则解码；随后检查每个 Asset 都有匹配 blob entry。不回读服务端。 |
 | `(*Service).publish` | 已验证或本地构造的 candidate → SyncResult。 | 调用 UpdateRef；local Git 使用原子 CAS，GitHub 先读 HEAD 再非强制更新，但不能保证外部 force/reset 竞争下的严格 CAS。成功后 finalize；失败才用 publicationRelation 判断结果，未知则保留 journal。 |
 | `candidateCorrupt` | 失败原因 → 带 publication candidate 上下文的 `ErrRepositoryCorrupt`。 | 与普通 head conflict 分开：候选本身不符合 durable 意图，不可重试发布。 |
-| `(*Service).MigratePaths` | Git adapter、dryRun/prune → MigrateResult。 | 持锁；要求无 journal 且 HEAD 等于索引；一次提交把全部 Asset 改写为 AssetObjectPath，复制字节、保留旧 object、逐个 VerifyObject，启用 R2 时再同步；prune 只删无引用的 objects/。 |
-| `WriteURLMapping` | 目录 + items → csv/json 路径。 | 固定列顺序，含新旧 GitHub/R2 URL；dry-run 不写。 |
+| `(*Service).MigratePaths` | Git adapter、dryRun/prune → MigrateResult。 | 持锁；要求无 journal/staged 且 HEAD 等于索引；先把精确映射写入 `plan.json`，对象阶段发布新路径（复用同一 Git blob），逐字节校验 GitHub/R2 公开目标后才切 metadata；prune 必须单独执行，只删除映射记录且无当前引用的旧对象，并在删除前重新校验所有新公开目标；R2 旧 key 只保留不删除。 |
+| `WriteURLMapping` | context、目录、items → csv/json 路径。 | 固定列顺序，含新旧 GitHub/R2 URL；两个文件原子替换；CLI 只在 apply 且存在 old!=new 时调用。 |
 | `validateCandidate` | Reader、含 journal 的 State → 完整验证过的候选 Snapshot。 | 只读 Git，不改 SQL/ref；验证失败保留 stage/journal，阻止发布或清账。不是只比 Asset 数；详见下节。 |
 
 #### `validateCandidate` 逐段理解
@@ -488,7 +486,7 @@ Cobra 命令构造函数返回 `*cobra.Command`；真正业务发生在其匿名
 
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
-| `(*runtime).migrateCommand` | `migrate paths [--dry-run] [--prune-old] [--output DIR]` → MigrateResult。 | 用 commitReader 读写；非 dry-run 后写 `url-mapping.csv|json`；失败保留旧布局。 |
+| `(*runtime).migrateCommand` | `migrate paths [--apply] [--dry-run] [--prune-old] [--output DIR]` → MigrateResult。 | 默认 preview，只有 `--apply` 才写远端；成功后原子写 `url-mapping.csv|json`（无实际路径变更时不写）；失败保留旧布局。`--prune-old` 与迁移分开执行。 |
 | `(*runtime).commitCommand` | 要求非空 `-m MESSAGE`，调 Service.Commit。 | JSON 输出 CommitResult；ChangeCount=0 人类输出 nothing staged；出现业务/网络错误不打印成功。journal、重试和 ref 全由 app 负责。 |
 | `(*runtime).verifyCommand` | reader → Service.Verify结果。 | GitHub验证现有clone而不fetch（缺失clone的创建可能联网）；不把staged bytes当committed，不保证最新远端。校验失败不返回成功。 |
 
@@ -589,7 +587,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `(*Server).selectRepository` | 严格JSON → {url,location}。 | local可显式create；GitHub Discover默认branch/private。workspaceSet按Location选择独立Service，不覆盖旧仓库stage；仅local create自动Initialize，其他库需显式init/sync；前端收到url后导航。 |
 | `(*Server).assetURL` | UUID、provider query → url、committed。 | 持本地锁读取可见 Asset，调用现有 BuildURL；added 为预期链接，modified 的 object 仍 committed。local/private 不产生假链接。 |
 | `(contextReader).Read` | 调用者 ctx 与 reader → bytes。 | 每次读之前检查取消；不承诺能强制打断任意自定义阻塞 reader，HTTP 连接关闭与 adapter 负责实际 IO 解除。 |
-| `(*Server).preview` | Asset selector → 原图字节。 | 先按当前 workspace 解析 Asset（删除后这里返回404），再以内容 hash 设置 ETag 与 `private, immutable`；`If-None-Match` 命中直接304，跳过原图读取。缓存不能绕过身份/删除检查。 |
+| `(*Server).preview` | Asset selector → 原图字节。 | 先解析当前 Asset，再用 staged 身份、旧内容 hash 或 Git blob ID 作为 ETag，并要求浏览器重新验证；`If-None-Match` 命中返回304。外部提交更换同一 Asset 的 bytes 后不会误用旧缓存。 |
 | `(*Server).upload` | multipart files + directory/metadata → staged AssetViews。 | request≤500MB、单图≤100MB、≤100文件；私有临时目录先spool原始part，metadata（含 `convert_webp`/`webp_quality`）有界且不重复，tags/collections为JSON数组，然后在已知选项下统一Ingest；支持PNG/JPEG/GIF/WebP。整批预检后一次Add，directory/转换参数传AddOptions；defer清spool，失败不留半批stage。 |
 | `(*lazyGit).resolve` | ctx → 按需打开并复用的 Git adapter。 | Reset 没有 journal 时可离线，不因提前打开不可用 backend 而失败；有 journal 时才访问远端，不能绕过恢复。 |
 | `(*lazyGit).Head`、`Commit`、`Tree`、`OpenBlob`、`IsAncestor` | repository.Git 读接口的延迟装配。 | 每个方法先 resolve，再调用同一 adapter；只解决普通 reset 的离线边界，不改变返回值/错误。 |
@@ -663,8 +661,8 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | 精确符号 | 作用与不变量 |
 | --- | --- |
 | `(*Server).preview` | openImage后设置真实MIME/长度，CopyN流出原图；断流则ErrAbortHandler中止，不把JSON拼进图像或假装图片完整。 |
-| `(*Server).openImage` | 先staged payload，其次本地图/immutable cached-tree blob，必要时API fallback；真实ObjectPath，不追branch外链。 |
-| `(*Server).imageSnapshot` | workMu+Service.Lock下一次ReadView，按完整UUID定位，新增payload先Open/Stat再解锁；导入显式path无payload时改读原Git blob，delete不可见。 |
+| `(*Server).openImage` | 先staged payload，其次本地图/固定 tree 的 Git blob，必要时API fallback；返回真实内容身份用于缓存校验，不追branch外链。 |
+| `(*Server).imageSnapshot` | 已提交图片直接读一致视图，不等待长时间 mutation；新增 payload 才持 workMu 重新读取并 Open/Stat，避免 cleanup 竞争。导入显式path无payload时读原Git blob，delete不可见。 |
 | `(*Server).imageBlob` | cached tree与真实path → GitEntry；缓存该tree的引用映射、验mode/type/SHA，不缓存binary。 |
 | `serveStatic`、`matchesETag` | embed.FS白名单GET/HEAD，按内容ETag与If-None-Match（含weak/*）返回304；HTML/JS/CSS字体等仍私有且每次重验证，不暴露文件系统。 |
 

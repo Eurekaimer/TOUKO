@@ -90,7 +90,7 @@ Windows 安装组件后若重检仍未发现 gh，请退出并重新打开 TOUKO
 3. 确认导入，检查 imported/skipped 统计与待发布记录。按真实图片 header 识别 PNG/JPEG/GIF/WebP，支持 Unicode 和无后缀图片；已有管理路径、非图片/非普通文件跳过，`.touko` 不扫描，重复导入幂等。
 4. 此时只暂存 metadata，原路径与原 Git blob 不变，不移动、不复制到 `objects/`，也不重新上传。检查后仍需打开待发布列表，显式 `commit` 才发布 metadata；原有图片链接保持原路径。
 
-**先升级所有设备：** PicGo 导入或指定非空上传目录产生显式 `path`。第一次提交此类 metadata 会在同一原子 commit 中升级 manifest 到 format v2；旧客户端会 fail-closed 拒绝读取 v2。已有 v1 与默认 canonical 上传不强制升级。已纳管旧图的删除也是暂存后提交，并按实际路径移除最后引用的原文件，不是单纯“取消管理”。
+**先升级所有设备：** 新上传及 PicGo 显式路径导入首次发布时，会在同一原子 commit 中把 manifest 升级到 v2；路径迁移会升级到 v3。旧客户端会 fail-closed 拒绝较新格式，应先升级并重启其他设备。已有 v1 仍可读取。已纳管旧图的删除也是暂存后提交，并按实际路径移除最后引用的原文件，不是单纯“取消管理”。
 
 导入扫描的是已提交 Git tree，而非你本机未提交文件；远端有新图时先同步。路径必须为安全相对 POSIX 路径，不能穿越、使用反斜杠/控制字符或 `.git/.touko` 路径段。本机新图上传使用上传按钮，不用旧图库导入。
 
@@ -154,11 +154,11 @@ GitHub 成功、R2 失败时，成员 publication 仍显示成功并附镜像警
 统一图库从 `/w/<member>/api/cloudflare/sync` 逐成员调用，没有新增 `/l/<id>/api/cloudflare/...` 聚合写接口。R2 的 403 不会触发 GitHub 登录。reset 成功后仅附本地镜像警告，不把已完成的 reset 改报失败。
 
 
-### D. 同图去重与删除
+### D. 同图独立路径与删除
 
-1. 同一 namespace 再次上传 logo，提交。两个 UUID 不同，但 canonical object path 相同。
-2. 删除第一条并提交：只少一个 metadata 文件，另一张图片仍可预览，binary 应保留。
-3. 删除最后引用并提交：最新 GitHub tree 中对应 metadata 与 binary 都消失。
+1. 同一 namespace 再次上传 logo，提交。两个 UUID 和对象路径不同；Git 可以在内部复用相同的 blob。
+2. 删除第一条并提交：它的 metadata 和路径消失，另一张图片仍可预览。
+3. 删除第二条并提交：它的 metadata 和路径也从最新 GitHub tree 消失。
 4. Git history 中仍能看到旧图片是正常的；TOUKO 不做历史 purge 或 CDN 缓存清除。
 5. 删除只暂存时可在待发布列表检查；“丢弃全部暂存”需要明确确认，不能当作已经发布删除的撤销操作。
 

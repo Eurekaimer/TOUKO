@@ -16,11 +16,11 @@ Keep your pictures in a Git repository you own.
 
 TOUKO is an image library backed by a Git repository. Image bytes and metadata live in the repository, GitHub hosts it, and jsDelivr serves the default public URLs. An optional Cloudflare R2 mirror can serve the same bytes from your own domain. The local SQLite database is a read cache; delete it and the library rebuilds from the repository.
 
-Uploads go to a staging area first. `commit` writes one Git commit. File names come from content hashes, so identical bytes are stored once. Each asset records its title, tags, collections, MIME type, size and SHA-256, which keeps old images findable and verifiable.
+Uploads go to a staging area first. `commit` writes one Git commit. New image paths use the asset UUID, so identical uploads have independent paths. Each asset records its title, tags, collections, MIME type, size and SHA-256 for verification; the hash is not part of the new URL.
 
 ## Features
 
-- Content-addressed images and metadata, published as one atomic commit
+- UUID-named images and metadata, published as one atomic commit
 - Separate staging, commit and sync steps; `rm` only removes from the latest tree, Git history stays
 - Multi-repository galleries, each with its own staging and publication flow
 - Web and desktop interface: drag or paste uploads, search, filters by tag, collection and directory, Markdown copy
@@ -133,13 +133,15 @@ SHA-256 pass, excluding disk, conversion and network. Historical single-image
 request counts, methodology and limits are in [Benchmark](docs/benchmark.md).
 The current client adds a pre-publication HEAD read.
 
-**Migration safety:** The published `touko migrate paths` and `--prune-old`
-have not passed failure-recovery and legacy-object safety checks. Do not use
-them on a production gallery until the fix is complete.
+**Migration safety:** Older published `migrate paths` / `--prune-old` commands
+do not have the current recovery and legacy-object protections. Use the current
+client, upgrade and restart all devices first, and read the
+[migration guide](docs/migration.md). The current implementation verifies new
+objects before switching metadata and retains old objects.
 
 ## Documentation
 
-[CLI](docs/usage.md) · [Webview](docs/webview.md) · [Architecture](docs/code-guide.md) · [Function reference](docs/function-reference.md) · [Repository format](docs/repository-format.md) · [Local state](docs/local-state.md) · [Publication](docs/publication.md) · [Benchmark](docs/benchmark.md)
+[CLI](docs/usage.md) · [Migration](docs/migration.md) · [Webview](docs/webview.md) · [Architecture](docs/code-guide.md) · [Function reference](docs/function-reference.md) · [Repository format](docs/repository-format.md) · [Local state](docs/local-state.md) · [Publication](docs/publication.md) · [Benchmark](docs/benchmark.md)
 
 ## Boundaries
 

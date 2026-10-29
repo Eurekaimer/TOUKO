@@ -147,11 +147,10 @@ checked after the clock stops: status, `Content-Type`, size and full SHA-256
 must match the Asset. Browser loading is never inferred from these samples.
 
 The `image_bytes` samples intentionally do not send `If-None-Match`; they measure
-the first origin read. The live server separately gives each preview an ETag
-derived from the content hash and `private, immutable` caching, so a repeat view
-revalidates to `304` without streaming the image again. That saving is a UI
-behavior, not part of this first-read number; measure it with browser/network
-instrumentation rather than subtracting from this table.
+the first origin read. The live server uses the staged identity, legacy digest
+or Git blob ID as its preview ETag and requests private revalidation. A matching
+`If-None-Match` returns `304` without streaming the image again. This saving is
+a UI behavior, not part of the first-read number; measure it separately.
 
 At cardinality `0` there is no committed Asset to request, so `image_bytes`
 has no samples and carries a `skipped` reason.
@@ -272,6 +271,67 @@ measure real GitHub or R2 latency, rate limits, browser rendering, image
 encoding, or a complete five-second publish; an isolated writable remote was
 not available, so no end-to-end remote timing is claimed here.
 
+### Remote upload comparison
+
+`scripts/benchmark-upload.py` measures an old and a new build with R2 off and
+on, three repetitions per group. It builds temporary instrumented copies of the
+specified source checkouts; normal TOUKO builds and CLI output are unchanged.
+Each cell uses a separate branch, state directory and R2 namespace. Both builds
+receive the same ordered corpus and WebP setting. The run stops a cell on its
+first failed add or commit instead of mixing staged images into later samples.
+
+Use a **private, disposable GitHub repository and private, dedicated R2 bucket**,
+especially when the input images contain screenshots. Do not use a public
+production bucket: the `.invalid` delivery URL in the benchmark configuration
+does not make objects in a public bucket private. The script requires an
+explicit private-bucket confirmation and refuses the repository and bucket in
+the default workspace config when it can read that config. It probes access
+but cannot verify a bucket's public-access settings or identify other
+production repositories or buckets.
+
+```sh
+python3 scripts/benchmark-upload.py \
+  --source old="$OLD_SOURCE" --binary old="$OLD_BINARY" \
+  --source new="$NEW_SOURCE" --binary new="$NEW_BINARY" \
+  --repo "$PRIVATE_TEST_REPO" --images "$IMAGE_DIRECTORY" \
+  --r2-endpoint "$R2_ENDPOINT" --r2-bucket "$PRIVATE_R2_BUCKET" \
+  --credentials "$R2_CREDENTIALS_JSON" --r2-bucket-private \
+  --expect-images 200 --repetitions 3 --hash-bench
+```
+
+Build each binary from the matching source checkout. `--webp` enables conversion
+for both versions; without it, conversion is disabled for both and its phase is
+reported as unavailable. `--expect-bytes` can pin the corpus size. The script
+records individual samples, phase definitions, source and binary metadata,
+group summaries and a run-specific R2 inventory under `benchmarks/results/`.
+Nested timing spans overlap their parent and are not additive. Incomplete
+repetitions are retained but excluded from pooled comparisons.
+
+The driver retains its temporary root, branches and R2 objects so failed runs
+can be inspected. Delete only the dedicated test repository/branches and
+bucket after confirming ownership and saving results; never delete a shared
+bucket or a generic prefix. The GitHub token needs permission to delete the
+disposable repository if the repository itself should be removed.
+
+The complete four-group comparison remains unmeasured: the configured R2 key
+was denied `CreateBucket` on 2026-10-29, and no verified private bucket was
+available. The production bucket was not used for this dataset. Consequently
+R2 overhead and UUID speedup cannot be calculated from the partial samples.
+
+The separate `--hash-only` mode needs source and images but no remote
+resources. In a run on the same 200 images (49,518,825 bytes per pass), one
+warmup and three timed in-memory passes yielded:
+
+| Source | Mean ms/image | Median ms/image | P95 ms/image |
+| --- | ---: | ---: | ---: |
+| Old | 0.106835 | 0.023075 | 0.192422 |
+| New | 0.106051 | 0.022571 | 0.192381 |
+
+Individual results are in
+`benchmarks/results/hash-microbenchmark-20261029T135534Z-{old,new}.{json,csv,md}`.
+File reads were outside the timer. This is one SHA-256 pass, not the complete
+upload hashing or R2 overhead.
+
 ### SHA-256 cost on 200 real images
 
 On 2026-10-29, Go's monotonic `time.Since` measured an in-memory
@@ -309,22 +369,36 @@ three-repeat estimate.
 
 ### Public delivery check for one existing image
 
-On 2026-10-29, a Go `time.Since` probe fetched the same existing legacy-path
-image from GitHub Raw, jsDelivr and Cloudflare R2. Each measured response was
-HTTP 200, contained 135,294 bytes and matched the SHA-256 in its old path.
-This checks the existing URL only, not a migrated URL.
+On 2026-10-29, Go `time.Since` measured GETs for the same existing legacy-path
+image through this machine's configured proxy and, separately, with proxy use
+disabled. Every successful response was HTTP 200, contained 135,294 bytes and
+matched the SHA-256 in its old path. One warmup preceded each set of three:
 
-| Provider | Measured GET times after one attempted warmup (ms) |
+| Provider | Proxy GET times (ms) | Direct GET times (ms) |
+| --- | --- | --- |
+| GitHub Raw | 1,291.4; 734.1; 402.3 | timeout; timeout; timeout |
+| jsDelivr | 8,322.3; 617.2; 209.2 | 948.3; 1,058.0; 1,113.3 |
+| Cloudflare R2 public URL | 418.7; 817.8; 330.9 | 180.5; 183.1; 175.5 |
+
+The proxied GitHub and jsDelivr warmups failed with EOF; direct GitHub timed
+out after 20 seconds on every attempt, including warmup. These checks use an
+existing URL, not a migrated URL. Network conditions changed between runs, and
+three requests for one image are not representative upload or CDN benchmarks.
+
+The authenticated R2 API was measured separately using read-only HEAD requests
+for a benchmark-owned key. All requests confirmed the recorded ownership:
+
+| Route | HEAD times after one warmup (ms) |
 | --- | --- |
-| GitHub Raw | 1,291.4; 734.1; 402.3 |
-| jsDelivr | 8,322.3; 617.2; 209.2 |
-| Cloudflare R2 | 418.7; 817.8; 330.9 |
+| Proxy | 306.2; 404.0; 219.4 |
+| Direct | 347.1; 423.6; 336.7 |
 
-The GitHub and jsDelivr warmup requests failed with EOF. In particular, the
-first jsDelivr measured request was much slower than the other two. These
-single-image observations are not an upload benchmark or evidence of typical
-CDN performance. The individual records, including warmup failures, are in
-`benchmarks/results/cdn-probe-20261029T121547Z.json`.
+In these samples, bypassing the proxy helped the public R2 URL but did not
+improve R2 API HEAD latency. Do not infer PUT performance or change proxy
+settings from these samples alone. Raw records are retained in
+`benchmarks/results/cdn-probe-20261029T121547Z.json`,
+`cdn-direct-probe-20261029T123630Z.json` and
+`r2-route-probe-20261029T123702Z.json`.
 
 ### Single-image publication against a real gallery
 

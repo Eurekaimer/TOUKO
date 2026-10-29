@@ -16,7 +16,7 @@
 | 内容 SHA-256 | `domain.ObjectHash [32]byte` | 原始输入 bytes 的内容身份，文本是 64 位小写十六进制 | 不是 Asset ID，也不是 Git blob ID |
 | Git 对象 SHA | `domain.RepositoryHead`、`repository.BlobID`、`repository.TreeID` | commit、blob、tree 的 Git 身份；当前后端采用 SHA-1 Git 仓库 | 不等于直接对图片 bytes 求 SHA-256 |
 
-例如，连续两次默认添加同一图片会生成两个UUID，Object.Hash相同；同namespace且同目标目录时共用placement。相同bytes放在不同显式目录仍是不同路径。只改title会改变metadata的Git blob和新commit，不改变图片SHA-256、路径或Asset UUID。
+例如，连续两次默认添加同一图片会生成两个UUID，Object.Hash相同、Git 可能复用同一个 blob，但两条 Asset 各自拥有独立的 `objects/<namespace>/<uuid>.<ext>` placement。相同bytes放在不同显式目录仍是不同路径。只改title会改变metadata的Git blob和新commit，不改变图片SHA-256、路径或Asset UUID。
 
 `RepositoryID` 保存在 `.touko/repository.json`。它用于识别“同一个 gallery”，而不是识别 Git 托管平台。`sameRepository` 会阻止把一个不同 RepositoryID 的快照悄悄覆盖到现有缓存中。
 
@@ -53,7 +53,7 @@
 | 顺序 | 文件 | 阅读目标 |
 | --- | --- | --- |
 | 1 | `internal/domain/identity.go`、`asset.go`、`change.go`、`errors.go` | 谁是身份？什么记录合法？业务冲突如何被 `errors.Is/As` 识别？ |
-| 2 | `internal/repository/format.go`、`path.go`、`snapshot.go` | 哪些 bytes 构成 format v1/v2？怎样在兼容读取与显式 path 升级间保持原子性？ |
+| 2 | `internal/repository/format.go`、`path.go`、`snapshot.go` | 哪些 bytes 构成 format v1/v2/v3？怎样在兼容读取与路径迁移间保持原子性？ |
 | 3 | `internal/image/ingest.go`、`internal/staging/files.go` | 大图片如何进入临时文件并被可靠安装？谁拥有并关闭 reader？ |
 | 4 | `internal/index/{store,workspace,rebuild}.go`，再读 `internal/app/{state,reindex}.go` | committed cache 与耐久工作区怎样组合？schema1 怎样安全迁移？损坏 cache 怎样绕过 Open 重建？ |
 | 5 | `internal/app/stage.go`，再读 `internal/repository/planner.go` | 用户多次操作如何压缩为最终 change？怎样由最终引用集合决定删除？ |
@@ -112,9 +112,9 @@ flowchart TD
 objects/<namespace>/<asset-uuid>.<ext>（旧仓库仍按 sha256/<前2位>/<接着2位>/<完整hash>.<ext> 读取无显式 path 的 Asset）
 ```
 
-`ObjectPath(asset)` 优先取非空 `Asset.Path`，否则调用 `BuildObjectPath`。默认上传继续 canonical；`--directory` 上传使用 `<directory>/<hash>.<ext>`，导入 PicGo 则保留原路径，不搬动、不重传 bytes。所有读取、删除、引用计数与 URL 都必须使用实际路径，不能各处重新假设 canonical。
+`ObjectPath(asset)` 优先取非空 `Asset.Path`，否则按 legacy SHA-256 路径回退。默认上传使用 `objects/<namespace>/<asset-uuid>.<ext>`；`--directory` 上传使用 `<directory>/<asset-uuid>.<ext>`，导入 PicGo 则保留原路径，不搬动、不重传 bytes。所有读取、删除、引用计数与 URL 都必须使用实际路径，不能各处重新假设 canonical。
 
-`EncodeAsset` 将时间归一为 UTC，空 tags/collections 编码为 `[]`，JSON 末尾有换行。解码拒绝未知字段和尾随 JSON；manifest 最大 64 KiB，单条 metadata 最大 1 MiB。支持 format v1/v2，v1 禁止非空 path。新仓库仍 init v1；只有最终集合出现显式 path 的发布批次才把 v2 manifest 与 metadata 写入同一 commit，普通 v1 上传/编辑不升级，v2 不降级。未知版本失败，不擅自重写。
+`EncodeAsset` 将时间归一为 UTC，空 tags/collections 编码为 `[]`，JSON 末尾有换行。解码拒绝未知字段和尾随 JSON；manifest 最大 64 KiB，单条 metadata 最大 1 MiB。读取支持 format v1/v2/v3，均要求 SHA-256；v1 禁止非空 path。新仓库 init v1，首个上传发布原子升级 v2；路径迁移原子升级 v3，让旧客户端在可能删除旧 R2 key 前拒绝读取。正常提交不降级。Ingest 计算 SHA-256，staging、`VerifyObject` 和 R2 用于完整性验证。
 
 `ReadSnapshot` 的输入是固定 commit ID，输出 `Snapshot{Manifest,Head,Tree,Assets,Entries}`。它验证安全路径、完整 metadata、UUID 与文件名一致性、同 hash 描述一致性，以及引用对象的路径、mode、类型、大小。任何坏记录都使整个读取失败，而不是跳过坏文件组成一个看似正常的部分 gallery。普通扫描不下载每张图片来重新求 hash。
 
@@ -134,7 +134,7 @@ objects/<namespace>/<asset-uuid>.<ext>（旧仓库仍按 sha256/<前2位>/<接�
 
 `Store.Load` 在 Store 互斥保护下先读 `workspace.json`，再以只读 SQLite 事务取 committed cache，并核对 repository identity。SQL/JSON/metadata 损坏都显式失败，不拼半份状态。
 
-当前 SQLite 单连接、WAL、`foreign_keys=ON`、`user_version=2`，仅有 committed `repository_state/assets`。耐久 workspace 使用自己的 `version:1`，保存 repository identity、base、changes、publication；它与仓库 format v1/v2、SQLite schema 版本不是一回事。`SavePublication` 只原子替换这个 JSON，必须在远程 ref 更新之前成功。
+当前 SQLite 单连接、WAL、`foreign_keys=ON`、`user_version=2`，仅有 committed `repository_state/assets`。耐久 workspace 使用自己的 `version:1`，保存 repository identity、base、changes、publication；它与仓库 format v1/v2/v3、SQLite schema 版本不是一回事。`SavePublication` 只原子替换这个 JSON，必须在远程 ref 更新之前成功。
 
 `Save` 先验证两半，**先提交 cache 事务，再写 workspace 临时文件、Sync/Close、Rename、同步目录**。这不是跨资源事务：cache 已前进但 workspace 替换失败时，旧 stage/journal 仍是恢复依据，不能当成第二批未发布操作；rename 后目录 sync 报错也不能假定回滚。
 
@@ -327,7 +327,7 @@ hash/size 不符是 `ErrHashMismatch`，格式或描述冲突是 repository corr
 
 默认 canonical 路由下，`blog` 与 `notes` 中相同 bytes 拥有同一 SHA-256，但路径不同；引用计算必须按完整 path，否则会误删某个 namespace 的副本。显式 `Asset.Path` 则直接指定真实位置，namespace 不会搬动它；多个 namespace 的记录也可能引用同一原路径。
 
-Git 底层可以为相同 bytes 复用 blob ID；这是 Git 对象去重，不改变 placement 规则。修改路由须同时检查 `ObjectPath`、完整路径引用、format v1/v2 与发布候选验证，不能只改 `BuildObjectPath`。
+Git 底层可以为相同 bytes 复用 blob ID；这是 Git 对象去重，不改变 placement 规则。修改路由须同时检查 `ObjectPath`、完整路径引用、format v1/v2/v3 与发布候选验证，不能只改 `AssetObjectPath`。
 
 ### 不可变 blob，使检查与恢复可以引用确定对象
 
@@ -409,7 +409,7 @@ ID=$("$BIN" --state-dir "$A" add "$IMG" --namespace blog \
 
 需要完整预制闭环时，参照 [使用教程](usage.md) 中的离线 demo；demo 输出的绝对目录应作为后续命令中的实际 ROOT，不能照抄别人的 `/tmp/...`。
 
-### 8.2 观察 metadata edit、共享对象及取消 add
+### 8.2 观察 metadata edit、独立路径及取消 add
 
 延续上面的 shell 变量：
 
@@ -427,7 +427,7 @@ SECOND=$("$BIN" --state-dir "$A" add "$IMG" --namespace blog --output id)
 "$BIN" --state-dir "$A" show "$ID" --json
 ```
 
-第一组应该关注 metadata 与 `modified` 视图，不要拿 title 变化去推测图片 hash 变化。第二组只暂存又取消一个新 UUID，原已提交记录不应受影响。你也可以在取消前 commit 第二个记录，之后依次 rm 两个 UUID 并提交，用 `verify --json` 和实际 Git tree 观察共享/末引用删除。
+第一组应该关注 metadata 与 `modified` 视图，不要拿 title 变化去推测图片 hash 变化。第二组只暂存又取消一个新 UUID，原已提交记录不应受影响。你也可以在取消前 commit 第二个记录，之后依次 rm 两个 UUID 并提交，用 `verify --json` 和实际 Git tree 观察两个独立路径的删除。
 
 ### 8.3 复现旧设备 edit 与远程 delete 冲突
 
@@ -492,7 +492,7 @@ JSON `publication` 存在不一定表示远程失败，也可能是远程已成�
 3. `internal/repository/verify.go`：注册同样可用的 decoder，核对 `DecodeConfig` 返回格式与 canonical ext 的映射；当前 jpeg→jpg 的特殊关系说明了为什么映射不能漏。
 4. `internal/delivery/url.go`：路径校验不再限制图片扩展名；调用方应继续使用实际 `ObjectPath`，不要重新引入 canonical-only 假设。
 5. `internal/image/ingest_test.go`、`repository/verify_test.go`、`delivery/url_test.go` 和必要的 CLI round-trip：验证真实新格式 bytes 的 ingest/commit/fresh sync/verify/URL，而不是只构造一个看似合法的 ContentObject。
-6. `docs/repository-format.md` 与使用说明：format v1/v2 目前都只接受既定内容格式。扩展接受集合会造成旧程序不能读取新记录；先决定版本兼容/迁移策略，不能悄悄改变保证。
+6. `docs/repository-format.md` 与使用说明：format v1/v2/v3 目前都只接受既定内容格式。扩展接受集合会造成旧程序不能读取新记录；先决定版本兼容/迁移策略，不能悄悄改变保证。
 
 不要为了格式扩展添加对象替换、namespace move 或迁移空命令。一个 decoder 可以解 header，也不自动意味着完整图片解码、缩略图或编辑能力已经存在。
 
@@ -516,7 +516,7 @@ JSON `publication` 存在不一定表示远程失败，也可能是远程已成�
 4. **前端状态**：`workspace` 是服务器快照，filters 增加真实目录，selected 是 UUID，uploadFiles 是待传 File/ObjectURL。刷新仍恢复 stage，因为它在 `workspace.json`，不在 SQLite/localStorage。`workspacePrefix/apiURL` 使 API、上传、原图请求跟随 `/w/<id>/`；连接返回 url 后直接导航，不刷新旧 workspace。旧工作区修改保留。仓库/分支下拉各有递增 sequence：切换仓库先清空旧分支，晚到的旧响应被丢弃，避免把仓库 A 的分支提交给仓库 B。
 5. **上传与导入**：上传 XHR 传 directory/metadata/files，服务端私有临时目录流式 spool 后只调用一次 Add。`openImport → POST /api/import → ImportLegacy` 在固定已初始化快照扫描原图片，返回 imported/skipped，不搬图；必须显式 commit 才写 Git metadata。输入/校验失败不部分 stage，不自动重试或发布。
 6. **编辑、目录与链接**：原 metadata 编辑仍支持多个 tags/collections，留空清空。`assetPath` 用真实 path 或 canonical 派生筛选/显示；Copy Markdown 转义 alt 并派生 Raw/jsDelivr URL。剪贴板 API 受浏览器权限约束，失败提供可手动复制框，不能把“生成正确文本”当作“自动复制成功”。DOM 不拼接不可信 HTML。
-7. **原图读取**：`imageSnapshot` 锁内取一致视图，新增 payload 打开后解锁；导入但未发布的 Asset 在缓存固定 tree 读原 path。已提交 explicit path 从本地 Git 对象库按缓存 tree 取不可变 blob，不能信任可变 checkout 同名文件；缺少本地不可变数据可回退 API。网络流不占工作区锁，不追当前 branch URL；clone 状态与离线能力不伪装。
+7. **原图读取**：`imageSnapshot` 先读取一致视图并立即返回已提交 Asset，不占 `workMu`；只有需要打开 staged payload 时才取锁并重新读取，以保证 cleanup 不会在打开前 unlink 文件。缓存校验用已提交路径的 Git blob ID（staged/legacy 用自己的稳定身份），同一 Asset UUID 下的外部字节替换会触发重新取图而不是复用旧缓存。导入但未发布的 Asset 在缓存固定 tree 读原 path。已提交 explicit path 从本地 Git 对象库按缓存 tree 取不可变 blob，不能信任可变 checkout 同名文件；缺少本地不可变数据可回退 API。网络流不占工作区锁，不追当前 branch URL；clone 状态与离线能力不伪装。
 8. **发布、同步与重建**：commit/reset 继续原 coordinator；sync 在同锁中先更新 clone 再读，journal 走 API；verify 不 fetch。reindex 使用现有 Service 连接重建，未决 journal 仍需 sync。409/conflict 保留修改、不自动 reset；移除/reset 明确确认，journal 单独显示，toast 不是发布事实。
 9. **桌面窗口**：`cmd/touko-desktop → desktop.Run` 在主 goroutine 上开 MyGo 窗口，复用同一个 `webview.Listen` 与内嵌 UI；`browser.Open` 是 serve 与托盘菜单共用的系统打开方式。窗口关闭默认只是隐藏并继续本地服务，托盘菜单负责“显示主窗口 / 在浏览器中打开 / 打开工作区目录 / 退出”。两个必须保留的约束：被点击的托盘菜单项要被 Go 侧一直引用（MyGo 用弱引用按 uid 找回 `*MenuItem`，被回收后菜单可见但点击无效），而 `Window.OnClose` 的 `PreventDefault` 必须让退出流程放行（MyGo 遇到任何拒绝关闭的窗口就取消整次退出）。面板/任务栏里的图标不由应用绘制：窗口的 Wayland app_id 是**可执行文件基名**，因此发行包装必须安装与之同名的 `touko-desktop.desktop` 并把图标放进 hicolor 主题，这与微信、qBittorrent 等普通应用完全同一条路径。
 
