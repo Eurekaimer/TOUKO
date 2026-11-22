@@ -212,7 +212,7 @@ CLI `reindex` 对 GitHub 先更新 clone，完整校验固定快照、图片描�
 
 - 只监听127.0.0.1，校验精确Host/Origin和会话CSRF；不提供局域网共享或公网部署开关。不要用反向代理绕过边界后当作多人云服务。
 - API/图片不允许跨域，页面有 CSP、nosniff、no-referrer、frame保护；详情只按 UUID 查图，没有任意文件路径下载接口。
-- 凭据只在 Go server 内部。预览优先按索引中的 Git blob ID 读本地对象，即使浅克隆缺少索引 HEAD；未命中才读 GitHub API。ETag 命中时不打开字节。预览不 fetch 或创建 clone；使用显式同步更新它。
+- 凭据只在 Go server 内部。预览先校验工作树中同路径文件的 SHA-256，命中即读；未命中再按索引中的 Git blob ID 读固定对象，即使浅克隆缺少索引 HEAD；仍缺失才读 GitHub API。ETag 命中时不打开字节。预览不 fetch 或创建 clone；使用显式同步更新它。
 - GitHub `force:false` 是 fast-forward保护，不是针对任意外部管理员force/reset的严格expected-old-SHA CAS。禁止force-push是测试前提之一。
 - GitHub header版本固定2026-03-10；错误、限流、branch protection和truncated tree不会被伪装成部分成功。
 - 历史公开仓库验收及尚未验证的权限场景见 [GitHub 接入](github.md#协议与限制)。公开仓库成功不能证明私有仓库、分支保护拒绝或组织审批已实测。浏览器剪贴板受宿主权限约束，生成 Markdown 或出现手动复制框不等于已自动写入剪贴板。

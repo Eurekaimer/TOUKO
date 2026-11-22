@@ -12,6 +12,42 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 )
 
+func TestPreviewServesLocalFileWhenCloneHeadMissing(t *testing.T) {
+	f := newFixture(t)
+	f.setup()
+	ctx := t.Context()
+	f.add()
+	f.request("POST", "/api/commit", map[string]string{"message": "first"}, http.StatusOK)
+
+	clone := repository.CloneDir(f.service.Dir)
+	remote := (&url.URL{Scheme: "file", Path: filepath.Join(f.root, "gallery.git")}).String()
+	if err := localgit.Clone(ctx, remote, clone, "main", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	id, data := f.add()
+	f.request("POST", "/api/commit", map[string]string{"message": "second"}, http.StatusOK)
+	view, err := f.service.Show(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := view.Asset
+	path := filepath.Join(clone, filepath.FromSlash(repository.ObjectPath(asset)))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.service.Dir, "config.json"), []byte(`{"backend":"github","owner":"owner","name":"gallery","branch":"main"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := f.request("GET", "/api/assets/"+id+"/image", nil, http.StatusOK).Body.Bytes()
+	if !bytes.Equal(got, data) {
+		t.Fatal("preview did not use the verified working-copy file")
+	}
+}
+
 func TestPreviewServesLocalBlobWhenCloneHeadMissing(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		name := "indexed Git blob without SHA-256"

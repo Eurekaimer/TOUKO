@@ -117,7 +117,7 @@ State 目录优先级为 `--state-dir` → `TOUKO_HOME` → `$XDG_DATA_HOME/touk
 
 `auth login` 调用真实 `gh auth login --hostname github.com --web --git-protocol https`；`auth status` 仅输出登录名和凭据来源，不输出 token。凭据优先级为 `GITHUB_TOKEN` → `GH_TOKEN` → `gh` 登录；没有凭据可匿名读取公开仓库，但列出当前账户仓库和写入需要认证。显式 env 凭据无效不会偷偷回退到 gh。`repo list --json` 可查看 `full_name/default_branch/private/can_push`，只读仓库无法发布。
 
-`repo use` 只选择仓库，不初始化远端。普通 `sync` 更新 GitHub clone，再索引其固定 HEAD；预览与已有副本的 `verify` 不 fetch。预览按固定 Git blob 读取本机对象，真正缺少的对象才回退 GitHub API；发布仍使用 API，不执行 `git push`。
+`repo use` 只选择仓库，不初始化远端。普通 `sync` 更新 GitHub clone，再索引其固定 HEAD；预览与已有副本的 `verify` 不 fetch。预览先校验工作树文件摘要，未命中再按固定 Git blob 读取本机对象，真正缺少的对象才回退 GitHub API；发布仍使用 API，不执行 `git push`。
 
 ## 5. 查找与修改
 

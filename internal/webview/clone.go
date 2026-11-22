@@ -2,14 +2,59 @@ package webview
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/localgit"
+	"github.com/Eurekaimer/TOUKO/internal/repository"
 )
+
+// localImage serves a working-copy file only after its bytes match the indexed
+// SHA-256. A mutable path can be replaced in place, so the size check alone is
+// not identity; a mismatch falls back to the immutable Git snapshot.
+func localImage(dir string, asset *domain.Asset) (io.ReadCloser, bool, error) {
+	if !asset.Object.HasHash() {
+		return nil, false, nil
+	}
+	path := filepath.Join(dir, filepath.FromSlash(repository.ObjectPath(*asset)))
+	file, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() || info.Size() != asset.Object.Size {
+		file.Close()
+		return nil, false, nil
+	}
+	digest := sha256.New()
+	if _, err := io.Copy(digest, file); err != nil {
+		file.Close()
+		return nil, false, err
+	}
+	if hex.EncodeToString(digest.Sum(nil)) != asset.Object.Hash.String() {
+		file.Close()
+		return nil, false, nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		file.Close()
+		return nil, false, err
+	}
+	return file, true, nil
+}
 
 // cloneOnce guards the one-time clone per process so concurrent previews cannot
 // start competing clones of the same repository.

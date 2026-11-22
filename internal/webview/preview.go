@@ -114,6 +114,11 @@ func (s *Server) localPreviewRepo(ctx context.Context, location repository.Locat
 }
 
 func (s *Server) openLocalCommitted(ctx context.Context, local *localgit.Repository, dir string, st index.State, asset *domain.Asset) (io.ReadCloser, error) {
+	if source, ok, err := localImage(dir, asset); err != nil {
+		return nil, err
+	} else if ok {
+		return source, nil
+	}
 	blob, err := s.indexedImageBlob(ctx, local, st, asset)
 	if err == nil && local.HasObject(ctx, string(blob)) {
 		return local.OpenBlob(ctx, blob)
