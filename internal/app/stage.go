@@ -28,6 +28,10 @@ type AddOptions struct {
 	Tags, Collections []string
 	ConvertWebP       bool
 	WebPQuality       int
+	// ComputeHash records the SHA-256 of the published bytes. It is off by
+	// default: the timestamp path is the upload's identity, and hashing is an
+	// extra pass a caller must ask for.
+	ComputeHash bool
 }
 type EditOptions struct {
 	Title             *string
@@ -115,6 +119,7 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 		result, err := ingest.IngestWithOptions(ctx, input.Reader, tempDir, ingest.Options{
 			ConvertWebP: opts.ConvertWebP,
 			WebPQuality: opts.WebPQuality,
+			ComputeHash: opts.ComputeHash,
 		})
 		if err != nil {
 			return nil, err
@@ -125,6 +130,14 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 			return nil, err
 		}
 		prepared = append(prepared, item)
+	}
+	// The lock is held: this is the staging instant, one shared timestamp for
+	// the batch, resolved against every path the index already owns.
+	if err := allocateTimestampPaths(prepared, time.Now().UTC(), occupiedObjectPaths(st, nil)); err != nil {
+		return nil, err
+	}
+	if err := validatePrepared(prepared, true); err != nil {
+		return nil, err
 	}
 	next, err := applyPrepared(st, prepared)
 	if err != nil {

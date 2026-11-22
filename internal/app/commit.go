@@ -11,6 +11,7 @@ import (
 	"sort"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
+	toukoimage "github.com/Eurekaimer/TOUKO/internal/image"
 	"github.com/Eurekaimer/TOUKO/internal/index"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
 	"github.com/Eurekaimer/TOUKO/internal/staging"
@@ -117,7 +118,7 @@ func (s *Service) Commit(ctx context.Context, r repository.Git, message string) 
 	if err = s.Store.SavePublication(ctx, st.Publication); err != nil {
 		return CommitResult{}, err
 	}
-	result, err := s.publish(ctx, r, st, snap)
+	result, err := s.publish(ctx, r, st, snap, blobs)
 	return CommitResult{Head: result.Head, ChangeCount: count, AssetCount: result.AssetCount, Cloudflare: result.Cloudflare}, err
 }
 
@@ -190,7 +191,7 @@ func (r *stagedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 func (s *Service) uploadStaged(ctx context.Context, r repository.Writer, p repository.ObjectPlacement) (repository.BlobID, error) {
-	file, err := os.Open(staging.PayloadPathFor(s.Dir, p.Namespace, p.Object))
+	file, err := os.Open(staging.PayloadPathForAsset(s.Dir, p.Namespace, p.AssetID, p.Object))
 	if err != nil {
 		return "", err
 	}
@@ -199,15 +200,24 @@ func (s *Service) uploadStaged(ctx context.Context, r repository.Writer, p repos
 		_ = file.Close()
 		return "", err
 	}
-	if info.Size() != p.Object.Size {
+	if !info.Mode().IsRegular() || info.Size() != p.Object.Size {
 		_ = file.Close()
-		return "", fmt.Errorf("%w: staged object size %s", domain.ErrHashMismatch, p.Path)
+		return "", fmt.Errorf("%w: staged object size or type %s", domain.ErrHashMismatch, p.Path)
 	}
-	if !p.Object.HasHash() {
-		_ = file.Close()
-		return "", fmt.Errorf("%w: staged object %s has no content hash", domain.ErrHashMismatch, p.Path)
+	var digest hash.Hash
+	if p.Object.HasHash() {
+		digest = sha256.New()
+	} else {
+		err := toukoimage.VerifyHeader(ctx, file, p.Object)
+		if err == nil {
+			_, err = file.Seek(0, io.SeekStart)
+		}
+		if err != nil {
+			_ = file.Close()
+			return "", err
+		}
 	}
-	reader := &stagedReader{ctx: ctx, source: io.LimitReader(file, p.Object.Size+1), digest: sha256.New()}
+	reader := &stagedReader{ctx: ctx, source: io.LimitReader(file, p.Object.Size+1), digest: digest}
 	blob, err := r.CreateBlob(ctx, reader, p.Object.Size)
 	closeErr := file.Close()
 	if err != nil {
@@ -216,7 +226,12 @@ func (s *Service) uploadStaged(ctx context.Context, r repository.Writer, p repos
 	if closeErr != nil {
 		return "", closeErr
 	}
-	if reader.size != p.Object.Size || !bytes.Equal(reader.digest.Sum(nil), p.Object.Hash[:]) {
+	if reader.size != p.Object.Size {
+		return "", fmt.Errorf("%w: staged object %s", domain.ErrHashMismatch, p.Path)
+	}
+	// A hashless upload is identified by its explicit timestamp path; only the
+	// opt-in digest gets an exact-byte check here.
+	if digest != nil && !bytes.Equal(digest.Sum(nil), p.Object.Hash[:]) {
 		return "", fmt.Errorf("%w: staged object %s", domain.ErrHashMismatch, p.Path)
 	}
 	return blob, nil
@@ -272,13 +287,13 @@ func (s *Service) publishJournal(ctx context.Context, r repository.Git, st index
 	if err != nil {
 		return SyncResult{}, err
 	}
-	return s.publish(ctx, r, st, candidate)
+	return s.publish(ctx, r, st, candidate, nil)
 }
 
 // publish updates the branch. The adapter reads the branch before PATCHing, so
 // rejection is diagnosed with the authoritative relationship query rather than
 // assumed to be a non-fast-forward alone.
-func (s *Service) publish(ctx context.Context, r repository.Git, st index.State, candidate repository.Snapshot) (SyncResult, error) {
+func (s *Service) publish(ctx context.Context, r repository.Git, st index.State, candidate repository.Snapshot, publishedBlobs map[string]repository.BlobID) (SyncResult, error) {
 	p := st.Publication
 	if err := r.UpdateRef(ctx, p.BaseHead, p.CandidateHead); err != nil {
 		head, published, readErr := publicationRelation(ctx, r, p)
@@ -290,14 +305,14 @@ func (s *Service) publish(ctx context.Context, r repository.Git, st index.State,
 			if err != nil {
 				return SyncResult{}, err
 			}
-			return s.finalizeSnapshot(ctx, r, st, snap)
+			return s.finalizeSnapshot(ctx, r, st, snap, publishedBlobs)
 		}
 		if head != p.BaseHead {
 			return SyncResult{}, staleConflict(ctx, r, st, head)
 		}
 		return SyncResult{}, err
 	}
-	return s.finalizeSnapshot(ctx, r, st, candidate)
+	return s.finalizeSnapshot(ctx, r, st, candidate, publishedBlobs)
 }
 
 // staleConflict explains a rejected ref update: an edited Asset that the remote
@@ -332,7 +347,7 @@ func (s *Service) finalizePublished(ctx context.Context, r repository.Git, st in
 	if err != nil {
 		return SyncResult{}, err
 	}
-	return s.finalizeSnapshot(ctx, r, st, snap)
+	return s.finalizeSnapshot(ctx, r, st, snap, nil)
 }
 
 // currentSnapshot follows a confirmed published candidate to the head that is
@@ -350,7 +365,7 @@ func currentSnapshot(ctx context.Context, r repository.Reader, candidate reposit
 	}
 	return snap, nil
 }
-func (s *Service) finalizeSnapshot(ctx context.Context, r repository.Git, st index.State, snap repository.Snapshot) (SyncResult, error) {
+func (s *Service) finalizeSnapshot(ctx context.Context, r repository.Git, st index.State, snap repository.Snapshot, publishedBlobs map[string]repository.BlobID) (SyncResult, error) {
 	if err := sameRepository(st, snap); err != nil {
 		return SyncResult{}, err
 	}
@@ -361,7 +376,7 @@ func (s *Service) finalizeSnapshot(ctx context.Context, r repository.Git, st ind
 		return result, fmt.Errorf("published head %s; local index update failed; run sync: %w", head, err)
 	}
 	if st.Publication == nil || st.Publication.Operation == "" {
-		result.Cloudflare = s.cloudflarePublication(ctx, r, st, snap)
+		result.Cloudflare = s.cloudflarePublication(ctx, r, st, snap, publishedBlobs)
 	}
 	if err := s.cleanup(ctx, next); err != nil {
 		return result, fmt.Errorf("published head %s; local payload cleanup failed: %w", head, err)

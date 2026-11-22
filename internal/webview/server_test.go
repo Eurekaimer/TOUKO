@@ -281,6 +281,7 @@ func TestPreviewRevalidatesWithoutReadingBytes(t *testing.T) {
 	f := newFixture(t)
 	f.setup()
 	id, data := f.add()
+	f.request("POST", "/api/commit", map[string]string{"message": "publish"}, http.StatusOK)
 	first := f.request("GET", "/api/assets/"+id+"/image", nil, 200)
 	if !bytes.Equal(first.Body.Bytes(), data) {
 		t.Fatal("initial preview bytes differ")
@@ -288,6 +289,10 @@ func TestPreviewRevalidatesWithoutReadingBytes(t *testing.T) {
 	tag := first.Header().Get("ETag")
 	if tag == "" || !strings.Contains(first.Header().Get("Cache-Control"), "no-cache") {
 		t.Fatalf("preview caching headers: %v", first.Header())
+	}
+	dir := filepath.Join(f.root, "gallery.git")
+	if err := os.Rename(dir, dir+".off"); err != nil {
+		t.Fatal(err)
 	}
 	req := httptest.NewRequest("GET", testOrigin+"/api/assets/"+id+"/image", nil)
 	req.Header.Set("If-None-Match", tag)

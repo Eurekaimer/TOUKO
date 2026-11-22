@@ -102,7 +102,7 @@ ID=$(/tmp/touko add logo/touko-logo.png --namespace blog --title '我的 logo' -
 
 Gallery 是 **bare Git repository**，没有普通 checkout 工作区。可以用 `git --git-dir "$HOME/Pictures/my-gallery.git" ls-tree -r --name-only main` 查看当前 committed paths；不要用文件浏览器找工作区图片。
 
-State 目录优先级为 `--state-dir` → `TOUKO_HOME` → `$XDG_DATA_HOME/touko` → `$HOME/.local/share/touko`。CLI 每台设备/每个 gallery 使用独立 state-dir；`repo use` 不会把另一仓库的 cache/stage 混进来。Web 切换仓库则自动使用独立工作区，旧根 state 作为默认工作区保留，新工作区在 `<state-root>/workspaces/<key>/`。从网页显示的本地副本路径去掉末尾 `/clone` 可得到该 GitHub 工作区的 CLI state 路径；不要凭空猜 key。
+State 目录优先级为 `--state-dir` → `TOUKO_HOME` → `$XDG_DATA_HOME/touko` → `$HOME/.local/share/touko`。每个图库使用独立 state-dir；网页的新工作区位于 `<state-root>/workspaces/<key>/`。设置中可迁移 GitHub 的本地副本；它的新路径不是 CLI 的 `--state-dir`。
 
 ### GitHub 登录与选择仓库
 
@@ -117,7 +117,7 @@ State 目录优先级为 `--state-dir` → `TOUKO_HOME` → `$XDG_DATA_HOME/touk
 
 `auth login` 调用真实 `gh auth login --hostname github.com --web --git-protocol https`；`auth status` 仅输出登录名和凭据来源，不输出 token。凭据优先级为 `GITHUB_TOKEN` → `GH_TOKEN` → `gh` 登录；没有凭据可匿名读取公开仓库，但列出当前账户仓库和写入需要认证。显式 env 凭据无效不会偷偷回退到 gh。`repo list --json` 可查看 `full_name/default_branch/private/can_push`，只读仓库无法发布。
 
-`repo use` 只选择仓库，不初始化远端；已有 TOUKO 仓库接着 `sync`，尚无 TOUKO manifest 的旧图库则按下节显式 `repo init`。普通 `sync` 先联网更新 GitHub clone，再索引其固定 HEAD，**一次调用即更新图库**；`verify` 和已有 clone 的预览不 fetch，只校验/读取当前本地副本，不能用来确认远端是否有新提交。首次读取需联网建立浅克隆；发布仍用 GitHub API，不执行 `git push`。
+`repo use` 只选择仓库，不初始化远端。普通 `sync` 更新 GitHub clone，再索引其固定 HEAD；预览与已有副本的 `verify` 不 fetch。预览按固定 Git blob 读取本机对象，真正缺少的对象才回退 GitHub API；发布仍使用 API，不执行 `git push`。
 
 ## 5. 查找与修改
 
@@ -169,7 +169,7 @@ cat logo/touko-logo.png | /tmp/touko add - --name '剪贴板.png' --namespace no
 /tmp/touko commit -m 'images: upload into images/blog'
 ```
 
-`--directory` 是**仓库内目标目录**，不是本地输入目录；文件以 Asset UUID 命名，metadata 记录实际路径，目录里的空格会换成 `-`。留空保持默认 `objects/<namespace>/<asset-uuid>.<ext>`。相同图片上传两次是两个 Asset、两个 object（Git 仍只存一份 blob）。目录须是规范相对 POSIX 路径（`/` 分隔），不能是绝对路径、含 `..`、反斜杠、控制字符或 `.git/.touko` 路径段。相同 bytes 不同最终路径是独立 placement；删除按实际完整路径计数。
+`--directory` 是**仓库内目标目录**，留空使用根目录。文件名是进入暂存时的 Unix 纳秒数，冲突加 `-N`。目录空格换成 `-`，必须是安全的相对 POSIX 路径。重复上传是不同 Asset 和路径，但 Git 可共享同一 blob。`add --hash` 可为本次上传记录 SHA-256；默认不算。
 
 ### 原地导入旧图库 / PicGo
 
@@ -236,7 +236,7 @@ LEGACY_STATE="$HOME/.local/share/touko-legacy"
 /tmp/touko --state-dir "$HOME/.local/share/touko-my-gallery" sync
 ```
 
-`reindex` 完整验证固定源快照及图片 hash 后重建 committed cache，可恢复缺失、物理损坏或 metadata 逻辑损坏的 index，并保留耐久暂存。物理损坏旧文件保留在工作区的 `index-corrupt-*` 目录，不静默丢弃。CLI 的 GitHub `reindex` 会先更新 clone；若有未发布 stage 而 HEAD 已变，返回冲突，不覆盖用户修改。pending journal 保留，之后必须 `sync` 恢复，不能把重建成功当作发布成功。
+`reindex` 校验固定快照、图片描述与已有 SHA-256 后重建 committed cache，保留耐久暂存。物理损坏旧文件保留在 `index-corrupt-*`；CLI 对 GitHub 先更新 clone。未发布 stage 的基准改变会报冲突，未决 journal 仍需 `sync` 恢复。
 
 **旧 schema1 例外：** 旧版本把 stage/journal 存在 `index.db` 中，必须先用当前版本打开健康旧索引完成自动迁移，才有独立耐久工作区。迁移失败保留旧源；若迁移前旧 DB 已删除/损坏且无备份，远端不能恢复唯一未发布数据，`reindex` 会拒绝猜空。即使迁移后，也不要删除 `workspace.json`、暂存文件或整个 state-dir，不要在服务运行中手动删除 DB/WAL/SHM；备份应保留整个 state。
 

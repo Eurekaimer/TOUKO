@@ -29,8 +29,10 @@ type Repository struct {
 	HashAlgorithm string       `json:"hash_algorithm"`
 }
 // ContentObject describes immutable image bytes and their SHA-256 digest.
+// An optional digest is omitted from JSON entirely when absent, so a hashless
+// upload never advertises an all-zero hash as if it were a real digest.
 type ContentObject struct {
-	Hash   ObjectHash `json:"hash"`
+	Hash   ObjectHash `json:"hash,omitzero"`
 	MIME   string     `json:"mime"`
 	Ext    string     `json:"ext"`
 	Size   int64      `json:"size"`
@@ -62,6 +64,11 @@ func (o ContentObject) Validate() error {
 	}
 	return nil
 }
+// Asset.Validate accepts a missing content hash only for an asset that owns an
+// explicit, safe repository path. Exact-byte verification is then unavailable,
+// so the path itself must be the identity: the per-upload timestamp name is
+// never reused and the published Git blob is immutable. A zero hash is never an
+// equality signal.
 func (a Asset) Validate() error {
 	if a.ID == (AssetID{}) || !namespacePattern.MatchString(string(a.Namespace)) || a.CreatedAt.IsZero() || a.UpdatedAt.IsZero() || a.UpdatedAt.Before(a.CreatedAt) {
 		return fmt.Errorf("invalid asset identity, namespace or timestamps")
@@ -71,7 +78,7 @@ func (a Asset) Validate() error {
 			return err
 		}
 	}
-	if !a.Object.HasHash() {
+	if !a.Object.HasHash() && a.Path == "" {
 		return fmt.Errorf("asset has no content hash")
 	}
 	return a.Object.Validate()

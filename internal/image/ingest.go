@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"hash"
 	stdimage "image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -36,6 +37,11 @@ type Options struct {
 	ConvertWebP bool
 	// WebPQuality is 1..100; zero selects DefaultWebPQuality.
 	WebPQuality int
+	// ComputeHash records the SHA-256 of the bytes that will actually be
+	// published (including a WebP conversion). It is off by default: new
+	// uploads are named by their staging timestamp, so the digest is metadata,
+	// not identity, and hashing every upload costs a pass over the bytes.
+	ComputeHash bool
 }
 
 // Ingest reads source once. On success the caller owns the returned temporary;
@@ -74,8 +80,15 @@ func IngestWithOptions(ctx context.Context, source io.Reader, tempDir string, op
 			os.Remove(filePath)
 		}
 	}()
-	hash := sha256.New()
-	size, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(contextReader{ctx, source}, MaxBytes+1))
+	var digest hash.Hash
+	if opts.ComputeHash {
+		digest = sha256.New()
+	}
+	writer := io.Writer(file)
+	if digest != nil {
+		writer = io.MultiWriter(file, digest)
+	}
+	size, err := io.Copy(writer, io.LimitReader(contextReader{ctx, source}, MaxBytes+1))
 	if err != nil {
 		return Result{}, fmt.Errorf("stream image: %w", err)
 	}
@@ -129,7 +142,7 @@ func IngestWithOptions(ctx context.Context, source io.Reader, tempDir string, op
 		if int64(config.Width)*int64(config.Height) > MaxConvertPixels {
 			return Result{}, fmt.Errorf("image is too large to convert (%d×%d; limit %d pixels); upload without WebP conversion", config.Width, config.Height, MaxConvertPixels)
 		}
-		converted, err := convertToWebP(ctx, filePath, tempDir, opts.WebPQuality)
+		converted, err := convertToWebP(ctx, filePath, tempDir, opts.WebPQuality, opts.ComputeHash)
 		if err != nil {
 			return Result{}, err
 		}
@@ -146,7 +159,9 @@ func IngestWithOptions(ctx context.Context, source io.Reader, tempDir string, op
 		_ = os.Remove(converted.TempPath)
 	}
 	object := domain.ContentObject{MIME: mime, Ext: ext, Size: size, Width: config.Width, Height: config.Height}
-	hash.Sum(object.Hash[:0])
+	if digest != nil {
+		digest.Sum(object.Hash[:0])
+	}
 	if err := object.Validate(); err != nil {
 		return Result{}, err
 	}
@@ -154,7 +169,7 @@ func IngestWithOptions(ctx context.Context, source io.Reader, tempDir string, op
 	return Result{Object: object, TempPath: filePath}, nil
 }
 
-func convertToWebP(ctx context.Context, sourcePath, tempDir string, quality int) (Result, error) {
+func convertToWebP(ctx context.Context, sourcePath, tempDir string, quality int, computeHash bool) (Result, error) {
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return Result{}, fmt.Errorf("open image for WebP conversion: %w", err)
@@ -186,8 +201,13 @@ func convertToWebP(ctx context.Context, sourcePath, tempDir string, quality int)
 			_ = os.Remove(outputPath)
 		}
 	}()
-	digest := sha256.New()
-	if err := webp.Encode(io.MultiWriter(output, digest), decoded, webp.Options{Quality: quality}); err != nil {
+	var digest hash.Hash
+	writer := io.Writer(output)
+	if computeHash {
+		digest = sha256.New()
+		writer = io.MultiWriter(output, digest)
+	}
+	if err := webp.Encode(writer, decoded, webp.Options{Quality: quality}); err != nil {
 		return Result{}, fmt.Errorf("encode WebP: %w", err)
 	}
 	if err := output.Sync(); err != nil {
@@ -204,7 +224,9 @@ func convertToWebP(ctx context.Context, sourcePath, tempDir string, quality int)
 		MIME: "image/webp", Ext: "webp", Size: info.Size(),
 		Width: bounds.Dx(), Height: bounds.Dy(),
 	}
-	digest.Sum(object.Hash[:0])
+	if digest != nil {
+		digest.Sum(object.Hash[:0])
+	}
 	if err := object.Validate(); err != nil {
 		return Result{}, err
 	}

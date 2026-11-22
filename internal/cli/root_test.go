@@ -179,7 +179,7 @@ func TestRunFindMatchesContentHash(t *testing.T) {
 		if err := os.WriteFile(path, data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		added = append(added, assetList(t, invoke(dir, nil, "add", path, "--json"))...)
+		added = append(added, assetList(t, invoke(dir, nil, "add", path, "--hash", "--json"))...)
 	}
 	if len(added) != 2 || added[0].Asset.Object.Hash == added[1].Asset.Object.Hash {
 		t.Fatalf("added=%+v", added)
@@ -281,8 +281,9 @@ func TestRunStdinBatchAndReset(t *testing.T) {
 		}
 	}
 	batch := assetList(t, invoke(dir, nil, "add", good, good, "--json"))
-	if len(batch) != 2 || batch[0].Asset.ID == batch[1].Asset.ID || batch[0].Asset.Object.Hash != batch[1].Asset.Object.Hash {
-		t.Fatalf("duplicate bytes=%+v", batch)
+	if len(batch) != 2 || batch[0].Asset.ID == batch[1].Asset.ID || batch[0].Asset.Path == batch[1].Asset.Path ||
+		batch[0].Asset.Object.HasHash() || batch[1].Asset.Object.HasHash() {
+		t.Fatalf("default batch should use distinct timestamp paths without SHA-256: %+v", batch)
 	}
 	var status struct {
 		Changes []domain.Change `json:"changes"`
@@ -373,7 +374,7 @@ func TestRunAddConvertsToWebP(t *testing.T) {
 
 func TestRunHumanOutputAndEditFieldPresence(t *testing.T) {
 	dir, _ := setupCLI(t)
-	views := assetList(t, invoke(dir, picture(t), "add", "-", "--namespace", "notes", "--title", "Visible title", "--tag", "keep", "--collection", "keep collection", "--json"))
+	views := assetList(t, invoke(dir, picture(t), "add", "-", "--hash", "--namespace", "notes", "--title", "Visible title", "--tag", "keep", "--collection", "keep collection", "--json"))
 	if len(views) != 1 {
 		t.Fatalf("added=%+v", views)
 	}

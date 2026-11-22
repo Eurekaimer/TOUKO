@@ -42,10 +42,13 @@ type MirrorLedger struct {
 
 // MirrorEntry records the last expected object for one key and the state of its
 // last mirror attempt. Object is always the last known ContentObject, including
-// for deletion tombstones.
+// for deletion tombstones. Blob is the immutable Git blob identity of the bytes
+// that were published; it is the only byte-level evidence for a hashless object
+// and is empty in older receipts written before the mirror recorded it.
 type MirrorEntry struct {
 	Key       string               `json:"key"`
 	Object    domain.ContentObject `json:"object"`
+	Blob      string               `json:"blob,omitempty"`
 	ETag      string               `json:"etag"`
 	State     string               `json:"state"`
 	ErrorCode string               `json:"error_code,omitempty"`
@@ -215,11 +218,17 @@ func validateMirrorEntry(entry *MirrorEntry) error {
 	if err := domain.ValidateRepositoryPath(entry.Key); err != nil {
 		return mirrorCorrupt("invalid mirror entry key: %v", err)
 	}
-	if !entry.Object.HasHash() {
-		return mirrorCorrupt("mirror entry %q has no object hash", entry.Key)
-	}
 	if err := entry.Object.Validate(); err != nil {
 		return mirrorCorrupt("invalid mirror entry object for %q: %v", entry.Key, err)
+	}
+	if entry.Blob != "" {
+		if !validMirrorBlob(entry.Blob) {
+			return mirrorCorrupt("invalid mirror entry blob for %q", entry.Key)
+		}
+	} else if !entry.Object.HasHash() {
+		// A hashless object cannot be identified without the Git blob it was
+		// published from; never accept an unverifiable receipt.
+		return mirrorCorrupt("mirror entry %q has neither an object hash nor a Git blob", entry.Key)
 	}
 	if !validMirrorState(entry.State) {
 		return mirrorCorrupt("invalid mirror entry state %q for %q", entry.State, entry.Key)
@@ -291,6 +300,16 @@ func validateMirrorBucket(bucket string) error {
 		}
 	}
 	return nil
+}
+
+// validMirrorBlob accepts a Git object id in the SHA-1 or SHA-256 repository
+// format used by the published blob evidence.
+func validMirrorBlob(value string) bool {
+	if (len(value) != 40 && len(value) != 64) || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 // validMirrorHash accepts the lowercase SHA-256 hex form used by both target

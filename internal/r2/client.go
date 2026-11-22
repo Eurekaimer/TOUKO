@@ -27,6 +27,7 @@ const (
 	metadataRepositoryID = "touko-repository-id"
 	metadataSourceID     = "touko-source-id"
 	metadataSHA256       = "touko-sha256"
+	metadataBlobSHA      = "touko-blob-sha"
 )
 
 // Error is the only R2 failure type exposed by this package. It intentionally
@@ -85,7 +86,11 @@ type ObjectInfo struct {
 	RepositoryID string
 	SourceID     string
 	SHA256       string
-	Size         int64
+	// BlobSHA is the immutable Git blob identity recorded by the uploader. It
+	// is the only byte-level evidence available for a hashless object: such an
+	// object has no application SHA-256, so its identity is the published blob.
+	BlobSHA string
+	Size    int64
 }
 
 type PutOptions struct {
@@ -93,6 +98,11 @@ type PutOptions struct {
 	RepositoryID domain.RepositoryID
 	SourceID     string
 	IfMatch      string
+	// BlobSHA is the Git blob identity of the uploaded bytes. It is optional
+	// for an object with a content hash (where the digest is the stronger
+	// proof) and required for a hashless object, which otherwise has no
+	// immutable evidence at all.
+	BlobSHA string
 }
 
 type Mirror interface {
@@ -205,17 +215,23 @@ func (c *Client) PutObject(ctx context.Context, key string, body io.ReadSeeker, 
 		return "", configFailure(errors.New("invalid If-Match ETag"))
 	}
 
+	metadata := map[string]string{
+		metadataRepositoryID: opts.RepositoryID.String(),
+		metadataSourceID:     opts.SourceID,
+	}
+	if opts.Object.HasHash() {
+		metadata[metadataSHA256] = opts.Object.Hash.String()
+	}
+	if opts.BlobSHA != "" {
+		metadata[metadataBlobSHA] = opts.BlobSHA
+	}
 	input := &s3.PutObjectInput{
 		Bucket:        aws.String(c.bucket),
 		Key:           aws.String(key),
 		Body:          body,
 		ContentLength: aws.Int64(opts.Object.Size),
 		ContentType:   aws.String(opts.Object.MIME),
-		Metadata: map[string]string{
-			metadataRepositoryID: opts.RepositoryID.String(),
-			metadataSourceID:     opts.SourceID,
-			metadataSHA256:       opts.Object.Hash.String(),
-		},
+		Metadata:      metadata,
 	}
 	if opts.IfMatch == "" {
 		input.IfNoneMatch = aws.String("*")
@@ -240,10 +256,7 @@ func (c *Client) PutObject(ctx context.Context, key string, body io.ReadSeeker, 
 	if !exists {
 		return "", &Error{Op: "put", Key: key, Code: "object_conflict", Cause: errors.New("uploaded object is missing on read-back")}
 	}
-	if info.Size != opts.Object.Size ||
-		info.SHA256 != opts.Object.Hash.String() ||
-		info.RepositoryID != opts.RepositoryID.String() ||
-		info.SourceID != opts.SourceID {
+	if !readBackMatches(info, opts) {
 		return "", &Error{Op: "put", Key: key, Code: "object_conflict", Cause: errors.New("uploaded object metadata does not match the expected description")}
 	}
 	if etag == "" {
@@ -292,8 +305,28 @@ func objectInfo(output *s3.HeadObjectOutput) ObjectInfo {
 		RepositoryID: output.Metadata[metadataRepositoryID],
 		SourceID:     output.Metadata[metadataSourceID],
 		SHA256:       output.Metadata[metadataSHA256],
+		BlobSHA:      output.Metadata[metadataBlobSHA],
 		Size:         aws.ToInt64(output.ContentLength),
 	}
+}
+
+// readBackMatches enforces the metadata description of the object just
+// written. A hashless object is proven only by the immutable Git blob identity:
+// an empty or different blob is a conflict, and a stray SHA-256 is refused
+// because the uploader cannot verify it.
+func readBackMatches(info ObjectInfo, opts PutOptions) bool {
+	if info.Size != opts.Object.Size ||
+		info.RepositoryID != opts.RepositoryID.String() ||
+		info.SourceID != opts.SourceID {
+		return false
+	}
+	if opts.BlobSHA != "" && info.BlobSHA != opts.BlobSHA {
+		return false
+	}
+	if opts.Object.HasHash() {
+		return info.SHA256 == opts.Object.Hash.String()
+	}
+	return info.SHA256 == "" && opts.BlobSHA != ""
 }
 
 func validateKey(op, key string) error {
@@ -307,16 +340,32 @@ func validateObject(opts PutOptions) error {
 	if err := opts.Object.Validate(); err != nil {
 		return err
 	}
-	if !opts.Object.HasHash() {
-		return errors.New("object hash is required")
-	}
 	if opts.RepositoryID == (domain.RepositoryID{}) {
 		return errors.New("repository id is required")
 	}
 	if !validSourceID(opts.SourceID) {
 		return errors.New("source id must be 64 lowercase hexadecimal characters")
 	}
+	if !opts.Object.HasHash() {
+		if !validBlobID(opts.BlobSHA) {
+			return errors.New("a hashless object requires an immutable Git blob id")
+		}
+		return nil
+	}
+	if opts.BlobSHA != "" && !validBlobID(opts.BlobSHA) {
+		return errors.New("Git blob id must be lowercase hexadecimal")
+	}
 	return nil
+}
+
+// validBlobID accepts a Git object id in either the SHA-1 or SHA-256 repository
+// format.
+func validBlobID(value string) bool {
+	if (len(value) != 40 && len(value) != 64) || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func validSourceID(value string) bool {

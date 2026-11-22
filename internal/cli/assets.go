@@ -17,7 +17,7 @@ import (
 func (r *runtime) addCommand() *cobra.Command {
 	var namespace, directory, title, name, output string
 	var tags, collections []string
-	var convertWebP bool
+	var convertWebP, computeHash bool
 	var webpQuality int
 	cmd := &cobra.Command{Use: "add FILE...", Short: "Stage images, or read one image from stdin with add -", Args: arguments(cobra.MinimumNArgs(1)), RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("output") && r.json {
@@ -51,6 +51,7 @@ func (r *runtime) addCommand() *cobra.Command {
 		opts := app.AddOptions{
 			Namespace: ns, Directory: directory, Tags: tags, Collections: collections,
 			ConvertWebP: convertWebP, WebPQuality: webpQuality,
+			ComputeHash: computeHash,
 		}
 		if cmd.Flags().Changed("title") {
 			opts.Title = &title
@@ -116,7 +117,7 @@ func (r *runtime) addCommand() *cobra.Command {
 		return r.printAssets(assets)
 	}}
 	cmd.Flags().StringVar(&namespace, "namespace", "default", "Object namespace")
-	cmd.Flags().StringVar(&directory, "directory", "", "Repository directory for uploaded images (default: canonical objects path)")
+	cmd.Flags().StringVar(&directory, "directory", "", "Repository directory for timestamp-named images (default: root)")
 	cmd.Flags().StringVar(&title, "title", "", "Image title (defaults to original name)")
 	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Tag; repeat for multiple tags")
 	cmd.Flags().StringArrayVar(&collections, "collection", nil, "Collection; repeat for multiple collections")
@@ -124,6 +125,7 @@ func (r *runtime) addCommand() *cobra.Command {
 	cmd.Flags().StringVar(&output, "output", "", "Output format: id or markdown (default: human-readable)")
 	cmd.Flags().BoolVar(&convertWebP, "webp", false, "Convert PNG/JPEG uploads to WebP when that reduces bytes; GIF and WebP stay unchanged")
 	cmd.Flags().IntVar(&webpQuality, "webp-quality", ingest.DefaultWebPQuality, "WebP quality 1-100 (with --webp)")
+	cmd.Flags().BoolVar(&computeHash, "hash", false, "Compute and record SHA-256 for this upload")
 	return cmd
 }
 

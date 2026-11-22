@@ -6,9 +6,13 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
@@ -97,7 +101,7 @@ func TestMigratePathsRewritesAndKeepsOldObjects(t *testing.T) {
 	if _, err := s.Add(ctx, []Input{
 		{Reader: bytes.NewReader(batchPNG(t, 11)), Name: "one.png"},
 		{Reader: bytes.NewReader(batchPNG(t, 12)), Name: "two.png"},
-	}, AddOptions{Namespace: "blog"}); err != nil {
+	}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	before := mustCommit(t, ctx, s, r).Head
@@ -134,7 +138,8 @@ func TestMigratePathsRewritesAndKeepsOldObjects(t *testing.T) {
 		t.Fatalf("dry run wrote a migration plan: %#v, %v, %v", plan, found, planErr)
 	}
 	for _, asset := range legacySnap.Assets {
-		if _, entryErr := findEntry(ctx, r, repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)); entryErr == nil {
+		want := repository.TimestampObjectPath(asset.CreatedAt.UTC(), asset.Object.Ext, 0)
+		if _, entryErr := findEntry(ctx, r, want); entryErr == nil {
 			t.Fatalf("dry run wrote a new object: %#v", asset)
 		}
 	}
@@ -158,12 +163,11 @@ func TestMigratePathsRewritesAndKeepsOldObjects(t *testing.T) {
 		paths[entry.Path] = true
 	}
 	for _, asset := range snap.Assets {
-		want := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
-		if asset.Path != want {
-			t.Fatalf("asset path = %q, want %q", asset.Path, want)
+		if !repository.IsTimestampObjectPath(asset.Path, asset.Object.Ext) {
+			t.Fatalf("asset path = %q, want a root timestamp name", asset.Path)
 		}
-		if !paths[want] {
-			t.Fatalf("new object %s missing", want)
+		if !paths[asset.Path] {
+			t.Fatalf("new object %s missing", asset.Path)
 		}
 		// Old URLs keep working because the legacy object stays in the tree.
 		if !paths[repository.LegacyObjectPath(asset.Namespace, asset.Object)] {
@@ -190,7 +194,7 @@ func TestMigratePathsRewritesAndKeepsOldObjects(t *testing.T) {
 		remaining[entry.Path] = true
 	}
 	for _, asset := range snap.Assets {
-		if !remaining[repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)] {
+		if !remaining[asset.Path] {
 			t.Fatalf("prune removed a live object: %#v", asset)
 		}
 	}
@@ -198,7 +202,7 @@ func TestMigratePathsRewritesAndKeepsOldObjects(t *testing.T) {
 
 func TestMigratePathsFailureKeepsOldLayout(t *testing.T) {
 	ctx, r, s := realRepository(t)
-	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 21)), Name: "one.png"}}, AddOptions{Namespace: "blog"}); err != nil {
+	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 21)), Name: "one.png"}}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	mustCommit(t, ctx, s, r)
@@ -247,7 +251,7 @@ func TestMigratePathsRefusesStagedChanges(t *testing.T) {
 
 func TestMigratePathsRecoversInterruptedObjectsJournal(t *testing.T) {
 	ctx, r, s := realRepository(t)
-	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 31)), Name: "one.png"}}, AddOptions{Namespace: "blog"}); err != nil {
+	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 31)), Name: "one.png"}}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	mustCommit(t, ctx, s, r)
@@ -288,7 +292,7 @@ func TestMigratePathsRecoversInterruptedObjectsJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, asset := range snap.Assets {
-		if asset.Path != repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext) {
+		if !repository.IsTimestampObjectPath(asset.Path, asset.Object.Ext) {
 			t.Fatalf("resume did not switch metadata: %#v", asset)
 		}
 	}
@@ -296,7 +300,7 @@ func TestMigratePathsRecoversInterruptedObjectsJournal(t *testing.T) {
 
 func TestMigratePathsVerifiesPublicURLsBeforeMetadata(t *testing.T) {
 	ctx, r, s := realRepository(t)
-	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 41)), Name: "one.png"}}, AddOptions{Namespace: "blog"}); err != nil {
+	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 41)), Name: "one.png"}}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	mustCommit(t, ctx, s, r)
@@ -345,7 +349,7 @@ func TestMigratePathsVerifiesPublicURLsBeforeMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, asset := range snap.Assets {
-		want := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+		want := repository.TimestampObjectPath(asset.CreatedAt.UTC(), asset.Object.Ext, 0)
 		if asset.Path != want {
 			t.Fatalf("metadata did not switch after verification: %#v", asset)
 		}
@@ -361,7 +365,7 @@ func TestMigratePathsDuplicateLegacyPathsAndPruneIsExact(t *testing.T) {
 	if _, err := s.Add(ctx, []Input{
 		{Reader: bytes.NewReader(data), Name: "a.png"},
 		{Reader: bytes.NewReader(data), Name: "b.png"},
-	}, AddOptions{Namespace: "blog"}); err != nil {
+	}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	mustCommit(t, ctx, s, r)
@@ -400,7 +404,10 @@ func TestMigratePathsDuplicateLegacyPathsAndPruneIsExact(t *testing.T) {
 	var paths []string
 	var objects []domain.ContentObject
 	for _, asset := range snap.Assets {
-		paths = append(paths, repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext))
+		if !repository.IsTimestampObjectPath(asset.Path, asset.Object.Ext) {
+			t.Fatalf("asset path = %q, want a root timestamp name", asset.Path)
+		}
+		paths = append(paths, asset.Path)
 		objects = append(objects, asset.Object)
 	}
 	if len(paths) != 2 || paths[0] == paths[1] || objects[0] != objects[1] {
@@ -440,7 +447,7 @@ func TestMigratePathsDuplicateLegacyPathsAndPruneIsExact(t *testing.T) {
 	}
 }
 
-func TestMigratePathsCustomOldPathUsesDurableMapping(t *testing.T) {
+func TestMigratePathsRenamesAndRetainsLegacyCustomPath(t *testing.T) {
 	ctx, r, s := realRepository(t)
 	view := stageImage(t, ctx, s)
 	mustCommit(t, ctx, s, r)
@@ -467,18 +474,15 @@ func TestMigratePathsCustomOldPathUsesDurableMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldBlob := repository.BlobID(oldEntry.SHA)
-	publishRaw(t, ctx, r, []repository.TreeChange{
+	changes := []repository.TreeChange{
 		{Path: custom, Blob: &oldBlob},
 		{Path: repository.AssetPath(asset.ID), Blob: &metaBlob},
-	})
+	}
+	if oldPath != custom {
+		changes = append(changes, repository.TreeChange{Path: oldPath})
+	}
+	publishRaw(t, ctx, r, changes)
 	if _, err := s.Sync(ctx, r); err != nil {
-		t.Fatal(err)
-	}
-	plan, found, err := s.readMigrationPlan(ctx)
-	if found {
-		t.Fatalf("unexpected plan before migration: %#v", plan)
-	}
-	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -486,37 +490,35 @@ func TestMigratePathsCustomOldPathUsesDurableMapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Migrated != 1 {
-		t.Fatalf("migration = %#v", result)
+	target := repository.TimestampObjectPath(asset.CreatedAt, asset.Object.Ext, 0)
+	if result.Migrated != 1 || len(result.Items) != 1 || result.Items[0].Status != "migrated" ||
+		result.Items[0].OldPath != custom || result.Items[0].NewPath != target {
+		t.Fatalf("legacy custom path was not migrated: %#v", result)
 	}
-	plan, found, err = s.readMigrationPlan(ctx)
-	if err != nil || !found || len(plan.Items) != 1 || plan.Items[0].OldPath != custom {
-		t.Fatalf("durable mapping = %#v, %v, %v", plan, found, err)
-	}
-	pruned, err := s.MigratePaths(ctx, r, false, true)
+	final, err := repository.ReadSnapshot(ctx, r, result.Head)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pruned.Pruned != 1 {
-		t.Fatalf("prune = %#v", pruned)
+	if final.Assets[asset.ID].Path != target {
+		t.Fatalf("timestamp path was not published: %#v", final.Assets[asset.ID])
 	}
-	if _, err := findEntry(ctx, r, custom); err == nil {
-		t.Fatal("custom old path was not pruned from the exact mapping")
+	if _, err := findEntry(ctx, r, custom); err != nil {
+		t.Fatalf("custom object disappeared: %v", err)
 	}
-	if _, err := findEntry(ctx, r, oldPath); err != nil {
-		t.Fatalf("unmapped original path was deleted: %v", err)
-	}
-	final, err := repository.ReadSnapshot(ctx, r, pruned.Head)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if final.Assets[asset.ID].Path != repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext) {
-		t.Fatalf("asset path = %#v", final.Assets[asset.ID])
+	if entry, err := findEntry(ctx, r, target); err != nil || entry.SHA != oldEntry.SHA {
+		t.Fatalf("new path does not use the original blob: %+v, %v", entry, err)
 	}
 }
 
 func TestMigratePathsCloudflareUploadsBeforeSwitchAndRetainsOldKeys(t *testing.T) {
 	ctx, r, s := realRepository(t)
+	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 61)), Name: "one.png"}}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
+		t.Fatal(err)
+	}
+	mustCommit(t, ctx, s, r)
+	legacyGallery(t, ctx, r, s)
+	// Enable the mirror only after the fixture has taken its legacy shape, so
+	// the staging timestamp path was never a published R2 key.
 	fake := newFakeMirror()
 	enableTestCloudflare(t, s, fake, testCloudflareConfig())
 	var verified []string
@@ -524,18 +526,11 @@ func TestMigratePathsCloudflareUploadsBeforeSwitchAndRetainsOldKeys(t *testing.T
 		verified = append(verified, raw)
 		return nil
 	}
-	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 61)), Name: "one.png"}}, AddOptions{Namespace: "blog"}); err != nil {
-		t.Fatal(err)
-	}
-	mustCommit(t, ctx, s, r)
-	legacyGallery(t, ctx, r, s)
 	legacy := snapshotAt(t, ctx, r)
 	var oldPath, newPath string
-	var asset domain.Asset
 	for _, a := range legacy.Assets {
-		asset = a
 		oldPath = repository.LegacyObjectPath(a.Namespace, a.Object)
-		newPath = repository.AssetObjectPath(a.Namespace, a.ID, a.Object.Ext)
+		newPath = repository.TimestampObjectPath(a.CreatedAt.UTC(), a.Object.Ext, 0)
 	}
 
 	result, err := s.MigratePaths(ctx, r, false, false)
@@ -583,12 +578,11 @@ func TestMigratePathsCloudflareUploadsBeforeSwitchAndRetainsOldKeys(t *testing.T
 	if _, ok := fake.object(oldPath); !ok {
 		t.Fatal("old R2 key disappeared after prune")
 	}
-	_ = asset
 }
 
 func TestMigratePathsResumeUsesDurableMapping(t *testing.T) {
 	ctx, r, s := realRepository(t)
-	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 71)), Name: "one.png"}}, AddOptions{Namespace: "blog"}); err != nil {
+	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 71)), Name: "one.png"}}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	mustCommit(t, ctx, s, r)
@@ -597,7 +591,7 @@ func TestMigratePathsResumeUsesDurableMapping(t *testing.T) {
 	var oldPath, newPath, hash string
 	for _, asset := range legacy.Assets {
 		oldPath = repository.LegacyObjectPath(asset.Namespace, asset.Object)
-		newPath = repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+		newPath = repository.TimestampObjectPath(asset.CreatedAt.UTC(), asset.Object.Ext, 0)
 		hash = asset.Object.Hash.String()
 	}
 	first, err := s.MigratePaths(ctx, r, false, false)
@@ -634,7 +628,7 @@ func TestMigratePathsResumeUsesDurableMapping(t *testing.T) {
 
 func TestMigrationProtectsAlreadyMigratedV2(t *testing.T) {
 	ctx, r, s := realRepository(t)
-	stageImage(t, ctx, s)
+	stageHashedImage(t, ctx, s)
 	mustCommit(t, ctx, s, r)
 	legacyGallery(t, ctx, r, s)
 	if _, err := s.MigratePaths(ctx, r, false, false); err != nil {
@@ -676,7 +670,7 @@ func TestMigrationProtectsAlreadyMigratedV2(t *testing.T) {
 
 func TestMigratePathsPruneVerifiesNewTargets(t *testing.T) {
 	ctx, r, s := realRepository(t)
-	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 72)), Name: "one.png"}}, AddOptions{Namespace: "blog"}); err != nil {
+	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 72)), Name: "one.png"}}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
 		t.Fatal(err)
 	}
 	mustCommit(t, ctx, s, r)
@@ -715,6 +709,357 @@ func TestMigratePathsPruneVerifiesNewTargets(t *testing.T) {
 	}
 	if _, err := findEntry(ctx, r, oldPath); err == nil {
 		t.Fatal("prune did not remove the mapped old object")
+	}
+}
+
+// stageHashedImage stages an asset whose SHA-256 is recorded, as every asset
+// written before hashes became optional.
+func stageHashedImage(t *testing.T, ctx context.Context, s *Service) domain.Asset {
+	t.Helper()
+	v, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 99)), Name: "hashed.png"}}, AddOptions{Namespace: "blog", ComputeHash: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v[0].Asset
+}
+
+// moveToAssetIDLayout rewrites one committed asset to the pre-timestamp
+// objects/<namespace>/<asset-id>.<ext> layout.
+func moveToAssetIDLayout(t *testing.T, ctx context.Context, r repository.Git, s *Service, id domain.AssetID) domain.Asset {
+	t.Helper()
+	snap := snapshotAt(t, ctx, r)
+	asset := snap.Assets[id]
+	target := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+	if asset.Path == target {
+		return asset
+	}
+	source, err := findEntry(ctx, r, repository.ObjectPath(asset))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := asset
+	updated.Path = target
+	metadata, err := repository.EncodeAsset(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaBlob, err := r.CreateBlob(ctx, bytes.NewReader(metadata), int64(len(metadata)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobID := repository.BlobID(source.SHA)
+	changes := []repository.TreeChange{
+		{Path: target, Blob: &blobID},
+		{Path: repository.AssetPath(asset.ID), Blob: &metaBlob},
+	}
+	if asset.Path != "" && asset.Path != target {
+		changes = append(changes, repository.TreeChange{Path: asset.Path})
+	}
+	publishRaw(t, ctx, r, changes)
+	if _, err := s.Sync(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	return updated
+}
+
+func TestMigratePathsRewritesAssetIDLayoutToTimestampName(t *testing.T) {
+	ctx, r, s := realRepository(t)
+	view := stageHashedImage(t, ctx, s)
+	mustCommit(t, ctx, s, r)
+	asset := moveToAssetIDLayout(t, ctx, r, s, view.ID)
+	oldPath := repository.ObjectPath(asset)
+	if oldPath != repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext) {
+		t.Fatalf("fixture is not the asset-id layout: %#v", asset)
+	}
+	want := repository.TimestampObjectPath(asset.CreatedAt.UTC(), asset.Object.Ext, 0)
+
+	result, err := s.MigratePaths(ctx, r, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Migrated != 1 || len(result.Items) != 1 {
+		t.Fatalf("migration = %#v", result)
+	}
+	if item := result.Items[0]; item.OldPath != oldPath || item.NewPath != want {
+		t.Fatalf("mapping row = %#v, want %s -> %s", item, oldPath, want)
+	}
+	final := snapshotAt(t, ctx, r)
+	if final.Assets[view.ID].Path != want {
+		t.Fatalf("asset path = %q, want %q", final.Assets[view.ID].Path, want)
+	}
+	// The immutable source blob is reused, not re-uploaded, and the old path
+	// survives until an explicit prune.
+	source, err := findEntry(ctx, r, oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := findEntry(ctx, r, want)
+	if err != nil || target.SHA != source.SHA {
+		t.Fatalf("target does not reuse the source blob: %v %#v", err, target)
+	}
+	plan, found, err := s.readMigrationPlan(ctx)
+	if err != nil || !found || len(plan.Items) != 1 {
+		t.Fatalf("durable mapping = %#v, %v, %v", plan, found, err)
+	}
+	if item := plan.Items[0]; item.OldPath != oldPath || item.NewPath != want || len(item.PriorPaths) != 0 {
+		t.Fatalf("durable mapping row = %#v", item)
+	}
+
+	pruned, err := s.MigratePaths(ctx, r, false, true)
+	if err != nil || pruned.Pruned != 1 {
+		t.Fatalf("prune = %#v, %v", pruned, err)
+	}
+	if _, err := findEntry(ctx, r, oldPath); err == nil {
+		t.Fatal("prune left the asset-id object behind")
+	}
+	if _, err := findEntry(ctx, r, want); err != nil {
+		t.Fatalf("prune removed the live timestamp object: %v", err)
+	}
+}
+
+func TestMigratePathsCollisionSuffixIsDeterministic(t *testing.T) {
+	ctx, r, s := realRepository(t)
+	for _, n := range []int{81, 82} {
+		if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, n)), Name: fmt.Sprintf("%d.png", n)}}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustCommit(t, ctx, s, r)
+	legacyGallery(t, ctx, r, s)
+	at := time.Date(2026, 1, 2, 3, 4, 5, 123456789, time.UTC)
+	snap := snapshotAt(t, ctx, r)
+	changes := make([]repository.TreeChange, 0, len(snap.Assets))
+	for _, asset := range snap.Assets {
+		updated := asset
+		updated.CreatedAt = at
+		data, err := repository.EncodeAsset(updated)
+		if err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, repository.TreeChange{Path: repository.AssetPath(asset.ID), Blob: blob(t, ctx, r, data)})
+	}
+	publishRaw(t, ctx, r, changes)
+	if _, err := s.Sync(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := make([]domain.AssetID, 0, len(snap.Assets))
+	for id := range snap.Assets {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+	ext := snap.Assets[ids[0]].Object.Ext
+	first := repository.TimestampObjectPath(at, ext, 0)
+	second := repository.TimestampObjectPath(at, ext, 1)
+
+	result, err := s.MigratePaths(ctx, r, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Migrated != 2 {
+		t.Fatalf("migration = %#v", result)
+	}
+	final := snapshotAt(t, ctx, r)
+	if final.Assets[ids[0]].Path != first || final.Assets[ids[1]].Path != second {
+		t.Fatalf("collision assignment = %q, %q; want %q, %q",
+			final.Assets[ids[0]].Path, final.Assets[ids[1]].Path, first, second)
+	}
+	// A resumed run must keep the same deterministic names.
+	resumed, err := s.MigratePaths(ctx, r, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Migrated != 0 || resumed.Head != result.Head {
+		t.Fatalf("resume changed the collision mapping: %#v", resumed)
+	}
+	plan, found, err := s.readMigrationPlan(ctx)
+	if err != nil || !found {
+		t.Fatalf("durable mapping = %#v, %v, %v", plan, found, err)
+	}
+	byAsset := make(map[string]string, len(plan.Items))
+	for _, item := range plan.Items {
+		byAsset[item.AssetID] = item.NewPath
+	}
+	if byAsset[ids[0].String()] != first || byAsset[ids[1].String()] != second {
+		t.Fatalf("durable mapping = %#v", byAsset)
+	}
+}
+
+func TestMigratePathsNeverClobbersOccupiedTimestampPath(t *testing.T) {
+	ctx, r, s := realRepository(t)
+	view := stageHashedImage(t, ctx, s)
+	mustCommit(t, ctx, s, r)
+	legacyGallery(t, ctx, r, s)
+	asset := snapshotAt(t, ctx, r).Assets[view.ID]
+	occupied := repository.TimestampObjectPath(asset.CreatedAt.UTC(), asset.Object.Ext, 0)
+	occupiedBlob := blob(t, ctx, r, []byte("unrelated occupant"))
+	publishRaw(t, ctx, r, []repository.TreeChange{{Path: occupied, Blob: occupiedBlob}})
+	if _, err := s.Sync(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+
+	want := repository.TimestampObjectPath(asset.CreatedAt.UTC(), asset.Object.Ext, 1)
+	result, err := s.MigratePaths(ctx, r, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Migrated != 1 || result.Items[0].NewPath != want {
+		t.Fatalf("migration = %#v, want target %q", result, want)
+	}
+	entry, err := findEntry(ctx, r, occupied)
+	if err != nil || entry.SHA != string(*occupiedBlob) {
+		t.Fatalf("occupied target was clobbered: %v %#v", err, entry)
+	}
+	if final := snapshotAt(t, ctx, r); final.Assets[view.ID].Path != want {
+		t.Fatalf("asset path = %q, want %q", final.Assets[view.ID].Path, want)
+	}
+
+	pruned, err := s.MigratePaths(ctx, r, false, true)
+	if err != nil || pruned.Pruned != 1 {
+		t.Fatalf("prune = %#v, %v", pruned, err)
+	}
+	if _, err := findEntry(ctx, r, occupied); err != nil {
+		t.Fatalf("prune removed an unrelated occupant: %v", err)
+	}
+}
+
+func TestMigratePathsPreservesOldUUIDMigrationPlan(t *testing.T) {
+	ctx, r, s := realRepository(t)
+	fake := newFakeMirror()
+	enableTestCloudflare(t, s, fake, testCloudflareConfig())
+	s.VerifyURL = func(ctx context.Context, raw string, object domain.ContentObject) error { return nil }
+	if _, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 91)), Name: "one.png"}}, AddOptions{Namespace: "blog", ComputeHash: true}); err != nil {
+		t.Fatal(err)
+	}
+	mustCommit(t, ctx, s, r)
+	legacyGallery(t, ctx, r, s)
+	legacy := snapshotAt(t, ctx, r)
+	var asset domain.Asset
+	var oldPath string
+	for _, a := range legacy.Assets {
+		asset = a
+		oldPath = repository.LegacyObjectPath(a.Namespace, a.Object)
+	}
+	// Mirror the legacy key so the old link exists before the earlier migration.
+	if _, err := s.CloudflareSync(ctx, r, CloudflareOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the previous asset-id migration exactly as the installed state:
+	// object copy at the UUID path, metadata switched, and its durable plan.
+	uuidPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+	oldEntry, err := findEntry(ctx, r, oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobID := repository.BlobID(oldEntry.SHA)
+	updated := asset
+	updated.Path = uuidPath
+	metadata, err := repository.EncodeAsset(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaBlob, err := r.CreateBlob(ctx, bytes.NewReader(metadata), int64(len(metadata)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishRaw(t, ctx, r, []repository.TreeChange{
+		{Path: uuidPath, Blob: &blobID},
+		{Path: repository.AssetPath(asset.ID), Blob: &metaBlob},
+	})
+	if _, err := s.Sync(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	// The installed workspace is already format v3 with this UUID mapping.
+	manifest := legacy.Manifest
+	manifest.FormatVersion = 3
+	manifestData, err := repository.EncodeManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishRaw(t, ctx, r, []repository.TreeChange{{Path: repository.ManifestPath, Blob: blob(t, ctx, r, manifestData)}})
+	if _, err := s.Sync(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	oldPlan := migrationPlan{Version: migrationPlanVersion, RepositoryID: legacy.Manifest.ID.String(), Items: []migrationPlanItem{{
+		AssetID: asset.ID.String(), Namespace: asset.Namespace, OldPath: oldPath, NewPath: uuidPath,
+		Object: asset.Object, SHA256: asset.Object.Hash.String(), Blob: oldEntry.SHA,
+	}}}
+	if err := s.writeMigrationPlan(ctx, oldPlan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CloudflareSync(ctx, r, CloudflareOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fake.object(oldPath); !ok {
+		t.Fatal("fixture did not mirror the legacy key")
+	}
+
+	result, err := s.MigratePaths(ctx, r, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPath := repository.TimestampObjectPath(asset.CreatedAt.UTC(), asset.Object.Ext, 0)
+	if result.Migrated != 1 || snapshotAt(t, ctx, r).Assets[asset.ID].Path != newPath {
+		t.Fatalf("migration = %#v, want %q", result, newPath)
+	}
+	plan, found, err := s.readMigrationPlan(ctx)
+	if err != nil || !found || len(plan.Items) != 1 {
+		t.Fatalf("durable mapping = %#v, %v, %v", plan, found, err)
+	}
+	if item := plan.Items[0]; item.OldPath != uuidPath || item.NewPath != newPath ||
+		len(item.PriorPaths) != 1 || item.PriorPaths[0] != oldPath {
+		t.Fatalf("durable mapping row = %#v", item)
+	}
+
+	pruned, err := s.MigratePaths(ctx, r, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned.Pruned != 2 || pruned.R2Retained != 2 {
+		t.Fatalf("prune = %#v", pruned)
+	}
+	after := snapshotAt(t, ctx, r)
+	keys, err := snapshotRetentionKeys(ctx, r, after, after.Manifest.ID)
+	if err != nil || !keys[oldPath] || !keys[uuidPath] {
+		t.Fatalf("retention marker lost an old link: %v %#v", err, keys)
+	}
+	if _, err := s.CloudflareSync(ctx, r, CloudflareOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fake.object(oldPath); !ok {
+		t.Fatal("legacy R2 key disappeared after timestamp migration")
+	}
+	if _, ok := fake.object(uuidPath); !ok {
+		t.Fatal("UUID R2 key disappeared after timestamp migration")
+	}
+}
+
+func TestMigrationPlanAllowsMissingKnownSHA(t *testing.T) {
+	repositoryID, err := domain.NewRepositoryID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetID, err := domain.NewAssetID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 3, 4, 5, 6, 7, 8, time.UTC)
+	object := domain.ContentObject{MIME: "image/png", Ext: "png", Size: 64, Width: 1, Height: 1}
+	plan := migrationPlan{Version: migrationPlanVersion, RepositoryID: repositoryID.String(), Items: []migrationPlanItem{{
+		AssetID: assetID.String(), Namespace: "blog",
+		OldPath: "objects/blog/" + assetID.String() + ".png",
+		NewPath: repository.TimestampObjectPath(at, "png", 0),
+		Object:  object,
+		Blob:    "0123456789abcdef0123456789abcdef01234567",
+	}}}
+	if err := validateMigrationPlan(plan); err != nil {
+		t.Fatalf("mapping without a digest was rejected: %v", err)
+	}
+	// A digest that the metadata cannot confirm is still a contradiction.
+	plan.Items[0].SHA256 = strings.Repeat("0", 64)
+	if err := validateMigrationPlan(plan); err == nil {
+		t.Fatal("mapping invented a digest for an asset that has none")
 	}
 }
 

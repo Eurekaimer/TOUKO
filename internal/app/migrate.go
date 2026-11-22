@@ -20,6 +20,7 @@ import (
 	"github.com/Eurekaimer/TOUKO/internal/atomicfile"
 	"github.com/Eurekaimer/TOUKO/internal/delivery"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
+	toukoimage "github.com/Eurekaimer/TOUKO/internal/image"
 	"github.com/Eurekaimer/TOUKO/internal/index"
 	"github.com/Eurekaimer/TOUKO/internal/r2"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
@@ -80,9 +81,24 @@ type migrationPlanItem struct {
 	OldPath   string               `json:"old_path"`
 	NewPath   string               `json:"new_path"`
 	Object    domain.ContentObject `json:"object"`
-	// SHA256 and Blob preserve the exact source proof across recovery.
+	// PriorPaths are older aliases superseded by an earlier migration of the
+	// same asset. They are never published and are kept only so prune and R2
+	// retention keep honoring URLs that predate this run.
+	PriorPaths []string `json:"prior_paths,omitempty"`
+	// SHA256 and Blob preserve the exact source proof across recovery. SHA256
+	// is empty only when the asset was recorded without a digest; Blob then
+	// carries the immutable Git identity instead.
 	SHA256 string `json:"sha256"`
 	Blob   string `json:"blob"`
+}
+
+// migrationUpdate is the exact move of one asset: the bytes at FromPath must
+// be re-published at ToPath without another upload.
+type migrationUpdate struct {
+	AssetID  domain.AssetID
+	FromPath string
+	ToPath   string
+	Item     migrationPlanItem
 }
 
 type migrationProof struct {
@@ -98,15 +114,17 @@ type migrationAnalysis struct {
 	oldEntries  map[domain.AssetID]repository.GitEntry
 	changed     map[domain.AssetID]bool
 	missing     map[domain.AssetID]bool
+	updates     map[domain.AssetID]migrationUpdate
 	needObjects bool
 	needMeta    bool
 }
 
-// MigratePaths rewrites every asset to objects/<namespace>/<asset-id>.<ext> in
-// two published phases. Phase one adds the new object entries while metadata
+// MigratePaths rewrites every managed legacy asset to its root timestamp name
+// in two published phases. Phase one adds the new object entries while metadata
 // still points at the old paths; phase two switches metadata in one commit.
 // Old objects and old URLs therefore survive every failure, and only prune can
-// remove the exact entries recorded in the durable migration plan.
+// remove the exact entries recorded in the durable migration plan. Assets
+// that already use a timestamp name keep their current path.
 func (s *Service) MigratePaths(ctx context.Context, r repository.Git, dryRun, prune bool) (MigrateResult, error) {
 	unlock, err := s.Lock(ctx)
 	if err != nil {
@@ -159,7 +177,7 @@ func (s *Service) MigratePaths(ctx context.Context, r repository.Git, dryRun, pr
 		// Prune is a separate, explicitly destructive step. Never mix it with a
 		// metadata switch that has not been verified yet.
 		if analysis.needObjects || analysis.needMeta {
-			return result, fmt.Errorf("%w: prune requires every asset to use the asset-id layout; run migrate paths first", domain.ErrConflict)
+			return result, fmt.Errorf("%w: prune requires every managed asset to use its timestamp name; run migrate paths first", domain.ErrConflict)
 		}
 		return s.pruneObjects(ctx, r, st, base, result, dryRun)
 	}
@@ -174,7 +192,7 @@ func (s *Service) MigratePaths(ctx context.Context, r repository.Git, dryRun, pr
 		}
 		return result, nil
 	}
-	if analysis.needMeta || analysis.needObjects {
+	if len(analysis.planItems) > 0 {
 		merged, err := s.mergeMigrationPlan(ctx, st.Manifest.ID, analysis.planItems)
 		if err != nil {
 			return result, err
@@ -206,7 +224,7 @@ func (s *Service) MigratePaths(ctx context.Context, r repository.Git, dryRun, pr
 		// until the exact public targets and the R2 mirror can be read back.
 		targets := analysis.changedAssets()
 		if base.Manifest.FormatVersion != 3 {
-			targets = analysis.assets
+			targets = analysis.targetAssets()
 		}
 		mirror, verifyErr := s.verifyMigrationTargets(ctx, r, base, targets, location, cfg)
 		result.Cloudflare = mirror
@@ -249,12 +267,30 @@ func (s *Service) MigratePaths(ctx context.Context, r repository.Git, dryRun, pr
 	return result, nil
 }
 
+// changedAssets returns the assets whose object must be published at a new
+// path before metadata switches. Each copy carries its target in Path so the
+// Cloudflare bridge mirrors the exact destination.
 func (a migrationAnalysis) changedAssets() []domain.Asset {
 	out := make([]domain.Asset, 0, len(a.changed))
 	for _, asset := range a.assets {
 		if a.changed[asset.ID] {
+			asset.Path = a.updates[asset.ID].ToPath
 			out = append(out, asset)
 		}
+	}
+	return out
+}
+
+// targetAssets returns every asset with its final path in Path. Verification
+// of a full gallery needs the destinations, not the metadata that is about to
+// be replaced.
+func (a migrationAnalysis) targetAssets() []domain.Asset {
+	out := make([]domain.Asset, 0, len(a.assets))
+	for _, asset := range a.assets {
+		if update, ok := a.updates[asset.ID]; ok {
+			asset.Path = update.ToPath
+		}
+		out = append(out, asset)
 	}
 	return out
 }
@@ -266,6 +302,7 @@ func (s *Service) analyzeMigration(ctx context.Context, r repository.Reader, bas
 		oldEntries: make(map[domain.AssetID]repository.GitEntry),
 		changed:    make(map[domain.AssetID]bool),
 		missing:    make(map[domain.AssetID]bool),
+		updates:    make(map[domain.AssetID]migrationUpdate),
 	}
 	plan, found, err := s.readMigrationPlan(ctx)
 	if err != nil {
@@ -289,83 +326,255 @@ func (s *Service) analyzeMigration(ctx context.Context, r repository.Reader, bas
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
-	targets := make(map[string]domain.AssetID, len(ids))
+	if base.Manifest.FormatVersion != 3 {
+		// Older clients could delete legacy R2 keys. Any run is the right moment
+		// to install the barrier, even when no path moves.
+		a.needMeta = true
+	}
+	targets := make(map[domain.AssetID]string, len(ids))
+	reserved := make(map[string]domain.AssetID, len(ids))
+	// Timestamp names are final. Reserve them first so a generated filename can
+	// never collide with a live asset.
 	for _, id := range ids {
 		asset := base.Assets[id]
-		if asset.Object.Hash == (domain.ObjectHash{}) {
-			return a, fmt.Errorf("%w: asset %s has no SHA-256", domain.ErrRepositoryCorrupt, id)
-		}
 		a.assets = append(a.assets, asset)
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
-		if other, ok := targets[newPath]; ok && other != id {
-			return a, fmt.Errorf("%w: two assets share target path %s", domain.ErrRepositoryCorrupt, newPath)
-		}
-		targets[newPath] = id
-		oldPath := repository.ObjectPath(asset)
-		// The durable plan is the only exact record of the old path once a
-		// resumed run sees metadata already pointing at the new location.
-		mappedOld := oldPath
-		planned, hasPlan := planByID[id]
-		if hasPlan && planned.NewPath == newPath && planned.Namespace == asset.Namespace && planned.Object == asset.Object {
-			if oldPath == newPath {
-				mappedOld = planned.OldPath
-			} else if planned.OldPath != oldPath {
-				return a, fmt.Errorf("%w: migration mapping records old path %s for asset %s, but metadata uses %s", domain.ErrConflict, planned.OldPath, id, oldPath)
-			}
-		}
-		item := MigrateItem{
-			AssetID: asset.ID.String(), OldPath: mappedOld, NewPath: newPath,
-			SizeBytes: asset.Object.Size, Status: "unchanged", SHA256: asset.Object.Hash.String(),
-		}
-		item.OldGitHub, item.NewGitHub = helpers.github(mappedOld), helpers.github(newPath)
-		item.OldR2, item.NewR2 = helpers.r2(mappedOld), helpers.r2(newPath)
-		if oldPath == newPath {
-			if mappedOld != oldPath {
-				// Rebuild the exact old mapping from the durable plan.
-				item.Status = "migrated"
-				if base.Manifest.FormatVersion != 3 {
-					a.needMeta = true
-				}
-			}
-			a.items = append(a.items, item)
+		if !repository.IsTimestampObjectPath(asset.Path, asset.Object.Ext) {
 			continue
 		}
-		oldEntry, ok := entryAt(base.Entries, oldPath)
-		if !ok {
-			return a, fmt.Errorf("%w: base object %s is missing", domain.ErrRepositoryCorrupt, oldPath)
+		if other, ok := reserved[asset.Path]; ok && other != id {
+			return a, fmt.Errorf("%w: two assets share target path %s", domain.ErrRepositoryCorrupt, asset.Path)
 		}
-		if err := checkBlobEntry(oldEntry, asset.Object.Size); err != nil {
-			return a, err
+		reserved[asset.Path] = id
+		targets[id] = asset.Path
+	}
+	// Assign one deterministic root filename per legacy placement.
+	for _, id := range ids {
+		if _, final := targets[id]; final {
+			continue
 		}
-		proof, err := sourceProof(ctx, r, oldEntry, asset.Object)
+		asset := base.Assets[id]
+		oldPath, managed, err := migrationSourcePath(asset)
 		if err != nil {
 			return a, err
 		}
-		item.SHA256 = proof.SHA256
-		a.oldEntries[id] = oldEntry
-		a.changed[id] = true
-		a.planItems = append(a.planItems, migrationPlanItem{
-			AssetID: id.String(), Namespace: asset.Namespace, OldPath: oldPath, NewPath: newPath, Object: asset.Object,
-			SHA256: proof.SHA256, Blob: proof.Blob,
-		})
-		if target, ok := entryAt(base.Entries, newPath); ok {
-			// A resumed phase one must reuse the exact same immutable blob.
-			// Same-size wrong bytes are never accepted as a completed target.
-			if err := checkBlobEntry(target, asset.Object.Size); err != nil {
+		if !managed {
+			targets[id] = asset.Path
+			continue
+		}
+		source, hasSource := entryAt(base.Entries, oldPath)
+		target := ""
+		if planned, ok := planByID[id]; ok &&
+			planned.Namespace == asset.Namespace && planned.Object == asset.Object &&
+			planned.OldPath == oldPath &&
+			repository.IsTimestampObjectPath(planned.NewPath, asset.Object.Ext) &&
+			migrationTargetAvailable(planned.NewPath, id, reserved, base.Entries, source, hasSource) {
+			// An interrupted run already recorded this exact target.
+			target = planned.NewPath
+		}
+		if target == "" {
+			target, err = migrationTimestampTarget(asset, id, reserved, base.Entries, source, hasSource)
+			if err != nil {
 				return a, err
 			}
-			if target.SHA != oldEntry.SHA {
-				return a, fmt.Errorf("%w: target path %s is occupied by different bytes", domain.ErrConflict, newPath)
-			}
-		} else {
-			a.missing[id] = true
-			a.needObjects = true
 		}
-		a.needMeta = true
-		item.Status = "planned"
+		if other, ok := reserved[target]; ok && other != id {
+			return a, fmt.Errorf("%w: two assets share target path %s", domain.ErrRepositoryCorrupt, target)
+		}
+		reserved[target] = id
+		targets[id] = target
+	}
+	for _, id := range ids {
+		asset := base.Assets[id]
+		target := targets[id]
+		planned, hasPlan := planByID[id]
+		if hasPlan && (planned.Namespace != asset.Namespace || planned.Object != asset.Object) {
+			return a, fmt.Errorf("%w: migration mapping does not match asset %s", domain.ErrConflict, id)
+		}
+		item := MigrateItem{
+			AssetID: asset.ID.String(), OldPath: target, NewPath: target,
+			SizeBytes: asset.Object.Size, Status: "unchanged", SHA256: objectSHA(asset.Object),
+		}
+		if asset.Path != target {
+			oldPath := repository.ObjectPath(asset)
+			if hasPlan && planned.OldPath != oldPath && planned.NewPath != asset.Path {
+				return a, fmt.Errorf("%w: migration mapping records old path %s for asset %s, but metadata uses %s", domain.ErrConflict, planned.OldPath, id, oldPath)
+			}
+			source, ok := entryAt(base.Entries, oldPath)
+			if !ok {
+				return a, fmt.Errorf("%w: base object %s is missing", domain.ErrRepositoryCorrupt, oldPath)
+			}
+			if err := checkBlobEntry(source, asset.Object.Size); err != nil {
+				return a, err
+			}
+			proof, err := sourceProof(ctx, r, source, asset.Object)
+			if err != nil {
+				return a, err
+			}
+			// The row reports the oldest URL this asset ever had so an operator
+			// rewriting documents does not miss the link that is actually out
+			// there; immediate source aliases are kept in the plan.
+			item.OldPath = migrationEarliestPath(planned, hasPlan, oldPath)
+			plannedItem := migrationPlanItem{
+				AssetID: id.String(), Namespace: asset.Namespace, OldPath: oldPath, NewPath: target,
+				Object: asset.Object, PriorPaths: migrationPriorPaths(planned, hasPlan, oldPath),
+				SHA256: proof.SHA256, Blob: proof.Blob,
+			}
+			item.SHA256 = proof.SHA256
+			a.oldEntries[id] = source
+			a.changed[id] = true
+			a.planItems = append(a.planItems, plannedItem)
+			a.updates[id] = migrationUpdate{AssetID: id, FromPath: oldPath, ToPath: target, Item: plannedItem}
+			if existing, ok := entryAt(base.Entries, target); ok {
+				// A resumed phase one must reuse the exact same immutable blob.
+				// Same-size wrong bytes are never accepted as a completed target.
+				if err := checkBlobEntry(existing, asset.Object.Size); err != nil {
+					return a, err
+				}
+				if existing.SHA != source.SHA {
+					return a, fmt.Errorf("%w: target path %s is occupied by different bytes", domain.ErrConflict, target)
+				}
+			} else {
+				a.missing[id] = true
+				a.needObjects = true
+			}
+			a.needMeta = true
+			item.Status = "planned"
+		} else if hasPlan {
+			// A resumed run whose metadata already points at the timestamp name
+			// reconstructs the original row from the durable mapping.
+			if planned.NewPath != target {
+				return a, fmt.Errorf("%w: migration mapping does not match asset %s", domain.ErrConflict, id)
+			}
+			if earliest := migrationEarliestPath(planned, true, target); earliest != target {
+				item.OldPath = earliest
+				item.Status = "migrated"
+			}
+		}
+		item.OldGitHub, item.NewGitHub = helpers.github(item.OldPath), helpers.github(item.NewPath)
+		item.OldR2, item.NewR2 = helpers.r2(item.OldPath), helpers.r2(item.NewPath)
 		a.items = append(a.items, item)
 	}
 	return a, nil
+}
+
+// migrationSourcePath reports the current placement and whether its filename
+// still needs a timestamp.
+func migrationSourcePath(asset domain.Asset) (string, bool, error) {
+	if asset.Path == "" {
+		if !asset.Object.HasHash() {
+			return "", false, fmt.Errorf("%w: asset %s has neither a path nor a SHA-256", domain.ErrRepositoryCorrupt, asset.ID)
+		}
+		return repository.LegacyObjectPath(asset.Namespace, asset.Object), true, nil
+	}
+	return asset.Path, !repository.IsTimestampObjectPath(asset.Path, asset.Object.Ext), nil
+}
+
+// migrationTargetAvailable accepts a planned or generated filename only when no
+// other asset owns it and the tree either has no entry there or already holds
+// this asset's exact source blob (a resumed phase one).
+func migrationTargetAvailable(candidate string, id domain.AssetID, reserved map[string]domain.AssetID, entries []repository.GitEntry, source repository.GitEntry, hasSource bool) bool {
+	if candidate == "" {
+		return false
+	}
+	if other, ok := reserved[candidate]; ok && other != id {
+		return false
+	}
+	entry, exists := entryAt(entries, candidate)
+	if !exists {
+		return true
+	}
+	return hasSource && entry.Type == "blob" && entry.SHA == source.SHA && entry.Size == source.Size
+}
+
+const migrationTimestampAttempts = 1_000_000
+
+// migrationTimestampTarget derives the root filename from the asset's creation
+// time plus a stable collision suffix. An occupied path with different bytes is
+// never clobbered; the next suffix is tried instead.
+func migrationTimestampTarget(asset domain.Asset, id domain.AssetID, reserved map[string]domain.AssetID, entries []repository.GitEntry, source repository.GitEntry, hasSource bool) (string, error) {
+	at := asset.CreatedAt.UTC()
+	if at.IsZero() {
+		return "", fmt.Errorf("%w: asset %s has no creation time", domain.ErrRepositoryCorrupt, id)
+	}
+	for collision := range migrationTimestampAttempts {
+		candidate := repository.TimestampObjectPath(at, asset.Object.Ext, collision)
+		if migrationTargetAvailable(candidate, id, reserved, entries, source, hasSource) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("%w: no free timestamp path for asset %s", domain.ErrConflict, id)
+}
+
+// migrationPriorPaths keeps every older alias the durable mapping recorded, so
+// prune and R2 retention still honor links that predate this run.
+func migrationPriorPaths(planned migrationPlanItem, ok bool, current string) []string {
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(planned.PriorPaths)+1)
+	seen := make(map[string]bool, len(planned.PriorPaths)+1)
+	appendPath := func(p string) {
+		if p == "" || p == current || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, p := range planned.PriorPaths {
+		appendPath(p)
+	}
+	appendPath(planned.OldPath)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func migrationEarliestPath(planned migrationPlanItem, ok bool, fallback string) string {
+	if !ok {
+		return fallback
+	}
+	if len(planned.PriorPaths) > 0 {
+		return planned.PriorPaths[0]
+	}
+	if planned.OldPath != "" {
+		return planned.OldPath
+	}
+	return fallback
+}
+
+// mergeMigrationPriorPaths folds a superseded mapping into its replacement
+// without dropping any URL an earlier run promised.
+func mergeMigrationPriorPaths(item, previous migrationPlanItem) []string {
+	out := make([]string, 0, len(item.PriorPaths)+len(previous.PriorPaths)+1)
+	seen := make(map[string]bool, len(item.PriorPaths)+len(previous.PriorPaths)+1)
+	appendPath := func(p string) {
+		if p == "" || p == item.NewPath || p == item.OldPath || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, prior := range item.PriorPaths {
+		appendPath(prior)
+	}
+	for _, prior := range previous.PriorPaths {
+		appendPath(prior)
+	}
+	appendPath(previous.OldPath)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// objectSHA keeps a missing digest empty instead of rendering zero bytes as if
+// they were an observed hash.
+func objectSHA(object domain.ContentObject) string {
+	if !object.HasHash() {
+		return ""
+	}
+	return object.Hash.String()
 }
 
 func (s *Service) publishMigrationObjects(ctx context.Context, r repository.Git, st index.State, base repository.Snapshot, a migrationAnalysis) (repository.Snapshot, error) {
@@ -376,11 +585,15 @@ func (s *Service) publishMigrationObjects(ctx context.Context, r repository.Git,
 		if !ok {
 			return repository.Snapshot{}, fmt.Errorf("%w: migration source for %s is unknown", domain.ErrRepositoryCorrupt, asset.ID)
 		}
+		update := a.updates[id]
+		if update.ToPath == "" {
+			return repository.Snapshot{}, fmt.Errorf("%w: migration target for %s is unknown", domain.ErrRepositoryCorrupt, asset.ID)
+		}
 		// Git blobs are immutable and content addressed: the new path can point
 		// at the already verified old blob without another upload.
 		blob := repository.BlobID(oldEntry.SHA)
 		changes = append(changes, repository.TreeChange{
-			Path: repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext),
+			Path: update.ToPath,
 			Blob: &blob,
 		})
 	}
@@ -391,7 +604,7 @@ func (s *Service) publishMigrationObjects(ctx context.Context, r repository.Git,
 	if err != nil {
 		return repository.Snapshot{}, err
 	}
-	candidateHead, err := r.CreateCommit(ctx, tree, base.Head, "migrate: add asset-id object copies")
+	candidateHead, err := r.CreateCommit(ctx, tree, base.Head, "migrate: add timestamped object copies")
 	if err != nil {
 		return repository.Snapshot{}, err
 	}
@@ -399,7 +612,7 @@ func (s *Service) publishMigrationObjects(ctx context.Context, r repository.Git,
 	if err != nil {
 		return repository.Snapshot{}, err
 	}
-	if err = validateMigrationObjects(ctx, r, base, candidate); err != nil {
+	if err = validateMigrationObjects(ctx, r, base, candidate, a.updates); err != nil {
 		return repository.Snapshot{}, err
 	}
 	pub := &index.Publication{
@@ -410,7 +623,7 @@ func (s *Service) publishMigrationObjects(ctx context.Context, r repository.Git,
 	if err = s.Store.SavePublication(ctx, pub); err != nil {
 		return repository.Snapshot{}, err
 	}
-	published, err := s.publish(ctx, r, st, candidate)
+	published, err := s.publish(ctx, r, st, candidate, nil)
 	if err != nil {
 		return repository.Snapshot{}, err
 	}
@@ -427,7 +640,7 @@ func (s *Service) publishMigrationMetadata(ctx context.Context, r repository.Git
 	for _, id := range sortedIDs(a.changed) {
 		asset := base.Assets[id]
 		updated := asset
-		updated.Path = repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+		updated.Path = a.updates[id].ToPath
 		data, err := repository.EncodeAsset(updated)
 		if err != nil {
 			return repository.Snapshot{}, err
@@ -466,7 +679,7 @@ func (s *Service) publishMigrationMetadata(ctx context.Context, r repository.Git
 	if err != nil {
 		return repository.Snapshot{}, err
 	}
-	candidateHead, err := r.CreateCommit(ctx, tree, base.Head, "migrate: use asset ids in object paths")
+	candidateHead, err := r.CreateCommit(ctx, tree, base.Head, "migrate: use timestamp names in object paths")
 	if err != nil {
 		return repository.Snapshot{}, err
 	}
@@ -474,7 +687,7 @@ func (s *Service) publishMigrationMetadata(ctx context.Context, r repository.Git
 	if err != nil {
 		return repository.Snapshot{}, err
 	}
-	if err = validateMigrationMetadata(ctx, r, base, candidate); err != nil {
+	if err = validateMigrationMetadata(ctx, r, base, candidate, a.updates); err != nil {
 		return repository.Snapshot{}, err
 	}
 	pub := &index.Publication{
@@ -485,7 +698,7 @@ func (s *Service) publishMigrationMetadata(ctx context.Context, r repository.Git
 	if err = s.Store.SavePublication(ctx, pub); err != nil {
 		return repository.Snapshot{}, err
 	}
-	published, err := s.publish(ctx, r, st, candidate)
+	published, err := s.publish(ctx, r, st, candidate, nil)
 	if err != nil {
 		return repository.Snapshot{}, err
 	}
@@ -515,7 +728,7 @@ func (s *Service) verifyMigrationTargets(ctx context.Context, r repository.Git, 
 	}
 	helpers := urlBuilder{location: location, r2Base: cfg.PublicBaseURL}
 	for _, asset := range assets {
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+		newPath := repository.ObjectPath(asset)
 		entry, ok := entryAt(snap.Entries, newPath)
 		if !ok {
 			return result, fmt.Errorf("%w: new object %s is not published", domain.ErrRepositoryCorrupt, newPath)
@@ -562,9 +775,9 @@ func (s *Service) verifyPublishedTargets(ctx context.Context, r repository.Reade
 		if !ok {
 			return fmt.Errorf("%w: migrated asset %s disappeared", domain.ErrRepositoryCorrupt, id)
 		}
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+		newPath := a.updates[id].ToPath
 		if asset.Path != newPath {
-			return fmt.Errorf("%w: asset %s does not use its asset-id path", domain.ErrRepositoryCorrupt, id)
+			return fmt.Errorf("%w: asset %s does not use its migrated path", domain.ErrRepositoryCorrupt, id)
 		}
 		entry, ok := entryAt(snap.Entries, newPath)
 		if !ok {
@@ -585,24 +798,35 @@ func verifyTargetWithProof(ctx context.Context, r repository.Reader, entry repos
 	if err := checkBlobEntry(entry, object.Size); err != nil {
 		return err
 	}
-	if proof.Blob != "" && entry.SHA != proof.Blob {
+	if proof.Blob == "" {
+		return fmt.Errorf("%w: target %s has no immutable source blob", domain.ErrRepositoryCorrupt, entry.Path)
+	}
+	if entry.SHA != proof.Blob {
 		return fmt.Errorf("%w: target %s is not the recorded source blob", domain.ErrRepositoryCorrupt, entry.Path)
 	}
-	if object.Hash == (domain.ObjectHash{}) || proof.SHA256 != object.Hash.String() {
+	if object.HasHash() {
+		if proof.SHA256 != object.Hash.String() {
+			return fmt.Errorf("%w: recorded source proof differs from metadata", domain.ErrRepositoryCorrupt)
+		}
+		return repository.VerifyObject(ctx, r, repository.BlobID(entry.SHA), object)
+	}
+	if proof.SHA256 != "" {
 		return fmt.Errorf("%w: recorded source proof differs from metadata", domain.ErrRepositoryCorrupt)
 	}
+	// Without a recorded digest the immutable blob identity, the checked size
+	// and the verified image description are the proof; a zero hash is never
+	// treated as a digest.
 	return repository.VerifyObject(ctx, r, repository.BlobID(entry.SHA), object)
 }
 
 func (s *Service) assetProof(ctx context.Context, r repository.Reader, snap repository.Snapshot, asset domain.Asset, plan map[domain.AssetID]migrationPlanItem) (migrationProof, error) {
+	newPath := repository.ObjectPath(asset)
 	if item, ok := plan[asset.ID]; ok {
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
 		if item.NewPath != newPath || item.Object != asset.Object {
 			return migrationProof{}, fmt.Errorf("%w: durable mapping does not match asset %s", domain.ErrRepositoryCorrupt, asset.ID)
 		}
 		return migrationProof{SHA256: item.SHA256, Blob: item.Blob}, nil
 	}
-	newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
 	entry, ok := entryAt(snap.Entries, newPath)
 	if !ok {
 		return migrationProof{}, fmt.Errorf("%w: new object %s is not published", domain.ErrRepositoryCorrupt, newPath)
@@ -610,10 +834,7 @@ func (s *Service) assetProof(ctx context.Context, r repository.Reader, snap repo
 	if err := checkBlobEntry(entry, asset.Object.Size); err != nil {
 		return migrationProof{}, err
 	}
-	if asset.Object.Hash == (domain.ObjectHash{}) {
-		return migrationProof{}, fmt.Errorf("%w: asset %s has no SHA-256", domain.ErrRepositoryCorrupt, asset.ID)
-	}
-	return migrationProof{SHA256: asset.Object.Hash.String(), Blob: entry.SHA}, nil
+	return migrationProof{SHA256: objectSHA(asset.Object), Blob: entry.SHA}, nil
 }
 
 func (s *Service) planProofItems(ctx context.Context) (map[domain.AssetID]migrationPlanItem, error) {
@@ -636,8 +857,9 @@ func (s *Service) planProofItems(ctx context.Context) (map[domain.AssetID]migrat
 }
 
 // pruneObjects removes only the exact old paths recorded in the durable plan,
-// after every current asset uses a verified asset-id path. It never derives
-// candidates from hashes and never touches metadata or unrelated objects.
+// after every managed asset uses a verified timestamp placement. It never
+// derives candidates from hashes and never touches metadata or unrelated
+// objects.
 func (s *Service) pruneObjects(ctx context.Context, r repository.Git, st index.State, base repository.Snapshot, result MigrateResult, dryRun bool) (MigrateResult, error) {
 	plan, found, err := s.readMigrationPlan(ctx)
 	if err != nil {
@@ -653,25 +875,30 @@ func (s *Service) pruneObjects(ctx context.Context, r repository.Git, st index.S
 	for _, item := range plan.Items {
 		planByID[item.AssetID] = item
 	}
-	// Every asset must already point at a verified asset-id object.
+	// Every managed asset must already use a verified timestamp placement.
+	// Custom upload directories are not migration's to move or judge.
 	referenced := make(map[string]bool, len(base.Assets))
 	for id, asset := range base.Assets {
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
-		if asset.Path != newPath {
+		_, managed, err := migrationSourcePath(asset)
+		if err != nil {
+			return result, err
+		}
+		if managed {
 			return result, fmt.Errorf("%w: asset %s is not migrated; run migrate paths first", domain.ErrConflict, id)
 		}
-		entry, ok := entryAt(base.Entries, newPath)
+		livePath := repository.ObjectPath(asset)
+		entry, ok := entryAt(base.Entries, livePath)
 		if !ok {
-			return result, fmt.Errorf("%w: live object %s is missing", domain.ErrRepositoryCorrupt, newPath)
+			return result, fmt.Errorf("%w: live object %s is missing", domain.ErrRepositoryCorrupt, livePath)
 		}
-		if item, ok := planByID[id.String()]; ok && item.NewPath == newPath && item.Object == asset.Object {
+		if item, ok := planByID[id.String()]; ok && item.NewPath == livePath && item.Object == asset.Object {
 			if err := verifyMappedObject(ctx, r, entry, item); err != nil {
 				return result, err
 			}
 		} else if err := verifyEntryObject(ctx, r, entry, asset.Object); err != nil {
 			return result, err
 		}
-		referenced[newPath] = true
+		referenced[livePath] = true
 	}
 	entries := make(map[string]repository.GitEntry, len(base.Entries))
 	for _, entry := range base.Entries {
@@ -691,24 +918,30 @@ func (s *Service) pruneObjects(ctx context.Context, r repository.Git, st index.S
 			// object that no current asset can vouch for.
 			continue
 		}
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
-		if asset.Path != newPath || item.Namespace != asset.Namespace || item.Object != asset.Object || item.NewPath != newPath {
+		if item.Namespace != asset.Namespace || item.Object != asset.Object || item.NewPath != asset.Path {
 			return result, fmt.Errorf("%w: migration mapping does not match asset %s", domain.ErrConflict, id)
 		}
 		if item.OldPath == item.NewPath {
 			return result, fmt.Errorf("%w: migration mapping has an empty move for %s", domain.ErrRepositoryCorrupt, id)
 		}
-		if referenced[item.OldPath] {
-			return result, fmt.Errorf("%w: old path %s is still live", domain.ErrConflict, item.OldPath)
-		}
-		if entry, ok := entries[item.OldPath]; ok {
-			if err := verifyMappedObject(ctx, r, entry, item); err != nil {
-				return result, err
+		// Prior aliases from earlier migrations are deleted only under this
+		// explicit prune, never by a normal run, and only when verified.
+		for _, oldPath := range append([]string{item.OldPath}, item.PriorPaths...) {
+			if oldPath == item.NewPath {
+				return result, fmt.Errorf("%w: migration mapping has an empty move for %s", domain.ErrRepositoryCorrupt, id)
 			}
-			gitDeletions = append(gitDeletions, item.OldPath)
+			if referenced[oldPath] {
+				return result, fmt.Errorf("%w: old path %s is still live", domain.ErrConflict, oldPath)
+			}
+			if entry, ok := entries[oldPath]; ok {
+				if err := verifyMappedObject(ctx, r, entry, item); err != nil {
+					return result, err
+				}
+				gitDeletions = append(gitDeletions, oldPath)
+			}
+			allowed[oldPath] = item
+			r2Keys = append(r2Keys, oldPath)
 		}
-		allowed[item.OldPath] = item
-		r2Keys = append(r2Keys, item.OldPath)
 	}
 	gitDeletions = uniqueSorted(gitDeletions)
 	r2Keys = uniqueSorted(r2Keys)
@@ -776,7 +1009,7 @@ func (s *Service) pruneObjects(ctx context.Context, r repository.Git, st index.S
 		if err != nil {
 			return result, err
 		}
-		candidateHead, err := r.CreateCommit(ctx, tree, base.Head, "migrate: remove legacy content-addressed objects")
+		candidateHead, err := r.CreateCommit(ctx, tree, base.Head, "migrate: remove superseded object paths")
 		if err != nil {
 			return result, err
 		}
@@ -795,7 +1028,7 @@ func (s *Service) pruneObjects(ctx context.Context, r repository.Git, st index.S
 		if err = s.Store.SavePublication(ctx, pub); err != nil {
 			return result, err
 		}
-		published, err := s.publish(ctx, r, st, candidate)
+		published, err := s.publish(ctx, r, st, candidate, nil)
 		if err != nil {
 			return result, err
 		}
@@ -822,7 +1055,7 @@ func (s *Service) publishOperationJournal(ctx context.Context, r repository.Git,
 	if err != nil {
 		return SyncResult{}, err
 	}
-	return s.publish(ctx, r, st, candidate)
+	return s.publish(ctx, r, st, candidate, nil)
 }
 
 func (s *Service) finalizeOperationPublished(ctx context.Context, r repository.Git, st index.State, head domain.RepositoryHead) (SyncResult, error) {
@@ -837,7 +1070,7 @@ func (s *Service) finalizeOperationPublished(ctx context.Context, r repository.G
 	if err != nil {
 		return SyncResult{}, err
 	}
-	return s.finalizeSnapshot(ctx, r, st, snap)
+	return s.finalizeSnapshot(ctx, r, st, snap, nil)
 }
 
 func (s *Service) operationCandidate(ctx context.Context, r repository.Reader, st index.State, trusted *repository.Snapshot) (repository.Snapshot, error) {
@@ -874,20 +1107,22 @@ func (s *Service) operationCandidate(ctx context.Context, r repository.Reader, s
 	}
 	switch p.Operation {
 	case migrationObjectsOperation, migrationMetadataOperation:
-		if p.Operation == migrationObjectsOperation {
-			err = validateMigrationObjects(ctx, r, base, candidate)
-		} else {
-			err = validateMigrationMetadata(ctx, r, base, candidate)
+		var plan migrationPlan
+		var found bool
+		plan, found, err = s.readMigrationPlan(ctx)
+		if err == nil && !found {
+			err = fmt.Errorf("%w: migration journal has no durable mapping", domain.ErrRepositoryCorrupt)
 		}
 		if err == nil {
-			var plan migrationPlan
-			var found bool
-			plan, found, err = s.readMigrationPlan(ctx)
-			if err == nil && !found {
-				err = fmt.Errorf("%w: migration journal has no durable mapping", domain.ErrRepositoryCorrupt)
+			var updates map[domain.AssetID]migrationUpdate
+			updates, err = migrationUpdates(base, plan)
+			if err == nil && p.Operation == migrationObjectsOperation {
+				err = validateMigrationObjects(ctx, r, base, candidate, updates)
+			} else if err == nil {
+				err = validateMigrationMetadata(ctx, r, base, candidate, updates)
 			}
 			if err == nil {
-				err = verifyMigrationOperationProofs(ctx, r, base, candidate, plan)
+				err = verifyMigrationOperationProofs(ctx, r, base, candidate, updates)
 			}
 		}
 	case migrationPruneOperation:
@@ -913,38 +1148,57 @@ func (s *Service) operationCandidate(ctx context.Context, r repository.Reader, s
 	return candidate, nil
 }
 
-// verifyMigrationOperationProofs re-proves the exact source/copy relationship
-// from the durable mapping.
-func verifyMigrationOperationProofs(ctx context.Context, r repository.Reader, base, candidate repository.Snapshot, plan migrationPlan) error {
+// migrationUpdates derives the exact per-asset moves a plan promises for the
+// current metadata. Assets whose metadata already points at the recorded target
+// have no update; anything else must match the recorded source exactly.
+func migrationUpdates(base repository.Snapshot, plan migrationPlan) (map[domain.AssetID]migrationUpdate, error) {
+	updates := make(map[domain.AssetID]migrationUpdate, len(plan.Items))
 	for _, item := range plan.Items {
 		id, err := domain.ParseAssetID(item.AssetID)
 		if err != nil {
-			return fmt.Errorf("%w: invalid migration mapping asset id", domain.ErrRepositoryCorrupt)
+			return nil, fmt.Errorf("%w: invalid migration mapping asset id", domain.ErrRepositoryCorrupt)
 		}
 		asset, ok := base.Assets[id]
 		if !ok {
 			continue
 		}
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
-		if item.Namespace != asset.Namespace || item.Object != asset.Object || item.NewPath != newPath {
-			return fmt.Errorf("%w: migration mapping does not match asset %s", domain.ErrRepositoryCorrupt, id)
+		if item.Namespace != asset.Namespace || item.Object != asset.Object {
+			return nil, fmt.Errorf("%w: migration mapping does not match asset %s", domain.ErrRepositoryCorrupt, id)
 		}
-		oldPath := repository.ObjectPath(asset)
-		if oldPath != newPath {
-			oldEntry, ok := entryAt(base.Entries, oldPath)
-			if !ok || oldEntry.SHA != item.Blob {
-				return fmt.Errorf("%w: source blob for %s differs from the mapping", domain.ErrRepositoryCorrupt, id)
-			}
-			if err := verifyEntrySHA256(ctx, r, oldEntry, item.SHA256); err != nil {
+		if asset.Path == item.NewPath {
+			continue
+		}
+		fromPath := repository.ObjectPath(asset)
+		if fromPath != item.OldPath {
+			return nil, fmt.Errorf("%w: migration mapping records old path %s for asset %s, but metadata uses %s", domain.ErrRepositoryCorrupt, item.OldPath, id, fromPath)
+		}
+		updates[id] = migrationUpdate{AssetID: id, FromPath: fromPath, ToPath: item.NewPath, Item: item}
+	}
+	return updates, nil
+}
+
+// verifyMigrationOperationProofs re-proves the exact source/copy relationship
+// from the durable mapping.
+func verifyMigrationOperationProofs(ctx context.Context, r repository.Reader, base, candidate repository.Snapshot, updates map[domain.AssetID]migrationUpdate) error {
+	for id, update := range updates {
+		item := update.Item
+		source, ok := entryAt(base.Entries, update.FromPath)
+		if !ok || source.SHA != item.Blob {
+			return fmt.Errorf("%w: source blob for %s differs from the mapping", domain.ErrRepositoryCorrupt, id)
+		}
+		if item.SHA256 != "" {
+			if err := verifyEntrySHA256(ctx, r, source, item.SHA256); err != nil {
 				return err
 			}
 		}
-		target, ok := entryAt(candidate.Entries, newPath)
+		target, ok := entryAt(candidate.Entries, update.ToPath)
 		if !ok || target.SHA != item.Blob {
 			return fmt.Errorf("%w: target blob for %s differs from the mapping", domain.ErrRepositoryCorrupt, id)
 		}
-		if err := verifyEntrySHA256(ctx, r, target, item.SHA256); err != nil {
-			return err
+		if item.SHA256 != "" {
+			if err := verifyEntrySHA256(ctx, r, target, item.SHA256); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -961,10 +1215,14 @@ func planObjects(base repository.Snapshot, plan migrationPlan) map[string]migrat
 		if !ok || item.Namespace != asset.Namespace || item.Object != asset.Object {
 			continue
 		}
-		if item.NewPath != repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext) {
+		// Prune recovery sees the post-migration metadata the journal promised.
+		if item.NewPath != asset.Path {
 			continue
 		}
 		allowed[item.OldPath] = item
+		for _, prior := range item.PriorPaths {
+			allowed[prior] = item
+		}
 	}
 	return allowed
 }
@@ -973,7 +1231,7 @@ func planObjects(base repository.Snapshot, plan migrationPlan) map[string]migrat
 // Candidate validation. These run before a journal is saved and again during
 // recovery, so a corrupt journal cannot publish an arbitrary tree.
 
-func validateMigrationObjects(ctx context.Context, r repository.Reader, base, candidate repository.Snapshot) error {
+func validateMigrationObjects(ctx context.Context, r repository.Reader, base, candidate repository.Snapshot, updates map[domain.AssetID]migrationUpdate) error {
 	if err := sameManifest(base.Manifest, candidate.Manifest); err != nil {
 		return err
 	}
@@ -984,42 +1242,43 @@ func validateMigrationObjects(ctx context.Context, r repository.Reader, base, ca
 	if err != nil {
 		return err
 	}
-	for _, asset := range base.Assets {
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
-		oldPath := repository.ObjectPath(asset)
-		if oldPath == newPath {
-			continue
-		}
-		oldEntry, ok := entryAt(base.Entries, oldPath)
+	for _, update := range updates {
+		source, ok := entryAt(base.Entries, update.FromPath)
 		if !ok {
-			return fmt.Errorf("%w: base object %s is missing", domain.ErrRepositoryCorrupt, oldPath)
+			return fmt.Errorf("%w: base object %s is missing", domain.ErrRepositoryCorrupt, update.FromPath)
 		}
-		entry, existed := expected[newPath]
+		if err := verifyMappedObject(ctx, r, source, update.Item); err != nil {
+			return err
+		}
+		entry, existed := expected[update.ToPath]
 		if !existed {
-			entry, ok = entryAt(candidate.Entries, newPath)
+			entry, ok = entryAt(candidate.Entries, update.ToPath)
 			if !ok {
-				return fmt.Errorf("%w: new object %s is missing", domain.ErrRepositoryCorrupt, newPath)
+				return fmt.Errorf("%w: new object %s is missing", domain.ErrRepositoryCorrupt, update.ToPath)
 			}
-			expected[newPath] = entry
+			expected[update.ToPath] = entry
 		}
 		// A new path must point at the exact immutable source blob.
-		if entry.SHA != oldEntry.SHA {
-			return fmt.Errorf("%w: new object %s does not reuse the source blob", domain.ErrRepositoryCorrupt, newPath)
+		if entry.SHA != source.SHA {
+			return fmt.Errorf("%w: new object %s does not reuse the source blob", domain.ErrRepositoryCorrupt, update.ToPath)
 		}
-		if err := verifyEntryObject(ctx, r, entry, asset.Object); err != nil {
+		if err := verifyMappedObject(ctx, r, entry, update.Item); err != nil {
 			return err
 		}
 	}
 	return compareLeafEntries(expected, candidate.Entries)
 }
 
-func validateMigrationMetadata(ctx context.Context, r repository.Reader, base, candidate repository.Snapshot) error {
+func validateMigrationMetadata(ctx context.Context, r repository.Reader, base, candidate repository.Snapshot, updates map[domain.AssetID]migrationUpdate) error {
 	wantManifest := base.Manifest
 	wantManifest.FormatVersion = 3
 	if err := sameManifest(wantManifest, candidate.Manifest); err != nil {
 		return err
 	}
 	expectedAssets := make(map[domain.AssetID]domain.Asset, len(base.Assets))
+	for id, asset := range base.Assets {
+		expectedAssets[id] = asset
+	}
 	expectedEntries, err := leafEntries(base.Entries)
 	if err != nil {
 		return err
@@ -1038,31 +1297,33 @@ func validateMigrationMetadata(ctx context.Context, r repository.Reader, base, c
 		}
 		expectedEntries[repository.ManifestPath] = entry
 	}
-	for id, asset := range base.Assets {
-		updated := asset
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
-		if repository.ObjectPath(asset) != newPath {
-			updated.Path = newPath
-			encoded, err := repository.EncodeAsset(updated)
-			if err != nil {
-				return err
-			}
-			entry, ok := entryAt(candidate.Entries, repository.AssetPath(id))
-			if !ok {
-				return fmt.Errorf("%w: migrated metadata %s is missing", domain.ErrRepositoryCorrupt, id)
-			}
-			if err := verifyEntryBytes(ctx, r, entry, encoded); err != nil {
-				return err
-			}
-			expectedEntries[repository.AssetPath(id)] = entry
-		}
-		objectEntry, ok := entryAt(candidate.Entries, newPath)
+	for id, update := range updates {
+		asset, ok := expectedAssets[id]
 		if !ok {
-			return fmt.Errorf("%w: new object %s is missing", domain.ErrRepositoryCorrupt, newPath)
+			return fmt.Errorf("%w: migration mapping names missing asset %s", domain.ErrRepositoryCorrupt, id)
 		}
-		if err := verifyEntryObject(ctx, r, objectEntry, asset.Object); err != nil {
+		updated := asset
+		updated.Path = update.ToPath
+		encoded, err := repository.EncodeAsset(updated)
+		if err != nil {
 			return err
 		}
+		entry, ok := entryAt(candidate.Entries, repository.AssetPath(id))
+		if !ok {
+			return fmt.Errorf("%w: migrated metadata %s is missing", domain.ErrRepositoryCorrupt, id)
+		}
+		if err := verifyEntryBytes(ctx, r, entry, encoded); err != nil {
+			return err
+		}
+		expectedEntries[repository.AssetPath(id)] = entry
+		objectEntry, ok := entryAt(candidate.Entries, update.ToPath)
+		if !ok {
+			return fmt.Errorf("%w: new object %s is missing", domain.ErrRepositoryCorrupt, update.ToPath)
+		}
+		if err := verifyMappedObject(ctx, r, objectEntry, update.Item); err != nil {
+			return err
+		}
+		expectedEntries[update.ToPath] = objectEntry
 		expectedAssets[id] = updated
 	}
 	if err := sameAssetMetadata(expectedAssets, candidate.Assets); err != nil {
@@ -1129,15 +1390,12 @@ func validatePruneCandidate(ctx context.Context, r repository.Reader, base, cand
 		byID[id] = item
 	}
 	for _, asset := range base.Assets {
-		newPath := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
-		if asset.Path != newPath {
-			return fmt.Errorf("%w: prune retained an unmigrated asset %s", domain.ErrRepositoryCorrupt, asset.ID)
-		}
-		entry, ok := entryAt(candidate.Entries, newPath)
+		livePath := repository.ObjectPath(asset)
+		entry, ok := entryAt(candidate.Entries, livePath)
 		if !ok {
-			return fmt.Errorf("%w: prune removed a live object %s", domain.ErrRepositoryCorrupt, newPath)
+			return fmt.Errorf("%w: prune removed a live object %s", domain.ErrRepositoryCorrupt, livePath)
 		}
-		if item, ok := byID[asset.ID]; ok && item.NewPath == newPath && item.Object == asset.Object {
+		if item, ok := byID[asset.ID]; ok && item.NewPath == livePath && item.Object == asset.Object {
 			if err := verifyMappedObject(ctx, r, entry, item); err != nil {
 				return err
 			}
@@ -1260,8 +1518,13 @@ func fetchPublicObject(ctx context.Context, raw string, object domain.ContentObj
 		return fmt.Errorf("status %s", resp.Status)
 	}
 	body := io.LimitReader(resp.Body, object.Size+1)
-	if object.Hash == (domain.ObjectHash{}) {
-		return fmt.Errorf("missing SHA-256")
+	if !object.HasHash() {
+		// No digest was recorded. Verify the declared size, format and
+		// dimensions; a zero hash is never compared as an observed digest.
+		if err := toukoimage.VerifyDescription(ctx, body, object); err != nil {
+			return err
+		}
+		return nil
 	}
 	digest := sha256.New()
 	size, err := io.Copy(digest, body)
@@ -1358,6 +1621,9 @@ func (s *Service) retainedR2Keys(ctx context.Context, r repository.Reader, snap 
 			if item.OldPath != item.NewPath {
 				out[item.OldPath] = true
 			}
+			for _, prior := range item.PriorPaths {
+				out[prior] = true
+			}
 		}
 	}
 	return out, nil
@@ -1374,6 +1640,7 @@ func retentionForPrune(ctx context.Context, r repository.Reader, base repository
 	}
 	for _, item := range plan.Items {
 		out = append(out, item.OldPath)
+		out = append(out, item.PriorPaths...)
 	}
 	if len(out) == 0 {
 		return nil, nil
@@ -1432,21 +1699,46 @@ func validateMigrationPlan(plan migrationPlan) error {
 		if err := domain.ValidateRepositoryPath(item.NewPath); err != nil {
 			return fmt.Errorf("%w: %v", domain.ErrRepositoryCorrupt, err)
 		}
-		if string(item.Namespace) == "" || item.OldPath == item.NewPath ||
+		if string(item.Namespace) == "" || item.OldPath == item.NewPath {
+			return fmt.Errorf("%w: inconsistent migration mapping for %s", domain.ErrRepositoryCorrupt, item.AssetID)
+		}
+		// New mappings use the root timestamp name. Mappings written by the
+		// previous asset-id migration stay readable so a resumed run can finish
+		// and so their old aliases keep protecting R2 keys.
+		if !repository.IsTimestampObjectPath(item.NewPath, item.Object.Ext) &&
 			item.NewPath != repository.AssetObjectPath(item.Namespace, id, item.Object.Ext) {
 			return fmt.Errorf("%w: inconsistent migration mapping for %s", domain.ErrRepositoryCorrupt, item.AssetID)
 		}
 		if err := item.Object.Validate(); err != nil {
 			return fmt.Errorf("%w: migration mapping object: %v", domain.ErrRepositoryCorrupt, err)
 		}
-		if item.Object.Hash == (domain.ObjectHash{}) || item.SHA256 != item.Object.Hash.String() {
+		if item.Object.HasHash() {
+			if item.SHA256 != item.Object.Hash.String() {
+				return fmt.Errorf("%w: migration mapping for %s has an inconsistent source proof", domain.ErrRepositoryCorrupt, item.AssetID)
+			}
+		} else if item.SHA256 != "" {
 			return fmt.Errorf("%w: migration mapping for %s has an inconsistent source proof", domain.ErrRepositoryCorrupt, item.AssetID)
 		}
-		if len(item.SHA256) != 64 || item.Blob == "" {
+		if item.Blob == "" {
 			return fmt.Errorf("%w: migration mapping for %s has no source proof", domain.ErrRepositoryCorrupt, item.AssetID)
 		}
-		if _, err := hex.DecodeString(item.SHA256); err != nil {
-			return fmt.Errorf("%w: migration mapping for %s has an invalid source proof", domain.ErrRepositoryCorrupt, item.AssetID)
+		if item.SHA256 != "" {
+			if len(item.SHA256) != 64 {
+				return fmt.Errorf("%w: migration mapping for %s has an invalid source proof", domain.ErrRepositoryCorrupt, item.AssetID)
+			}
+			if _, err := hex.DecodeString(item.SHA256); err != nil {
+				return fmt.Errorf("%w: migration mapping for %s has an invalid source proof", domain.ErrRepositoryCorrupt, item.AssetID)
+			}
+		}
+		seenPrior := make(map[string]bool, len(item.PriorPaths))
+		for _, prior := range item.PriorPaths {
+			if err := domain.ValidateRepositoryPath(prior); err != nil {
+				return fmt.Errorf("%w: %v", domain.ErrRepositoryCorrupt, err)
+			}
+			if prior == item.NewPath || prior == item.OldPath || seenPrior[prior] {
+				return fmt.Errorf("%w: inconsistent migration mapping for %s", domain.ErrRepositoryCorrupt, item.AssetID)
+			}
+			seenPrior[prior] = true
 		}
 	}
 	return nil
@@ -1469,6 +1761,13 @@ func (s *Service) mergeMigrationPlan(ctx context.Context, repositoryID domain.Re
 		items[item.AssetID] = item
 	}
 	for _, item := range additions {
+		if previous, ok := items[item.AssetID]; ok {
+			if previous.Object != item.Object || previous.Namespace != item.Namespace {
+				return migrationPlan{}, fmt.Errorf("%w: migration mapping for %s changed identity", domain.ErrConflict, item.AssetID)
+			}
+			// Never lose an older alias when this run supersedes its target.
+			item.PriorPaths = mergeMigrationPriorPaths(item, previous)
+		}
 		items[item.AssetID] = item
 	}
 	merged := migrationPlan{Version: migrationPlanVersion, RepositoryID: existing.RepositoryID, Items: make([]migrationPlanItem, 0, len(items))}
@@ -1503,13 +1802,22 @@ func (s *Service) writeMigrationPlan(ctx context.Context, plan migrationPlan) er
 // Shared helpers.
 
 func sourceProof(ctx context.Context, r repository.Reader, entry repository.GitEntry, object domain.ContentObject) (migrationProof, error) {
-	if object.Hash == (domain.ObjectHash{}) {
-		return migrationProof{}, fmt.Errorf("%w: missing SHA-256", domain.ErrRepositoryCorrupt)
+	if err := checkBlobEntry(entry, object.Size); err != nil {
+		return migrationProof{}, err
 	}
+	if object.HasHash() {
+		if err := repository.VerifyObject(ctx, r, repository.BlobID(entry.SHA), object); err != nil {
+			return migrationProof{}, err
+		}
+		return migrationProof{SHA256: object.Hash.String(), Blob: entry.SHA}, nil
+	}
+	// No digest was recorded. Verify the image description and keep the
+	// immutable Git blob id as the proof; a missing digest is never compared as
+	// a zero digest.
 	if err := repository.VerifyObject(ctx, r, repository.BlobID(entry.SHA), object); err != nil {
 		return migrationProof{}, err
 	}
-	return migrationProof{SHA256: object.Hash.String(), Blob: entry.SHA}, nil
+	return migrationProof{Blob: entry.SHA}, nil
 }
 
 func blobSHA256(ctx context.Context, r repository.Reader, entry repository.GitEntry) (string, error) {
@@ -1547,11 +1855,13 @@ func verifyMappedObject(ctx context.Context, r repository.Reader, entry reposito
 	if err := checkBlobEntry(entry, item.Object.Size); err != nil {
 		return err
 	}
-	if item.Blob != "" && entry.SHA != item.Blob {
+	if item.Blob == "" || entry.SHA != item.Blob {
 		return fmt.Errorf("%w: mapped object %s is a different Git blob", domain.ErrRepositoryCorrupt, entry.Path)
 	}
-	if err := verifyEntrySHA256(ctx, r, entry, item.SHA256); err != nil {
-		return err
+	if item.SHA256 != "" {
+		if err := verifyEntrySHA256(ctx, r, entry, item.SHA256); err != nil {
+			return err
+		}
 	}
 	return repository.VerifyObject(ctx, r, repository.BlobID(entry.SHA), item.Object)
 }
@@ -1566,9 +1876,6 @@ func checkBlobEntry(entry repository.GitEntry, size int64) error {
 func verifyEntryObject(ctx context.Context, r repository.Reader, entry repository.GitEntry, object domain.ContentObject) error {
 	if err := checkBlobEntry(entry, object.Size); err != nil {
 		return err
-	}
-	if object.Hash == (domain.ObjectHash{}) {
-		return fmt.Errorf("%w: missing SHA-256", domain.ErrRepositoryCorrupt)
 	}
 	return repository.VerifyObject(ctx, r, repository.BlobID(entry.SHA), object)
 }

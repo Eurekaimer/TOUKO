@@ -16,7 +16,7 @@
 
 TOUKO 是一个以 Git 仓库为数据源的图片库。图片字节和元数据都进仓库，GitHub 负责托管；默认用 jsDelivr 分发，也可以开启可选的 Cloudflare R2 镜像。本地 SQLite 只做读取缓存，删掉后能从仓库重建。
 
-图片先进入暂存区，`commit` 才写成一次 Git 提交。文件名是 Asset UUID，路径形如 `objects/<namespace>/<asset-id>.<ext>`，同一张图上传两次是两个独立记录。库里记录标题、标签、分类、MIME、尺寸和 SHA-256，用来校验字节，不参与 URL。
+图片先进入暂存区，`commit` 才发布。新图以入暂存区时的 Unix 纳秒时间戳命名，同批冲突自动加序号；留空目录就在仓库根目录。Asset UUID 仍是记录身份。SHA-256 默认关闭，可在上传时打开，或在设置中开启后台归档和查重。
 
 ## 功能
 
@@ -142,7 +142,7 @@ Linux/Wayland 已做界面验收。Windows 与 macOS 由发布流程构建并通
 
 ## 致谢
 
-名字来自《终将成为你》的七海灯子。字体 Monaspace Radon、霞鹜文楷、Quicksand 和 Playfair Display 均为 SIL OFL。原生窗口由 [MyGo](https://github.com/egoist/mygo) 提供。
+名字来自《终将成为你》的七海灯子。字体 Monaspace Xenon、霞鹜文楷、Quicksand 和 Playfair Display 均为 SIL OFL。原生窗口由 [MyGo](https://github.com/egoist/mygo) 提供。
 
 ## License
 

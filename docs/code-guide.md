@@ -283,7 +283,7 @@ GitHub 的 journal 路径由 `SyncWith` 选择 API backend，再在恢复成功�
 
 1. 固定本次 reader HEAD，先做与 sync 相同的完整格式/引用验证。
 2. 从 Asset 集合生成 unique placement，按路径稳定遍历。
-3. 核对对应 Git entry 类型、mode、size，再打开 blob 流式计算 SHA-256、实际 byte 数，读取 header 核对格式及宽高；MIME 一致性由 ContentObject 的格式校验保证。
+3. 核对 Git entry 类型、mode、size；再读取实际长度和图片 header。有已记录的 SHA-256 时才计算摘要并比较。
 4. 同一 Git blob 的相同描述可复用校验结果，不重复下载求 hash；同一 blob 配上矛盾描述则损坏。
 5. 返回 `head/assets/objects`。这里 objects 是 **placement 数**，不是 UUID 数，也不一定等于唯一 Git blob 数；同 bytes 跨 namespace 有两条 placement。
 
@@ -293,11 +293,11 @@ hash/size 不符是 `ErrHashMismatch`，格式或描述冲突是 repository corr
 
 ### 5.1 “流式”具体节省了什么，没有保证什么
 
-- ingest 用 `io.Copy(io.MultiWriter(file, hash), LimitReader(...))` 一次读取 source；之后从已持久化临时文件读 header，不要求 stdin 支持 seek。
+- ingest 一次将 source 写入临时文件，仅在选择 SHA-256 时同时写入摘要；之后从本地文件读取 header。
 - 最大输入是 `100_000_000` bytes。读取上限多取 1 byte，用来区分“恰好到限”和“已经超限”。空输入、坏 header、取消或读写错误不能产生有效 add rows。
-- commit 按对象串行上传，文件 reader 在上传过程中计算 hash/size；不先 `ReadAll` 整张图片。
+- commit 流式上传对象并校验长度；只有记录了 SHA-256 的对象需要再次核对摘要。
 - GitHub CreateBlob 用 `io.Pipe + base64.NewEncoder` 生成 JSON；Content-Length 根据原始 size 计算，不构造完整 base64 string。取消回调独立关闭 pipe，并对可关闭的 source 做一次关闭，最后等待编码 goroutine 退出，防止请求失败后后台仍卡住。
-- OpenBlob 使用 raw 响应，verify 读取 header 后继续把整个剩余流送入 hash，不存完整图片或像素。
+- OpenBlob 使用 raw 响应；verify 校验 header 和完整长度，但不把整张图或像素留在内存。
 
 这不等于“整个程序常量内存”：Asset map、完整 tree entries、CommitPlan、JSON metadata 会驻内存，规模随记录/路径数量增长。CLI 的多文件 add 也会持有这一批打开的文件句柄。bounded image bytes 与全局 metadata 可扩展性是两个问题。
 
@@ -516,7 +516,7 @@ JSON `publication` 存在不一定表示远程失败，也可能是远程已成�
 4. **前端状态**：`workspace` 是服务器快照，filters 增加真实目录，selected 是 UUID，uploadFiles 是待传 File/ObjectURL。刷新仍恢复 stage，因为它在 `workspace.json`，不在 SQLite/localStorage。`workspacePrefix/apiURL` 使 API、上传、原图请求跟随 `/w/<id>/`；连接返回 url 后直接导航，不刷新旧 workspace。旧工作区修改保留。仓库/分支下拉各有递增 sequence：切换仓库先清空旧分支，晚到的旧响应被丢弃，避免把仓库 A 的分支提交给仓库 B。
 5. **上传与导入**：上传 XHR 传 directory/metadata/files，服务端私有临时目录流式 spool 后只调用一次 Add。`openImport → POST /api/import → ImportLegacy` 在固定已初始化快照扫描原图片，返回 imported/skipped，不搬图；必须显式 commit 才写 Git metadata。输入/校验失败不部分 stage，不自动重试或发布。
 6. **编辑、目录与链接**：原 metadata 编辑仍支持多个 tags/collections，留空清空。`assetPath` 用真实 path 或 canonical 派生筛选/显示；Copy Markdown 转义 alt 并派生 Raw/jsDelivr URL。剪贴板 API 受浏览器权限约束，失败提供可手动复制框，不能把“生成正确文本”当作“自动复制成功”。DOM 不拼接不可信 HTML。
-7. **原图读取**：`imageSnapshot` 先读取一致视图并立即返回已提交 Asset，不占 `workMu`；只有需要打开 staged payload 时才取锁并重新读取，以保证 cleanup 不会在打开前 unlink 文件。缓存校验用已提交路径的 Git blob ID（staged/legacy 用自己的稳定身份），同一 Asset UUID 下的外部字节替换会触发重新取图而不是复用旧缓存。导入但未发布的 Asset 在缓存固定 tree 读原 path。已提交 explicit path 从本地 Git 对象库按缓存 tree 取不可变 blob，不能信任可变 checkout 同名文件；缺少本地不可变数据可回退 API。网络流不占工作区锁，不追当前 branch URL；clone 状态与离线能力不伪装。
+7. **原图读取**：`imageSnapshot` 从一致视图计算 ETag；304 不访问文件、clone 或 API。新索引缓存对应树的 blob ID；旧索引可以按记录摘要匹配 clone 元数据。GitHub 预览先读本地固定 blob，缺失才回退 API，不计算图片哈希或 fetch。暂存文件只在 ETag 不命中时持 `workMu` 打开。查重另走后台归档，不在预览热路径算摘要。
 8. **发布、同步与重建**：commit/reset 继续原 coordinator；sync 在同锁中先更新 clone 再读，journal 走 API；verify 不 fetch。reindex 使用现有 Service 连接重建，未决 journal 仍需 sync。409/conflict 保留修改、不自动 reset；移除/reset 明确确认，journal 单独显示，toast 不是发布事实。
 9. **桌面窗口**：`cmd/touko-desktop → desktop.Run` 在主 goroutine 上开 MyGo 窗口，复用同一个 `webview.Listen` 与内嵌 UI；`browser.Open` 是 serve 与托盘菜单共用的系统打开方式。窗口关闭默认只是隐藏并继续本地服务，托盘菜单负责“显示主窗口 / 在浏览器中打开 / 打开工作区目录 / 退出”。两个必须保留的约束：被点击的托盘菜单项要被 Go 侧一直引用（MyGo 用弱引用按 uid 找回 `*MenuItem`，被回收后菜单可见但点击无效），而 `Window.OnClose` 的 `PreventDefault` 必须让退出流程放行（MyGo 遇到任何拒绝关闭的窗口就取消整次退出）。面板/任务栏里的图标不由应用绘制：窗口的 Wayland app_id 是**可执行文件基名**，因此发行包装必须安装与之同名的 `touko-desktop.desktop` 并把图标放进 hicolor 主题，这与微信、qBittorrent 等普通应用完全同一条路径。
 

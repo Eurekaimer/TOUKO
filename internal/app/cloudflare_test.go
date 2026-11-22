@@ -19,6 +19,7 @@ import (
 
 	"github.com/Eurekaimer/TOUKO/internal/credential"
 	"github.com/Eurekaimer/TOUKO/internal/domain"
+	ingest "github.com/Eurekaimer/TOUKO/internal/image"
 	"github.com/Eurekaimer/TOUKO/internal/index"
 	"github.com/Eurekaimer/TOUKO/internal/r2"
 	"github.com/Eurekaimer/TOUKO/internal/repository"
@@ -33,6 +34,7 @@ type fakeStoredObject struct {
 	repositoryID string
 	sourceID     string
 	sha256       string
+	blob         string
 	size         int64
 }
 
@@ -102,6 +104,7 @@ func (f *fakeMirror) HeadObject(ctx context.Context, key string) (r2.ObjectInfo,
 		RepositoryID: stored.repositoryID,
 		SourceID:     stored.sourceID,
 		SHA256:       stored.sha256,
+		BlobSHA:      stored.blob,
 		Size:         stored.size,
 	}, true, nil
 }
@@ -145,16 +148,23 @@ func (f *fakeMirror) PutObject(ctx context.Context, key string, body io.ReadSeek
 		}
 		f.mu.Lock()
 		f.nextETag++
+		storedSHA := ""
+		if opts.Object.HasHash() {
+			storedSHA = opts.Object.Hash.String()
+		}
 		f.objects[key] = fakeStoredObject{
 			data: append([]byte(nil), data...), etag: fmt.Sprintf("etag-%d", f.nextETag),
 			repositoryID: repositoryID, sourceID: sourceID,
-			sha256: opts.Object.Hash.String(), size: opts.Object.Size,
+			sha256: storedSHA, blob: opts.BlobSHA, size: opts.Object.Size,
 		}
 		f.putRaceAdopt, f.putRaceForeign = false, false
 		f.mu.Unlock()
 		return "", &r2.Error{Op: "put", Key: key, Code: "precondition_failed"}
 	}
-	sha := opts.Object.Hash.String()
+	sha := ""
+	if opts.Object.HasHash() {
+		sha = opts.Object.Hash.String()
+	}
 	if mismatch {
 		sha = strings.Repeat("0", 64)
 	}
@@ -164,7 +174,7 @@ func (f *fakeMirror) PutObject(ctx context.Context, key string, body io.ReadSeek
 	f.objects[key] = fakeStoredObject{
 		data: append([]byte(nil), data...), etag: etag,
 		repositoryID: repositoryID, sourceID: sourceID,
-		sha256: sha, size: opts.Object.Size,
+		sha256: sha, blob: opts.BlobSHA, size: opts.Object.Size,
 	}
 	f.mu.Unlock()
 	if f.afterPut != nil {
@@ -269,6 +279,18 @@ func (f *fakeMirror) setOwned(key string, data []byte, repositoryID, sourceID, e
 	}
 }
 
+// setOwnedBlob stores an object owned by this repository whose byte evidence is
+// an immutable Git blob rather than a content digest.
+func (f *fakeMirror) setOwnedBlob(key string, data []byte, repositoryID, sourceID, etag, blob string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.objects[key] = fakeStoredObject{
+		data: append([]byte(nil), data...), etag: etag,
+		repositoryID: repositoryID, sourceID: sourceID,
+		blob: blob, size: int64(len(data)),
+	}
+}
+
 const (
 	fakeCFEndpoint  = "https://acct.r2.cloudflarestorage.com"
 	fakeCFBucket    = "touko-images"
@@ -346,9 +368,18 @@ func assertOwnedObject(t *testing.T, fake *fakeMirror, key string, data []byte, 
 	if !bytes.Equal(stored.data, data) {
 		t.Fatalf("object bytes differ for %s", key)
 	}
-	if stored.size != object.Size || stored.sha256 != hex.EncodeToString(want[:]) ||
+	if stored.size != object.Size ||
 		stored.repositoryID != repositoryID.String() || stored.sourceID != testSourceID() || stored.etag == "" {
 		t.Fatalf("object metadata differs for %s: %+v", key, stored)
+	}
+	if object.HasHash() {
+		if stored.sha256 != hex.EncodeToString(want[:]) {
+			t.Fatalf("object digest differs for %s: %+v", key, stored)
+		}
+		return
+	}
+	if stored.sha256 != "" || stored.blob == "" {
+		t.Fatalf("hashless object lacks blob evidence or carries a digest for %s: %+v", key, stored)
 	}
 }
 
@@ -570,6 +601,256 @@ func testPNGAsset(t *testing.T, data []byte, assetPath string) domain.Asset {
 		OriginalName: "shared.png", Title: "shared", Tags: []string{}, Collections: []string{},
 		CreatedAt: now, UpdatedAt: now,
 	}
+}
+
+func testHashlessPNGAsset(t *testing.T, data []byte, assetPath string) domain.Asset {
+	t.Helper()
+	asset := testPNGAsset(t, data, assetPath)
+	asset.Object.Hash = domain.ObjectHash{}
+	return asset
+}
+
+// TestCloudflareHashlessAssetSyncsWithGitBlobEvidence proves a hashless asset
+// is published and addressed by its immutable Git blob without any application
+// SHA-256, that its public URL is served from that receipt, and that a repeat
+// reconciliation does not rewrite it.
+func TestCloudflareHashlessAssetSyncsWithGitBlobEvidence(t *testing.T) {
+	ctx, r, s := realRepository(t)
+	data := batchPNG(t, 71)
+	key := "1750000000000000000.png"
+	asset := testHashlessPNGAsset(t, data, key)
+	head := publishV2Assets(t, ctx, r, s, []domain.Asset{asset}, map[string][]byte{key: data})
+	snap, err := repository.ReadSnapshot(ctx, r, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blobID string
+	for _, entry := range snap.Entries {
+		if entry.Path == key {
+			blobID = entry.SHA
+		}
+	}
+	if blobID == "" {
+		t.Fatal("published hashless object has no Git blob")
+	}
+
+	fake := newFakeMirror()
+	cfg := testCloudflareConfig()
+	enableTestCloudflare(t, s, fake, cfg)
+	result, err := s.CloudflareSync(ctx, r, CloudflareOptions{})
+	if err != nil || result.Status != "synced" || result.Uploaded != 1 || result.Failed != 0 {
+		t.Fatalf("hashless sync = %+v, %v", result, err)
+	}
+	stored, ok := fake.object(key)
+	if !ok {
+		t.Fatal("hashless object was not uploaded")
+	}
+	if !bytes.Equal(stored.data, data) || stored.sha256 != "" || stored.blob != blobID {
+		t.Fatalf("hashless object evidence = %+v; want bytes and blob %s with no digest", stored, blobID)
+	}
+	entry := ledgerEntry(t, testLedger(t, ctx, s, cfg), key)
+	if entry.State != "synced" || entry.ETag == "" || entry.Object != asset.Object ||
+		entry.Blob != blobID || entry.Object.HasHash() {
+		t.Fatalf("unexpected hashless receipt: %+v", entry)
+	}
+	url, err := s.CloudflareURL(ctx, asset.ID.String())
+	if err != nil || url != cfg.PublicBaseURL+"/"+key {
+		t.Fatalf("hashless public URL = %q, %v; want %q", url, err, cfg.PublicBaseURL+"/"+key)
+	}
+	if _, err := s.CloudflareSync(ctx, r, CloudflareOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if fake.putCount() != 1 {
+		t.Fatalf("repeat sync rewrote a hashless object: %d puts", fake.putCount())
+	}
+}
+
+// TestCloudflareHashlessOwnershipChanges proves the mirror never adopts or
+// removes a foreign object, and removes the object only while the recorded
+// immutable blob still describes it.
+func TestCloudflareHashlessOwnershipChanges(t *testing.T) {
+	t.Run("foreign object is not overwritten", func(t *testing.T) {
+		ctx, r, s := realRepository(t)
+		data := batchPNG(t, 72)
+		key := "1750000000000000001.png"
+		asset := testHashlessPNGAsset(t, data, key)
+		publishV2Assets(t, ctx, r, s, []domain.Asset{asset}, map[string][]byte{key: data})
+		fake := newFakeMirror()
+		foreign := domain.RepositoryID{0, 1, 2}
+		fake.setOwned(key, data, foreign.String(), strings.Repeat("f", 64), "etag-foreign")
+		enableTestCloudflare(t, s, fake, testCloudflareConfig())
+		result, err := s.CloudflareSync(ctx, r, CloudflareOptions{})
+		var syncErr *CloudflareSyncError
+		if !errors.As(err, &syncErr) || result.Status != "failed" || result.Failed != 1 {
+			t.Fatalf("foreign hashless object = %+v, %v", result, err)
+		}
+		if len(result.Items) != 1 || result.Items[0].ErrorCode != "object_conflict" {
+			t.Fatalf("unexpected items: %+v", result.Items)
+		}
+		if fake.putCount() != 0 {
+			t.Fatal("foreign object was conditionally overwritten")
+		}
+		stored, _ := fake.object(key)
+		if stored.etag != "etag-foreign" || !bytes.Equal(stored.data, data) {
+			t.Fatal("foreign object changed")
+		}
+	})
+
+	t.Run("deletion follows the recorded blob", func(t *testing.T) {
+		ctx, r, s := realRepository(t)
+		data := batchPNG(t, 73)
+		key := "1750000000000000002.png"
+		asset := testHashlessPNGAsset(t, data, key)
+		publishV2Assets(t, ctx, r, s, []domain.Asset{asset}, map[string][]byte{key: data})
+		fake := newFakeMirror()
+		cfg := testCloudflareConfig()
+		enableTestCloudflare(t, s, fake, cfg)
+		if _, err := s.CloudflareSync(ctx, r, CloudflareOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		blobID := ledgerEntry(t, testLedger(t, ctx, s, cfg), key).Blob
+		if blobID == "" {
+			t.Fatal("hashless receipt has no blob evidence")
+		}
+		s.NewCloudflare = nil
+		if err := s.Remove(ctx, []string{asset.ID.String()}); err != nil {
+			t.Fatal(err)
+		}
+		mustCommit(t, ctx, s, r)
+		s.NewCloudflare = func(context.Context, r2.Config, credential.R2Pair) (r2.Mirror, error) { return fake, nil }
+
+		repositoryID := testRepositoryID(t, ctx, s).String()
+		// A same-size object with a digest instead of the recorded blob is not
+		// provably ours and must not be deleted.
+		fake.setOwned(key, data, repositoryID, testSourceID(), "etag-forged")
+		result, err := s.CloudflareSync(ctx, r, CloudflareOptions{})
+		var syncErr *CloudflareSyncError
+		if !errors.As(err, &syncErr) || result.Failed != 1 || len(fake.deleteKeys()) != 0 {
+			t.Fatalf("forged evidence delete = %+v, %v deletes=%v", result, err, fake.deleteKeys())
+		}
+		if _, ok := fake.object(key); !ok {
+			t.Fatal("unproven object was deleted")
+		}
+		if entry := ledgerEntry(t, testLedger(t, ctx, s, cfg), key); entry.State != "delete_failed" || entry.ErrorCode != "object_conflict" {
+			t.Fatalf("forged evidence receipt: %+v", entry)
+		}
+
+		fake.setOwnedBlob(key, data, repositoryID, testSourceID(), "etag-owned", blobID)
+		result, err = s.CloudflareSync(ctx, r, CloudflareOptions{})
+		if err != nil || result.Deleted != 1 {
+			t.Fatalf("blob-verified delete = %+v, %v", result, err)
+		}
+		if _, ok := fake.object(key); ok {
+			t.Fatal("blob-verified object still exists")
+		}
+	})
+}
+
+// TestMergeExtraRefsUsesPublishedDestination pins the migration bridge
+// contract: a changed asset carries its target in Path, and that exact path is
+// the R2 key, never an asset-id fallback.
+func TestMergeExtraRefsUsesPublishedDestination(t *testing.T) {
+	data := batchPNG(t, 76)
+	asset := testHashlessPNGAsset(t, data, "1750000000000000004.png")
+	snapshot := repository.Snapshot{Entries: []repository.GitEntry{{
+		Path: asset.Path, Mode: "100644", Type: "blob",
+		SHA: strings.Repeat("a", 40), Size: asset.Object.Size,
+	}}}
+	refs := map[string]cloudflareRef{}
+	if err := mergeExtraRefs(refs, snapshot, []domain.Asset{asset}); err != nil {
+		t.Fatalf("mergeExtraRefs: %v", err)
+	}
+	ref, ok := refs[asset.Path]
+	if !ok || ref.object != asset.Object || ref.entry.SHA == "" {
+		t.Fatalf("published destination missing from refs: %+v", refs)
+	}
+	if _, ok := refs[repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)]; ok {
+		t.Fatal("bridge invented an asset-id destination")
+	}
+
+	fallback := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+	if fallback == asset.Path {
+		t.Fatal("test asset must distinguish the destination from the fallback")
+	}
+	snapshot.Entries[0].Path = fallback
+	if err := mergeExtraRefs(map[string]cloudflareRef{}, snapshot, []domain.Asset{asset}); err == nil {
+		t.Fatal("bridge accepted an object that is not at the published destination")
+	}
+}
+
+// TestCloudflareHashlessPayloadDirectStream covers the hashless source paths:
+// a proven staged payload streams straight to the put without a Git blob read,
+// while a missing or unusable payload falls back to the authoritative blob.
+func TestCloudflareHashlessPayloadDirectStream(t *testing.T) {
+	ctx, git, s := realRepository(t)
+	data := batchPNG(t, 74)
+	ingested, err := ingest.Ingest(ctx, bytes.NewReader(data), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := ingested.Object
+	object.Hash = domain.ObjectHash{}
+	const key = "1750000000000000003.png"
+	stagedPath := filepath.Join(t.TempDir(), "staged.png")
+	if err := os.WriteFile(stagedPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ref := cloudflareRef{
+		object: object,
+		entry:  repository.GitEntry{Path: key, Type: "blob", SHA: strings.Repeat("a", 40)},
+	}
+	newRun := func(payloads map[string]string) (*cloudflareReconcile, *countedBlobGit, *fakeMirror) {
+		source := &countedBlobGit{Git: git, data: data}
+		mirror := newFakeMirror()
+		return &cloudflareReconcile{service: s, repo: source, mirror: mirror, payloads: payloads}, source, mirror
+	}
+	assertStored := func(t *testing.T, mirror *fakeMirror) {
+		t.Helper()
+		stored, ok := mirror.object(key)
+		if !ok || !bytes.Equal(stored.data, data) {
+			t.Fatalf("hashless upload did not use the expected bytes: %+v", stored)
+		}
+		if stored.sha256 != "" || stored.blob != ref.entry.SHA {
+			t.Fatalf("hashless upload evidence: %+v", stored)
+		}
+	}
+
+	t.Run("proven staged payload", func(t *testing.T) {
+		run, source, mirror := newRun(map[string]string{key: stagedPath})
+		if _, _, err := run.putBlob(ctx, key, ref, ""); err != nil {
+			t.Fatalf("hashless putBlob: %v", err)
+		}
+		if source.calls != 0 {
+			t.Fatalf("Git blob reads = %d, want 0 for a proven staged payload", source.calls)
+		}
+		assertStored(t, mirror)
+	})
+
+	t.Run("no staged payload", func(t *testing.T) {
+		run, source, mirror := newRun(nil)
+		if _, _, err := run.putBlob(ctx, key, ref, ""); err != nil {
+			t.Fatalf("hashless putBlob: %v", err)
+		}
+		if source.calls != 1 {
+			t.Fatalf("Git blob reads = %d, want 1", source.calls)
+		}
+		assertStored(t, mirror)
+	})
+
+	t.Run("wrong-size staged payload falls back", func(t *testing.T) {
+		short := filepath.Join(t.TempDir(), "short.png")
+		if err := os.WriteFile(short, data[:len(data)-1], 0600); err != nil {
+			t.Fatal(err)
+		}
+		run, source, mirror := newRun(map[string]string{key: short})
+		if _, _, err := run.putBlob(ctx, key, ref, ""); err != nil {
+			t.Fatalf("hashless putBlob: %v", err)
+		}
+		if source.calls != 1 {
+			t.Fatalf("Git blob reads = %d, want authoritative fallback", source.calls)
+		}
+		assertStored(t, mirror)
+	})
 }
 
 func publishV2Assets(t *testing.T, ctx context.Context, r repository.Git, s *Service, assets []domain.Asset, objectData map[string][]byte) domain.RepositoryHead {
@@ -919,8 +1200,13 @@ func TestCloudflareTombstoneDeletesLateObject(t *testing.T) {
 	if entry := ledgerEntry(t, testLedger(t, ctx, s, testCloudflareConfig()), key); entry.State != "deleted" {
 		t.Fatalf("tombstone missing: %+v", entry)
 	}
-	// A timed-out PUT may land after the delete. The tombstone must check it.
-	fake.setOwned(key, original.data, original.repositoryID, original.sourceID, "etag-late")
+	// A timed-out PUT may land after the delete. The tombstone must check it,
+	// preserving whichever byte evidence the original receipt recorded.
+	if original.blob != "" {
+		fake.setOwnedBlob(key, original.data, original.repositoryID, original.sourceID, "etag-late", original.blob)
+	} else {
+		fake.setOwned(key, original.data, original.repositoryID, original.sourceID, "etag-late")
+	}
 	result, err := s.CloudflareSync(ctx, r, CloudflareOptions{})
 	if err != nil {
 		t.Fatalf("tombstone retry failed: %v", err)

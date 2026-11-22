@@ -55,7 +55,7 @@ func deliveryPNG(t *testing.T) []byte {
 func TestMarkdownAndProspectiveURL(t *testing.T) {
 	dir := deliveryState(t, false)
 	exit, out, stderr := deliveryRun(t, dir, deliveryPNG(t), "add", "-", "--name", `a[b]\c.png`, "--namespace", "blog", "--output", "markdown")
-	if exit != 0 || !strings.HasPrefix(out, `![a\[b\]\\c.png](https://cdn.jsdelivr.net/gh/example/gallery@feature%2Fdemo/objects/blog/`) || !strings.Contains(stderr, "not published") {
+	if exit != 0 || !strings.Contains(stderr, "not published") {
 		t.Fatal(exit, out, stderr)
 	}
 	s, e := app.Open(context.Background(), dir)
@@ -67,12 +67,17 @@ func TestMarkdownAndProspectiveURL(t *testing.T) {
 	if e != nil || len(views) != 1 {
 		t.Fatal(views, e)
 	}
+	imagePath := views[0].Asset.Path
+	if strings.Contains(imagePath, "/") || !repository.IsTimestampObjectPath(imagePath, "png") ||
+		out != `![a\[b\]\\c.png](https://cdn.jsdelivr.net/gh/example/gallery@feature%2Fdemo/`+imagePath+")\n" {
+		t.Fatalf("unexpected Markdown for the staged timestamp path %q: %s", imagePath, out)
+	}
 	exit, out, stderr = deliveryRun(t, dir, nil, "url", views[0].Asset.ID.String(), "--provider", "github", "--json")
 	var got struct {
 		URL       string `json:"url"`
 		Committed bool   `json:"committed"`
 	}
-	if e = json.Unmarshal([]byte(out), &got); e != nil || exit != 0 || got.Committed || !strings.HasPrefix(got.URL, "https://raw.githubusercontent.com/example/gallery/refs/heads/feature%2Fdemo/") || stderr != "" {
+	if e = json.Unmarshal([]byte(out), &got); e != nil || exit != 0 || got.Committed || got.URL != "https://raw.githubusercontent.com/example/gallery/refs/heads/feature%2Fdemo/"+imagePath || stderr != "" {
 		t.Fatal(exit, out, stderr, e)
 	}
 	exit, out, stderr = deliveryRun(t, dir, nil, "url", views[0].Asset.ID.String(), "--json")
@@ -80,7 +85,7 @@ func TestMarkdownAndProspectiveURL(t *testing.T) {
 	if e = json.Unmarshal([]byte(out), &fields); e != nil || exit != 0 || stderr != "" || len(fields) != 2 {
 		t.Fatal(exit, out, stderr, e)
 	}
-	if e = json.Unmarshal(fields["url"], &got.URL); e != nil || !strings.HasPrefix(got.URL, "https://cdn.jsdelivr.net/gh/example/gallery@feature%2Fdemo/") || string(fields["committed"]) != "false" {
+	if e = json.Unmarshal(fields["url"], &got.URL); e != nil || got.URL != "https://cdn.jsdelivr.net/gh/example/gallery@feature%2Fdemo/"+imagePath || string(fields["committed"]) != "false" {
 		t.Fatal(out, e)
 	}
 }

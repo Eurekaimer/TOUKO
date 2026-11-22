@@ -130,21 +130,20 @@ def _import(anchor):
     return ("\t" + anchor, "\t\"github.com/Eurekaimer/TOUKO/internal/benchrec\"\n\t" + anchor, 1)
 
 
-def _stage_add_edits():
+def _stage_add_edits(optional_hash=False):
+    hash_option = "\t\t\tComputeHash: opts.ComputeHash,\n" if optional_hash else ""
+    ingest_call = """\t\tresult, err := ingest.IngestWithOptions(ctx, input.Reader, tempDir, ingest.Options{
+\t\t\tConvertWebP: opts.ConvertWebP,
+\t\t\tWebPQuality: opts.WebPQuality,
+""" + hash_option + "\t\t})\n"
     return [
         _import('"github.com/Eurekaimer/TOUKO/internal/domain"'),
-        ("""\t\tresult, err := ingest.IngestWithOptions(ctx, input.Reader, tempDir, ingest.Options{
-\t\t\tConvertWebP: opts.ConvertWebP,
-\t\t\tWebPQuality: opts.WebPQuality,
-\t\t})
-\t\tif err != nil {""",
-         """\t\tstopIngest := benchrec.Span("add.ingest")
-\t\tresult, err := ingest.IngestWithOptions(ctx, input.Reader, tempDir, ingest.Options{
-\t\t\tConvertWebP: opts.ConvertWebP,
-\t\t\tWebPQuality: opts.WebPQuality,
-\t\t})
-\t\tstopIngest()
-\t\tif err != nil {""", 1),
+        (
+            ingest_call + "\t\tif err != nil {",
+            '\t\tstopIngest := benchrec.Span("add.ingest")\n' + ingest_call +
+            "\t\tstopIngest()\n\t\tif err != nil {",
+            1,
+        ),
         ("""\t\titem, err := PrepareInput(result, input.Name, AddOptions{Namespace: ns, Directory: opts.Directory, Title: opts.Title, Tags: opts.Tags, Collections: opts.Collections})
 \t\tif err != nil {""",
          """\t\tstopMetadata := benchrec.Span("add.metadata")
@@ -324,7 +323,13 @@ def _commit_edits():
     ]
 
 
-def _cloudflare_edits():
+def _cloudflare_edits(optional_hash=False):
+    if optional_hash:
+        edits = [_import('"github.com/Eurekaimer/TOUKO/internal/credential"')]
+        for indent, error_name in (("\t\t\t\t", "putErr"), ("\t", "err")):
+            call = f"{indent}etag, {error_name} := r.mirror.PutObject(ctx, key, file, putOptions)\n"
+            edits.append((call, f'{indent}stopPut := benchrec.Span("commit.r2_put")\n{call}{indent}stopPut()\n', 1))
+        return edits
     return [
         _import('"github.com/Eurekaimer/TOUKO/internal/credential"'),
         ("""\tetag, err := r.mirror.PutObject(ctx, key, file, r2.PutOptions{
@@ -340,15 +345,44 @@ def _cloudflare_edits():
     ]
 
 
-def _ingest_edits():
-    return [
-        _import('"github.com/Eurekaimer/TOUKO/internal/domain"'),
-        ("""\thash := sha256.New()
+def _ingest_edits(optional_hash=False):
+    if optional_hash:
+        stream = "\twriter := io.Writer(file)\n"
+        stream_start = (stream, '\tstopStream := benchrec.Span("ingest.stream")\n' + stream, 1)
+        hash_edits = [
+            (
+                f"writer = io.MultiWriter({target}, digest)",
+                f'writer = io.MultiWriter({target}, benchrec.Writer{{W: digest, Name: "ingest.hash"}})',
+                1,
+            )
+            for target in ("file", "output")
+        ]
+    else:
+        stream_start = (
+            """\thash := sha256.New()
 \tsize, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(contextReader{ctx, source}, MaxBytes+1))""",
-         """\tstopStream := benchrec.Span("ingest.stream")
+            """\tstopStream := benchrec.Span("ingest.stream")
 \tdigest := sha256.New()
 \thash := benchrec.Writer{W: digest, Name: "ingest.hash"}
-\tsize, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(contextReader{ctx, source}, MaxBytes+1))""", 1),
+\tsize, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(contextReader{ctx, source}, MaxBytes+1))""",
+            1,
+        )
+        hash_edits = [
+            ("\thash.Sum(object.Hash[:0])", "\tdigest.Sum(object.Hash[:0])", 1),
+            (
+                """\tdigest := sha256.New()
+\tif err := webp.Encode(io.MultiWriter(output, digest), decoded, webp.Options{Quality: quality}); err != nil {""",
+                """\tdigest := sha256.New()
+\ttimedDigest := benchrec.Writer{W: digest, Name: "ingest.hash"}
+\tif err := webp.Encode(io.MultiWriter(output, timedDigest), decoded, webp.Options{Quality: quality}); err != nil {""",
+                1,
+            ),
+        ]
+    hash_arg = ", opts.ComputeHash" if optional_hash else ""
+    convert_call = f"\t\tconverted, err := convertToWebP(ctx, filePath, tempDir, opts.WebPQuality{hash_arg})\n"
+    return [
+        _import('"github.com/Eurekaimer/TOUKO/internal/domain"'),
+        stream_start,
         ("""\tfile = nil
 \t// Decode only the persisted header; never rewind or re-read the source.""",
          """\tfile = nil
@@ -360,29 +394,23 @@ def _ingest_edits():
 \tconfig, format, decodeErr := stdimage.DecodeConfig(contextReader{ctx, header})
 \tstopDecode()
 \tcloseErr := header.Close()""", 1),
-        ("""\t\tconverted, err := convertToWebP(ctx, filePath, tempDir, opts.WebPQuality)
-\t\tif err != nil {""",
-         """\t\tstopWebP := benchrec.Span("ingest.webp")
-\t\tconverted, err := convertToWebP(ctx, filePath, tempDir, opts.WebPQuality)
-\t\tstopWebP()
-\t\tif err != nil {""", 1),
-        ("""\thash.Sum(object.Hash[:0])""",
-         """\tdigest.Sum(object.Hash[:0])""", 1),
+        (
+            convert_call + "\t\tif err != nil {",
+            '\t\tstopWebP := benchrec.Span("ingest.webp")\n' + convert_call +
+            "\t\tstopWebP()\n\t\tif err != nil {",
+            1,
+        ),
         ("""\tdecoded, _, decodeErr := stdimage.Decode(contextReader{ctx, source})
 \tcloseErr := source.Close()""",
          """\tstopDecode := benchrec.Span("ingest.decode")
 \tdecoded, _, decodeErr := stdimage.Decode(contextReader{ctx, source})
 \tstopDecode()
 \tcloseErr := source.Close()""", 1),
-        ("""\tdigest := sha256.New()
-\tif err := webp.Encode(io.MultiWriter(output, digest), decoded, webp.Options{Quality: quality}); err != nil {""",
-         """\tdigest := sha256.New()
-\ttimedDigest := benchrec.Writer{W: digest, Name: "ingest.hash"}
-\tif err := webp.Encode(io.MultiWriter(output, timedDigest), decoded, webp.Options{Quality: quality}); err != nil {""", 1),
+        *hash_edits,
     ]
 
 
-def _wrap_cloudflare_publication(root):
+def _wrap_cloudflare_publication(root, optional_hash=False):
     """The publication guard differs between revisions; insert spans around the
     call line alone so both guarded and unguarded forms are supported."""
     rel = "internal/app/commit.go"
@@ -391,7 +419,8 @@ def _wrap_cloudflare_publication(root):
         text = handle.read()
     updated = False
     for indent in ("\t\t", "\t"):
-        call = f"{indent}result.Cloudflare = s.cloudflarePublication(ctx, r, st, snap)"
+        blobs_arg = ", publishedBlobs" if optional_hash else ""
+        call = f"{indent}result.Cloudflare = s.cloudflarePublication(ctx, r, st, snap{blobs_arg})"
         if text.count(call) == 1:
             text = text.replace(
                 call,
@@ -439,13 +468,15 @@ def prepare_source(source, destination):
     os.makedirs(benchrec_dir, exist_ok=True)
     with open(os.path.join(benchrec_dir, "benchrec.go"), "w", encoding="utf-8") as handle:
         handle.write(BENCHREC)
+    with open(os.path.join(destination, "internal", "image", "ingest.go"), encoding="utf-8") as handle:
+        optional_hash = "\tComputeHash bool\n" in handle.read()
 
     plan = {
-        "internal/app/stage.go": _stage_add_edits(),
+        "internal/app/stage.go": _stage_add_edits(optional_hash),
         "internal/app/prepare.go": _prepare_edits(),
         "internal/app/commit.go": _commit_edits(),
-        "internal/app/cloudflare.go": _cloudflare_edits(),
-        "internal/image/ingest.go": _ingest_edits(),
+        "internal/app/cloudflare.go": _cloudflare_edits(optional_hash),
+        "internal/image/ingest.go": _ingest_edits(optional_hash),
         "internal/staging/files.go": _staging_edits(),
     }
     if os.path.exists(os.path.join(destination, "internal", "image", "verify.go")):
@@ -455,7 +486,7 @@ def prepare_source(source, destination):
         plan["internal/repository/verify.go"] = _legacy_verify_edits()
     for rel, edits in plan.items():
         _rewrite(destination, rel, edits)
-    _wrap_cloudflare_publication(destination)
+    _wrap_cloudflare_publication(destination, optional_hash)
 
     files = ["internal/benchrec/benchrec.go", *plan]
     return {

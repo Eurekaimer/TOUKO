@@ -531,7 +531,7 @@ def add_baseline_images(binary, state, images, environment, cwd):
     paths = [str(path) for path in images]
     for start in range(0, len(paths), BASELINE_ADD_CHUNK):
         chunk = paths[start : start + BASELINE_ADD_CHUNK]
-        added = cli_json(binary, state, ["add", *chunk], environment, cwd)
+        added = cli_json(binary, state, ["add", "--hash", *chunk], environment, cwd)
         require(
             len(added.get("assets", [])) == len(chunk),
             f"baseline add returned {len(added.get('assets', []))} assets for {len(chunk)} files",

@@ -92,6 +92,27 @@ func FuzzDecodeAsset(f *testing.F) {
 	})
 }
 
+func TestHashlessExplicitAssetRoundTrip(t *testing.T) {
+	a := sampleAsset(t)
+	a.Object.Hash = domain.ObjectHash{}
+	a.Path = "1789000000000000000.png"
+	data, err := EncodeAsset(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"hash"`)) {
+		t.Fatalf("hashless metadata exposes a zero digest: %s", data)
+	}
+	decoded, err := DecodeAsset(data, a.ID.String()+".json")
+	if err != nil || decoded.Object.HasHash() || decoded.Path != a.Path {
+		t.Fatalf("hashless metadata round trip: %#v, %v", decoded, err)
+	}
+	a.Path = ""
+	if _, err := EncodeAsset(a); !errors.Is(err, domain.ErrRepositoryCorrupt) {
+		t.Fatalf("hashless pathless metadata encoded: %v", err)
+	}
+}
+
 func TestExplicitAssetPathValidationAndRoundTrip(t *testing.T) {
 	a := sampleAsset(t)
 	for _, unsafe := range []string{"/absolute.png", "../outside.png", "img/../../outside.png", "img//file.png", "img/./file.png", "img\\file.png", ".git/config", "img/.GIT/config", ".touko/assets/file.png", "img/.touko/file.png", "img/new\nline.png", "img/\x00.png", "."} {

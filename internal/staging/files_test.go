@@ -23,7 +23,7 @@ func ingestPNG(t *testing.T, dir string) image.Result {
 	if err := png.Encode(&b, img); err != nil {
 		t.Fatal(err)
 	}
-	result, err := image.Ingest(context.Background(), &b, filepath.Join(dir, "tmp"))
+	result, err := image.IngestWithOptions(context.Background(), &b, filepath.Join(dir, "tmp"), image.Options{ComputeHash: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestInstallRejectsCorruptExistingWithoutOverwrite(t *testing.T) {
 }
 
 func TestInstallFailuresLeaveNoPayload(t *testing.T) {
-	for _, name := range []string{"canceled", "corrupt_source", "invalid_namespace", "no_identity", "no_hash"} {
+	for _, name := range []string{"canceled", "corrupt_source", "invalid_namespace", "no_identity", "hashless_without_path"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			result := ingestPNG(t, dir)
@@ -137,7 +137,7 @@ func TestInstallFailuresLeaveNoPayload(t *testing.T) {
 				asset.Namespace = "../escape"
 			case "no_identity":
 				asset.ID = domain.AssetID{}
-			case "no_hash":
+			case "hashless_without_path":
 				asset.Object.Hash = domain.ObjectHash{}
 				result.Object.Hash = domain.ObjectHash{}
 			}
@@ -151,6 +151,49 @@ func TestInstallFailuresLeaveNoPayload(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInstallHashlessPayloadUsesAssetIdentity(t *testing.T) {
+	ctx, dir := context.Background(), t.TempDir()
+	result := ingestPNG(t, dir)
+	asset := stagedAsset(t, "blog", result)
+	asset.Object.Hash = domain.ObjectHash{}
+	result.Object.Hash = domain.ObjectHash{}
+	asset.Path = "1789000000000000000.png"
+	path, created, err := Install(ctx, dir, asset, result)
+	if err != nil || !created || path != PayloadPathForAsset(dir, "blog", asset.ID, result.Object) {
+		t.Fatalf("hashless installation: %s %v %v", path, created, err)
+	}
+	if filepath.Base(path) != asset.ID.String()+".png" {
+		t.Fatalf("staged payload is not keyed by asset identity: %s", path)
+	}
+	assertMissing(t, result.TempPath)
+}
+
+func TestInstallRejectsUnverifiedHashlessExisting(t *testing.T) {
+	ctx, dir := context.Background(), t.TempDir()
+	result := ingestPNG(t, dir)
+	asset := stagedAsset(t, "blog", result)
+	asset.Object.Hash = domain.ObjectHash{}
+	result.Object.Hash = domain.ObjectHash{}
+	asset.Path = "1789000000000000000.png"
+	target := PayloadPathForAsset(dir, "blog", asset.ID, result.Object)
+	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+		t.Fatal(err)
+	}
+	foreign := bytes.Repeat([]byte("x"), int(result.Object.Size))
+	if err := os.WriteFile(target, foreign, 0600); err != nil {
+		t.Fatal(err)
+	}
+	path, created, err := Install(ctx, dir, asset, result)
+	if err == nil || created || path != "" {
+		t.Fatalf("same-size unmanaged payload was adopted: %s %v %v", path, created, err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(got, foreign) {
+		t.Fatalf("existing payload was overwritten: %v", err)
+	}
+	assertMissing(t, result.TempPath)
 }
 
 func TestCleanupPreservesReferencedPayloadAndUnrelatedFiles(t *testing.T) {

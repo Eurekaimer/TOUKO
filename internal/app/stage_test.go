@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,15 +40,22 @@ func newStagedApp(t *testing.T) (*Service, context.Context) {
 	}
 	return s, ctx
 }
-func TestStagingNormalizationAndSharedPayload(t *testing.T) {
+func TestStagingNormalizationAndPayloadIdentity(t *testing.T) {
 	s, ctx := newStagedApp(t)
 	data := pngBytes(t)
 	a, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(data), Name: "图片.png"}, {Reader: bytes.NewReader(data), Name: "same.png"}}, AddOptions{Namespace: "blog", Tags: []string{" z ", "a", "a", ""}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a[0].Asset.ID == a[1].Asset.ID || a[0].Asset.Object != a[1].Asset.Object || a[0].Asset.OriginalName != "图片.png" {
+	if a[0].Asset.ID == a[1].Asset.ID || a[0].Asset.OriginalName != "图片.png" || a[0].Asset.Object.HasHash() || a[1].Asset.Object.HasHash() {
 		t.Fatal(a)
+	}
+	// A hashless upload is named by its staging path, so identical bytes stay
+	// two independent staged payloads instead of being merged by content.
+	firstPayload := staging.PayloadPath(s.Dir, a[0].Asset)
+	secondPayload := staging.PayloadPath(s.Dir, a[1].Asset)
+	if firstPayload == secondPayload || !strings.HasSuffix(firstPayload, a[0].Asset.ID.String()+".png") {
+		t.Fatalf("hashless payloads were conflated: %q %q", firstPayload, secondPayload)
 	}
 	title := "edited"
 	if err = s.Edit(ctx, a[0].Asset.ID.String(), EditOptions{Title: &title}); err != nil {
@@ -57,12 +65,14 @@ func TestStagingNormalizationAndSharedPayload(t *testing.T) {
 	if st.Changes[a[0].Asset.ID].Kind != domain.Add {
 		t.Fatal(st.Changes)
 	}
-	path := staging.PayloadPath(s.Dir, a[0].Asset)
 	if err = s.Remove(ctx, []string{a[0].Asset.ID.String()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = os.Stat(path); err != nil {
-		t.Fatal("shared payload removed", err)
+	if _, err = os.Stat(secondPayload); err != nil {
+		t.Fatal("unrelated staged payload removed", err)
+	}
+	if _, err = os.Stat(firstPayload); !os.IsNotExist(err) {
+		t.Fatalf("removed asset kept its own payload: %v", err)
 	}
 	if err = s.Remove(ctx, []string{a[1].Asset.ID.String()}); err != nil {
 		t.Fatal(err)
@@ -71,13 +81,48 @@ func TestStagingNormalizationAndSharedPayload(t *testing.T) {
 	if len(st.Changes) != 0 || st.BaseHead != "" {
 		t.Fatal(st)
 	}
-	if _, err = os.Stat(path); !os.IsNotExist(err) {
+	if _, err = os.Stat(secondPayload); !os.IsNotExist(err) {
 		t.Fatalf("unreferenced payload retained: %v", err)
 	}
 	if err = s.Remove(ctx, []string{a[0].Asset.ID.String()}); !errors.Is(err, domain.ErrAssetNotFound) {
 		t.Fatal(err)
 	}
+	// Opting into the digest restores content-addressed sharing: identical
+	// bytes ingest to one staged payload while remaining two assets.
+	hashed, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(data), Name: "one.png"}, {Reader: bytes.NewReader(data), Name: "two.png"}}, AddOptions{Namespace: "blog", ComputeHash: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hashed[0].Asset.Object.HasHash() || staging.PayloadPath(s.Dir, hashed[0].Asset) != staging.PayloadPath(s.Dir, hashed[1].Asset) {
+		t.Fatalf("opt-in payload is not content addressed: %#v", hashed)
+	}
+	shared := staging.PayloadPath(s.Dir, hashed[0].Asset)
+	if err = s.Remove(ctx, []string{hashed[0].Asset.ID.String()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(shared); err != nil {
+		t.Fatal("shared payload removed with one reference", err)
+	}
 }
+func TestAddComputeHashCoversConvertedBytes(t *testing.T) {
+	s, ctx := newStagedApp(t)
+	views, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(batchPNG(t, 3)), Name: "photo.png"}}, AddOptions{Namespace: "blog", ConvertWebP: true, ComputeHash: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := views[0].Asset
+	if !asset.Object.HasHash() {
+		t.Fatal("opt-in digest missing")
+	}
+	published, err := os.ReadFile(staging.PayloadPath(s.Dir, asset))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asset.Object.Size != int64(len(published)) || asset.Object.Hash != domain.ObjectHash(sha256.Sum256(published)) {
+		t.Fatalf("digest does not cover staged bytes: %+v", asset.Object)
+	}
+}
+
 func TestBatchFailureAndCommittedTransitions(t *testing.T) {
 	s, ctx := newStagedApp(t)
 	data := pngBytes(t)

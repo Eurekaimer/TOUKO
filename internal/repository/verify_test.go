@@ -79,3 +79,58 @@ func TestVerifyRejectsCorruptObject(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestVerifyHashlessExplicitObjectUsesDescription(t *testing.T) {
+	ctx := context.Background()
+	r, err := localgit.Init(ctx, filepath.Join(t.TempDir(), "gallery.git"), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data bytes.Buffer
+	m := image.NewRGBA(image.Rect(0, 0, 4, 5))
+	m.Set(1, 1, color.RGBA{G: 255, A: 255})
+	if err = png.Encode(&data, m); err != nil {
+		t.Fatal(err)
+	}
+	object := domain.ContentObject{MIME: "image/png", Ext: "png", Size: int64(data.Len()), Width: 4, Height: 5}
+	blob, err := r.CreateBlob(ctx, bytes.NewReader(data.Bytes()), int64(data.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = repository.VerifyObject(ctx, r, blob, object); err != nil {
+		t.Fatalf("hashless explicit object rejected: %v", err)
+	}
+	wrongSize := object
+	wrongSize.Size--
+	if err = repository.VerifyObject(ctx, r, blob, wrongSize); !errors.Is(err, domain.ErrHashMismatch) {
+		t.Fatal(err)
+	}
+	wrongHeader := object
+	wrongHeader.Height++
+	if err = repository.VerifyObject(ctx, r, blob, wrongHeader); !errors.Is(err, domain.ErrRepositoryCorrupt) {
+		t.Fatal(err)
+	}
+
+	id, _ := domain.NewAssetID()
+	now := time.Now().UTC()
+	asset := domain.Asset{ID: id, Namespace: "blog", Object: object, Path: "1789000000000000000.png", CreatedAt: now, UpdatedAt: now}
+	snap := repository.Snapshot{Head: "fixed", Manifest: domain.Repository{FormatVersion: 2, HashAlgorithm: "sha256"}, Assets: map[domain.AssetID]domain.Asset{id: asset}, Entries: []repository.GitEntry{{Path: asset.Path, Mode: "100644", Type: "blob", SHA: string(blob), Size: object.Size}}}
+	if result, err := repository.VerifySnapshot(ctx, r, snap); err != nil || result.Objects != 1 {
+		t.Fatalf("hashless snapshot verify = %#v, %v", result, err)
+	}
+	broken := snap
+	brokenAsset := asset
+	brokenAsset.Object.Height++
+	broken.Assets = map[domain.AssetID]domain.Asset{id: brokenAsset}
+	if _, err := repository.VerifySnapshot(ctx, r, broken); !errors.Is(err, domain.ErrRepositoryCorrupt) {
+		t.Fatalf("hashless header corruption accepted: %v", err)
+	}
+	pathless := snap
+	pathlessAsset := asset
+	pathlessAsset.Object.Hash = domain.ObjectHash{}
+	pathlessAsset.Path = ""
+	pathless.Assets = map[domain.AssetID]domain.Asset{id: pathlessAsset}
+	if _, err := repository.VerifySnapshot(ctx, r, pathless); !errors.Is(err, domain.ErrRepositoryCorrupt) {
+		t.Fatalf("hashless asset without explicit path accepted: %v", err)
+	}
+}

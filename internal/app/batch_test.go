@@ -129,7 +129,7 @@ func TestAtomicBatchRetryAfterBlobFailure(t *testing.T) {
 		inputs[i] = Input{Reader: bytes.NewReader(payloads[i]), Name: fmt.Sprintf("样例-%03d.png", i)}
 	}
 	title := "atomic demo batch"
-	views, err := s.Add(ctx, inputs, AddOptions{Namespace: "blog", Title: &title, Tags: []string{"batch", "demo"}, Collections: []string{"samples"}})
+	views, err := s.Add(ctx, inputs, AddOptions{Namespace: "blog", Title: &title, Tags: []string{"batch", "demo"}, Collections: []string{"samples"}, ComputeHash: true})
 	if err != nil {
 		t.Fatal(err)
 	}

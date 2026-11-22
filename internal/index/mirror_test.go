@@ -553,6 +553,58 @@ func TestMirrorSaveRejectsInvalidTarget(t *testing.T) {
 	}
 }
 
+func TestMirrorLedgerAcceptsHashlessBlobEvidence(t *testing.T) {
+	ctx := context.Background()
+	stateDir := filepath.Join(t.TempDir(), "state")
+	ledger := sampleMirrorLedger(t)
+	ledger.Entries[0].Object.Hash = domain.ObjectHash{}
+	ledger.Entries[0].Blob = strings.Repeat("a", 40)
+	ledger.Entries[1].Object.Hash = domain.ObjectHash{}
+	ledger.Entries[1].Blob = strings.Repeat("b", 64)
+	if err := SaveMirror(ctx, stateDir, ledger); err != nil {
+		t.Fatalf("SaveMirror hashless receipts: %v", err)
+	}
+	got, err := LoadMirror(ctx, stateDir, ledger.TargetID)
+	if err != nil {
+		t.Fatalf("LoadMirror hashless receipts: %v", err)
+	}
+	if want := sortedMirrorLedger(ledger); !reflect.DeepEqual(got, want) {
+		t.Fatalf("hashless roundtrip mismatch\ngot:  %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestMirrorLedgerRejectsUnprovenHashlessEntry(t *testing.T) {
+	ctx := context.Background()
+	base := sampleMirrorLedger(t)
+	cases := []struct {
+		name   string
+		mutate func(*MirrorLedger)
+	}{
+		{"hashless without blob", func(l *MirrorLedger) { l.Entries[0].Object.Hash = domain.ObjectHash{} }},
+		{"hashless short blob", func(l *MirrorLedger) {
+			l.Entries[0].Object.Hash = domain.ObjectHash{}
+			l.Entries[0].Blob = "abc"
+		}},
+		{"hashless uppercase blob", func(l *MirrorLedger) {
+			l.Entries[0].Object.Hash = domain.ObjectHash{}
+			l.Entries[0].Blob = strings.Repeat("AB", 20)
+		}},
+		{"hashful uppercase blob", func(l *MirrorLedger) { l.Entries[0].Blob = strings.Repeat("AB", 20) }},
+		{"hashful short blob", func(l *MirrorLedger) { l.Entries[0].Blob = "abc" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ledger := cloneMirrorLedger(base)
+			tc.mutate(&ledger)
+			if err := SaveMirror(ctx, filepath.Join(t.TempDir(), "state"), ledger); err == nil {
+				t.Fatal("SaveMirror accepted an unproven receipt")
+			} else {
+				requireMirrorCorrupt(t, err)
+			}
+		})
+	}
+}
+
 func TestMirrorLedgerSurvivesReindex(t *testing.T) {
 	ctx := context.Background()
 	stateDir := filepath.Join(t.TempDir(), "state")

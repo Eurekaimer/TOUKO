@@ -26,7 +26,11 @@ func (s *Server) reader(ctx context.Context) (repository.Git, error) {
 	if err := s.ensureClone(ctx); err != nil {
 		return nil, err
 	}
-	return localgit.Open(ctx, repository.CloneDir(s.service.Dir), location.Branch)
+	dir, err := s.service.CloneDir()
+	if err != nil {
+		return nil, err
+	}
+	return localgit.Open(ctx, dir, location.Branch)
 }
 
 // capacityReader uses local immutable objects when the indexed HEAD is present.
@@ -41,7 +45,10 @@ func (s *Server) capacityReader(ctx context.Context) (repository.Reader, error) 
 	if location.Backend != "github" {
 		return s.backend(ctx)
 	}
-	dir := repository.CloneDir(s.service.Dir)
+	dir, err := s.service.CloneDir()
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return s.backend(ctx)
@@ -150,7 +157,11 @@ func (s *Server) commitReader(ctx context.Context) (repository.Git, error) {
 	if err != nil {
 		return nil, err
 	}
-	local := localgit.IndexedObjects(ctx, repository.CloneDir(s.service.Dir), location.RemoteURL(), location.Branch, st.Head, token)
+	dir, err := s.service.CloneDir()
+	if err != nil {
+		return nil, err
+	}
+	local := localgit.IndexedObjects(ctx, dir, location.RemoteURL(), location.Branch, st.Head, token)
 	if local == nil {
 		return api, nil
 	}

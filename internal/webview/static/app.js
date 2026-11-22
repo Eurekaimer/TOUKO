@@ -185,9 +185,7 @@ function zoomFontWheel(event) {
 }
 
 // --- Settings: appearance plus per-member Cloudflare configuration -------
-// The settings dialog owns two independent surfaces. Appearance already has
-// its own root endpoint and autosave; Cloudflare is member-scoped, so the
-// dialog always names the exact workspace it reads and writes.
+// Appearance is device-wide; Cloudflare is written to the named workspace.
 const settings = {
   memberID: "",
   formMemberID: "",
@@ -200,6 +198,13 @@ const settings = {
   loadedAccessKeyID: "",
   loadedSecretAccessKey: "",
 };
+// The local working-copy section is independent of the Cloudflare form: it
+// reports every member's path and can move only the selected GitHub member.
+const localCopy = {
+  custom: false,
+  token: 0,
+};
+let hashRequest = 0;
 const cloudflareFieldIDs = [
   "cloudflare-enabled",
   "cloudflare-endpoint",
@@ -238,6 +243,121 @@ function settingsMembers() {
 }
 function currentSettingsMember() {
   return memberByID(settings.memberID) || settingsMembers()[0] || null;
+}
+function localCopyMember() {
+  const member = currentSettingsMember();
+  return member?.location?.backend === "github" ? member : null;
+}
+// writeClipboard prefers the desktop runtime, then the browser clipboard. It
+// throws so callers can offer an honest manual fallback instead of claiming a
+// copy that did not happen.
+async function writeClipboard(text) {
+  const bridge = desktopBridge();
+  if (bridge) return bridge.WriteText(text);
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+  throw new Error("当前环境不支持写入剪贴板");
+}
+function renderLocalPaths() {
+  const target = $("local-copy-paths");
+  if (!target) return;
+  const members = (view?.members || []).filter((member) => member.location);
+  $("local-copy-empty").hidden = members.length > 0;
+  target.replaceChildren();
+  for (const member of members) {
+    const name = memberName(member.id);
+    const path = member.local_read?.path || "";
+    const row = element("div", "local-copy-row");
+    const input = element("input", "local-copy-path");
+    input.type = "text";
+    input.readOnly = true;
+    input.spellcheck = false;
+    input.value = path;
+    input.placeholder = "尚未创建";
+    input.setAttribute("aria-label", `${name} 的本地读图副本路径`);
+    const copy = button("复制", "text-button local-copy-button", async () => {
+      if (!path) return;
+      try {
+        await writeClipboard(path);
+        toast("路径已复制");
+      } catch {
+        // Selecting the visible path is the honest fallback: no copy is claimed.
+        input.focus();
+        input.select();
+        toast("无法复制路径，请手动选择");
+      }
+    });
+    copy.disabled = !path;
+    row.append(element("span", "local-copy-name", name), input, copy);
+    if (!path) {
+      row.append(element("small", "local-copy-note", "尚未创建，同步后生成。"));
+    } else if (member.location.backend === "localgit" && member.local_read?.available === false) {
+      row.append(element("small", "local-copy-note", "原路径当前不可用。"));
+    } else if (member.local_read?.available === false) {
+      row.append(element("small", "local-copy-note", "副本尚未创建，同步后生成。"));
+    }
+    target.append(row);
+  }
+  syncLocalCopyControls();
+}
+function syncLocalCopyControls() {
+  const section = $("local-copy-move");
+  if (!section) return;
+  const member = localCopyMember();
+  section.hidden = !member;
+  if (!member) return;
+  const destination = $("local-copy-destination").value.trim();
+  $("local-copy-destination").disabled = busy;
+  $("local-copy-move-button").disabled = busy || !destination;
+  $("local-copy-reset").disabled = busy || !localCopy.custom;
+}
+async function loadLocalCopy() {
+  const member = localCopyMember();
+  const token = ++localCopy.token;
+  localCopy.custom = false;
+  if (!member) {
+    $("local-copy-status").textContent = "";
+    syncLocalCopyControls();
+    return;
+  }
+  try {
+    const info = await apiMember(member, "clone");
+    if (token !== localCopy.token || localCopyMember()?.id !== member.id) return;
+    localCopy.custom = !!info.custom;
+    $("local-copy-destination").placeholder = info.default_path || "/path/to/clone";
+    $("local-copy-status").textContent = info.available
+      ? info.custom
+        ? `当前使用自定义位置：${info.path}`
+        : `当前使用默认位置：${info.path}`
+      : info.custom
+        ? `自定义位置 ${info.path} 尚未创建；同步后生成。`
+        : `默认位置 ${info.path} 尚未创建；同步后生成。`;
+  } catch {
+    if (token !== localCopy.token) return;
+    $("local-copy-status").textContent = "无法读取副本位置；请关闭设置后重试。";
+  }
+  syncLocalCopyControls();
+}
+async function moveLocalCopy(reset) {
+  const member = localCopyMember();
+  if (!member || busy) return;
+  const destination = reset ? "" : $("local-copy-destination").value.trim();
+  if (!reset && !destination) {
+    showError("local-copy-error", new Error("请填写绝对路径。"));
+    return;
+  }
+  clearError("local-copy-error");
+  // The server validates the absolute path and refuses a non-empty destination;
+  // the UI never pre-empts that with a weaker guess about path syntax.
+  const result = await mutate(
+    () => apiMember(member, "clone", { path: destination }),
+    "local-copy-error",
+    reset ? "已恢复默认副本位置" : "副本已迁移",
+  );
+  if (!result) return;
+  if (result.warning) toast(result.warning);
+  $("local-copy-destination").value = "";
+  renderLocalPaths();
+  await loadLocalCopy();
 }
 function clearCloudflareSecrets() {
   $("cloudflare-access-key-id").value = "";
@@ -412,6 +532,65 @@ async function loadCloudflareSettings() {
     }
   }
 }
+async function loadHashSettings({ enabled, duplicates = false } = {}) {
+  const request = ++hashRequest;
+  const members = (view?.members || []).filter((member) => member.location && !member.error);
+  const toggle = $("hash-cache-enabled");
+  const check = $("hash-cache-check");
+  const status = $("hash-cache-status");
+  const list = $("hash-cache-results");
+  toggle.disabled = check.disabled = true;
+  if (!members.length) {
+    status.textContent = "尚未连接仓库。";
+    list.replaceChildren();
+    return;
+  }
+  try {
+    if (enabled !== undefined) {
+      await apiMember(members[0], "hash-cache", { enabled });
+      if (enabled) await Promise.all(members.slice(1).map((member) => apiMember(member, "hash-cache", {})));
+    }
+    const reports = await Promise.all(members.map((member) => apiMember(member, "hash-cache")));
+    if (request !== hashRequest || !$("settings-dialog").open) return;
+    toggle.checked = reports[0].enabled;
+    toggle.disabled = busy;
+    check.disabled = busy || !toggle.checked;
+    list.replaceChildren();
+    if (!toggle.checked) {
+      status.textContent = "未开启。上传和预览不会为查重读取图片字节。";
+      return;
+    }
+    const cached = reports.reduce((count, report) => count + (report.assets?.length || 0), 0);
+    const total = reports.reduce((count, report) => count + report.total, 0);
+    const running = reports.some((report) => report.running);
+    const error = reports.find((report) => report.error)?.error;
+    status.textContent = error || `已归档 ${cached} / ${total} 张。` +
+      (running ? " 正在后台计算。" : cached < total ? " 缺少本地字节；同步后再查。" : "");
+    if (duplicates) {
+      const groups = new Map();
+      reports.forEach((report, i) => {
+        for (const asset of report.assets || []) {
+          const name = asset.title || asset.id;
+          const group = groups.get(asset.hash) || [];
+          group.push(members.length === 1 ? name : `${memberName(members[i].id)} · ${name}`);
+          groups.set(asset.hash, group);
+        }
+      });
+      for (const group of groups.values()) {
+        if (group.length > 1) list.append(element("li", "", `${group.length} 张相同：${group.join("、")}`));
+      }
+      if (!list.childElementCount) list.append(element("li", "", "已归档图片中未发现重复。"));
+    }
+    if (running) setTimeout(() => {
+      if (request === hashRequest && $("settings-dialog").open) void loadHashSettings({ duplicates });
+    }, 600);
+  } catch (error) {
+    if (request !== hashRequest) return;
+    toggle.disabled = busy;
+    check.disabled = !toggle.checked || busy;
+    status.textContent = networkError(error).message;
+  }
+}
 function openSettings() {
   if (!view) {
     toast("请等待图库读取完成。");
@@ -427,9 +606,12 @@ function openSettings() {
   clearError("settings-error");
   $("cloudflare-settings-status").textContent = "";
   fillSettingsMembers();
+  renderLocalPaths();
   closeNavigation();
   showDialog("settings-dialog", "ui-scale");
   void loadCloudflareSettings();
+  void loadLocalCopy();
+  void loadHashSettings();
 }
 async function saveCloudflareSettings(event) {
   event.preventDefault();
@@ -891,6 +1073,7 @@ function updateActions() {
   // enabled just because the busy state ended.
   updateDeliveryControls();
   syncSettingsControls();
+  syncLocalCopyControls();
 }
 function renderWorkspace() {
   const { assets, changes, members } = view;
@@ -987,6 +1170,7 @@ function renderWorkspace() {
   renderFilters();
   renderGallery();
   renderPending();
+  renderLocalPaths();
   updateActions();
 }
 function renderMemberStatus() {
@@ -1142,12 +1326,7 @@ function visibleAssets() {
     });
 }
 function imageURL(entry) {
-  const member = memberForAsset(entry);
-  const head = member?.head || "";
-  return apiURL(
-    `assets/${entry.asset.id}/image?content=${entry.asset.object.hash}&head=${head}`,
-    `/w/${entry.workspace}`,
-  );
+  return apiURL(`assets/${entry.asset.id}/image`, `/w/${entry.workspace}`);
 }
 // canCopyReference reports whether this picture can have a public delivery URL at
 // all: private or local repositories deliberately produce none.
@@ -1546,7 +1725,7 @@ function openPreview(key) {
     ["尺寸", `${asset.object.width} × ${asset.object.height}`],
     ["大小", bytes(asset.object.size)],
     ["Asset ID", asset.id],
-    ["内容哈希", asset.object.hash],
+    ["SHA-256", asset.object.hash || "未计算"],
     ["添加时间", new Date(asset.created_at).toLocaleString("zh-CN")],
     ["修改时间", new Date(asset.updated_at).toLocaleString("zh-CN")],
   ]) {
@@ -1873,6 +2052,7 @@ function openUpload(files) {
   if (busy || !ready()) return;
   clearError("upload-error");
   $("upload-progress-area").hidden = true;
+  if (!$("upload-dialog").open) $("upload-hash").checked = false;
   if ($("upload-results")) {
     $("upload-results").hidden = true;
     $("upload-results").replaceChildren();
@@ -1887,6 +2067,7 @@ function uploadFields() {
   const data = new FormData();
   data.append("namespace", $("upload-namespace").value.trim());
   data.append("directory", $("upload-directory").value.trim());
+  if ($("upload-hash").checked) data.append("compute_hash", "true");
   if ($("upload-webp").checked) {
     data.append("convert_webp", "true");
     data.append("webp_quality", $("upload-webp-quality").value);
@@ -2459,11 +2640,8 @@ async function recheckLoginComponent() {
 async function copyAuthCode() {
   const code = loginSession?.user_code;
   if (!code) return;
-  const bridge = desktopBridge();
   try {
-    if (bridge) await bridge.WriteText(code);
-    else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(code);
-    else throw new Error("当前环境不支持写入剪贴板");
+    await writeClipboard(code);
     loginActionError = "";
     renderAuthLogin();
     toast("一次性验证码已复制");
@@ -3332,8 +3510,11 @@ function bindEvents() {
         settings.loading = false;
         settings.formMemberID = "";
         settings.ready = false;
+        localCopy.token++;
+        localCopy.custom = false;
         clearCloudflareSecrets();
         clearError("settings-error");
+        clearError("local-copy-error");
       }
       const origin = focusOrigins.get(dialog);
       if (origin?.isConnected) origin.focus();
@@ -3382,8 +3563,18 @@ function bindEvents() {
     settings.memberID = $("settings-member").value;
     clearCloudflareSecrets();
     clearError("settings-error");
+    clearError("local-copy-error");
+    renderLocalPaths();
     void loadCloudflareSettings();
+    void loadLocalCopy();
   });
+  $("local-copy-destination").addEventListener("input", syncLocalCopyControls);
+  $("local-copy-move-button").addEventListener("click", () => void moveLocalCopy(false));
+  $("local-copy-reset").addEventListener("click", () => void moveLocalCopy(true));
+  $("hash-cache-enabled").addEventListener("change", (event) =>
+    void loadHashSettings({ enabled: event.target.checked }),
+  );
+  $("hash-cache-check").addEventListener("click", () => void loadHashSettings({ duplicates: true }));
   $("settings-form").addEventListener("submit", saveCloudflareSettings);
   for (const [field, id] of [["ui_scale", "ui-scale"], ["font_scale", "font-scale"]]) {
     $(id).addEventListener("input", () => changeAppearance(field, Number($(id).value)));

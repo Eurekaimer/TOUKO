@@ -37,11 +37,13 @@ type Server struct {
 	token, origin, host, csrf string
 	// Queue this server's state operations; the filesystem lock still rejects
 	// competing CLI processes. Original-image streaming runs outside this gate.
-	workMu      sync.Mutex
-	logMu       sync.Mutex
-	cacheMu     sync.Mutex
-	cachedTree  repository.TreeID
-	cachedBlobs map[string]repository.GitEntry
+	workMu       sync.Mutex
+	logMu        sync.Mutex
+	cacheMu      sync.Mutex
+	cachedTree   repository.TreeID
+	cachedBlobs  map[string]repository.GitEntry
+	legacyImages legacyImageCache
+	hashes       hashScan
 	// clone holds the working copy's one-time-per-process state; its own mutex
 	// keeps concurrent previews from starting competing clones.
 	clone cloneOnce
@@ -157,6 +159,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/api" {
+		// The working-copy location endpoint is workspace-scoped but has its own
+		// handler, so it stays out of the gallery operation switch.
+		if r.URL.Path == "/api/clone" {
+			s.cloneAPI(w, r)
+			return
+		}
 		s.api(w, r)
 		return
 	}
@@ -235,9 +243,12 @@ func errorDetail(err error) (int, string, string) {
 	var api *github.APIError
 	var mirror *app.CloudflareSyncError
 	var settings *app.CloudflareConfigError
+	var clonePath *app.ClonePathError
 	switch {
 	case errors.As(err, &settings):
 		return 400, settings.Code, settings.Message
+	case errors.As(err, &clonePath):
+		return 400, "usage", clonePath.Message
 	case errors.As(err, &mirror):
 		return 502, "cloudflare_sync_failed", err.Error()
 	case errors.As(err, &input):

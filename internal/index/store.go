@@ -31,6 +31,7 @@ type State struct {
 	Manifest    *domain.Repository
 	BaseHead    domain.RepositoryHead
 	Assets      map[domain.AssetID]domain.Asset
+	ImageBlobs  map[domain.AssetID]repository.BlobID
 	Changes     map[domain.AssetID]domain.Change
 	Publication *Publication
 }
@@ -52,6 +53,14 @@ INSERT INTO repository_state (singleton, head, tree, manifest) VALUES (1, '', ''
 CREATE TABLE assets (id TEXT PRIMARY KEY, metadata BLOB NOT NULL);
 PRAGMA user_version = 2;
 `
+
+// The tree key keeps these optional cache entries valid even if an older
+// process updates the main index without maintaining image_blobs.
+const imageBlobSchema = `CREATE TABLE IF NOT EXISTS image_blobs (
+    asset_id TEXT PRIMARY KEY,
+    tree TEXT NOT NULL,
+    blob TEXT NOT NULL
+);`
 
 func Open(ctx context.Context, stateDir string) (*Store, error) {
 	if err := ctx.Err(); err != nil {
@@ -108,6 +117,9 @@ func (s *Store) initialize(ctx context.Context) error {
 		if _, err := s.DB.ExecContext(ctx, pragma); err != nil {
 			return err
 		}
+	}
+	if _, err := s.DB.ExecContext(ctx, imageBlobSchema); err != nil {
+		return err
 	}
 	if version == 1 {
 		return s.migrate(ctx)
@@ -174,7 +186,7 @@ func (s *Store) Load(ctx context.Context) (State, error) {
 			return State{}, corrupt("cache repository identity differs from durable workspace")
 		}
 	}
-	if err := loadAssets(ctx, tx, state.Assets); err != nil {
+	if err := loadAssets(ctx, tx, &state); err != nil {
 		return State{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -183,8 +195,9 @@ func (s *Store) Load(ctx context.Context) (State, error) {
 	return state, nil
 }
 
-func loadAssets(ctx context.Context, tx *sql.Tx, assets map[domain.AssetID]domain.Asset) error {
-	rows, err := tx.QueryContext(ctx, "SELECT id, metadata FROM assets")
+func loadAssets(ctx context.Context, tx *sql.Tx, state *State) error {
+	rows, err := tx.QueryContext(ctx, `SELECT a.id, a.metadata, b.blob FROM assets a
+LEFT JOIN image_blobs b ON b.asset_id = a.id AND b.tree = ?`, state.Tree)
 	if err != nil {
 		return err
 	}
@@ -192,14 +205,21 @@ func loadAssets(ctx context.Context, tx *sql.Tx, assets map[domain.AssetID]domai
 	for rows.Next() {
 		var id string
 		var metadata []byte
-		if err := rows.Scan(&id, &metadata); err != nil {
+		var blob sql.NullString
+		if err := rows.Scan(&id, &metadata, &blob); err != nil {
 			return err
 		}
 		a, err := repository.DecodeAsset(metadata, id+".json")
 		if err != nil {
 			return err
 		}
-		assets[a.ID] = a
+		state.Assets[a.ID] = a
+		if blob.Valid {
+			if state.ImageBlobs == nil {
+				state.ImageBlobs = make(map[domain.AssetID]repository.BlobID, len(state.Assets))
+			}
+			state.ImageBlobs[a.ID] = repository.BlobID(blob.String)
+		}
 	}
 	return rows.Err()
 }
@@ -241,6 +261,9 @@ func (s *Store) Save(ctx context.Context, state State) error {
 			return err
 		}
 	}
+	if err := saveImageBlobs(ctx, tx, state); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO repository_state (singleton, head, tree, manifest) VALUES (1, ?, ?, ?)
 ON CONFLICT(singleton) DO UPDATE SET head = excluded.head, tree = excluded.tree, manifest = excluded.manifest`, string(state.Head), state.Tree, manifest); err != nil {
 		return err
@@ -249,6 +272,34 @@ ON CONFLICT(singleton) DO UPDATE SET head = excluded.head, tree = excluded.tree,
 		return err
 	}
 	return writeWorkspace(ctx, s.dir, workspaceData)
+}
+
+func saveImageBlobs(ctx context.Context, tx *sql.Tx, state State) error {
+	if len(state.ImageBlobs) == 0 {
+		return nil
+	}
+	var cachedTree string
+	err := tx.QueryRowContext(ctx, "SELECT tree FROM image_blobs LIMIT 1").Scan(&cachedTree)
+	if err == nil && cachedTree == state.Tree {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM image_blobs"); err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, "INSERT INTO image_blobs (asset_id, tree, blob) VALUES (?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for id, blob := range state.ImageBlobs {
+		if _, err := stmt.ExecContext(ctx, id.String(), state.Tree, blob); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) SavePublication(ctx context.Context, publication *Publication) error {

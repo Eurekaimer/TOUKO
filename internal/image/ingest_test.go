@@ -75,11 +75,12 @@ func TestIngestContentIdentityAndFormats(t *testing.T) {
 		t.Run(tc.format, func(t *testing.T) {
 			data := encodedImage(t, tc.format)
 			dir := t.TempDir()
-			first, err := Ingest(context.Background(), bytes.NewReader(data), dir)
+			options := Options{ComputeHash: true}
+			first, err := IngestWithOptions(context.Background(), bytes.NewReader(data), dir, options)
 			if err != nil {
 				t.Fatal(err)
 			}
-			second, err := Ingest(context.Background(), bytes.NewReader(data), dir)
+			second, err := IngestWithOptions(context.Background(), bytes.NewReader(data), dir, options)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,7 +109,7 @@ func TestIngestConvertsPNGAndJPEGToWebP(t *testing.T) {
 				context.Background(),
 				bytes.NewReader(encodedPhoto(t, format)),
 				t.TempDir(),
-				Options{ConvertWebP: true, WebPQuality: 80},
+				Options{ConvertWebP: true, WebPQuality: 80, ComputeHash: true},
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -137,7 +138,7 @@ func TestIngestKeepsSmallerOriginal(t *testing.T) {
 		context.Background(),
 		bytes.NewReader(data),
 		t.TempDir(),
-		Options{ConvertWebP: true, WebPQuality: 80},
+		Options{ConvertWebP: true, WebPQuality: 80, ComputeHash: true},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +160,7 @@ func TestIngestDoesNotReencodeGIFOrWebP(t *testing.T) {
 				context.Background(),
 				bytes.NewReader(data),
 				t.TempDir(),
-				Options{ConvertWebP: true},
+				Options{ConvertWebP: true, ComputeHash: true},
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -168,6 +169,42 @@ func TestIngestDoesNotReencodeGIFOrWebP(t *testing.T) {
 				t.Fatalf("input was re-encoded: %+v", result.Object)
 			}
 		})
+	}
+}
+
+func TestIngestHashIsOptIn(t *testing.T) {
+	data := encodedImage(t, "png")
+	plain, err := Ingest(context.Background(), bytes.NewReader(data), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(plain.TempPath)
+	if plain.Object.HasHash() || plain.Object.Size != int64(len(data)) || plain.Object.Ext != "png" {
+		t.Fatalf("default ingest hashed or misdescribed: %+v", plain.Object)
+	}
+	persisted, err := os.ReadFile(plain.TempPath)
+	if err != nil || !bytes.Equal(persisted, data) {
+		t.Fatalf("hashless ingest lost bytes: %v", err)
+	}
+	converted, err := IngestWithOptions(context.Background(), bytes.NewReader(encodedPhoto(t, "png")), t.TempDir(), Options{ConvertWebP: true, WebPQuality: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(converted.TempPath)
+	if converted.Object.Ext != "webp" || converted.Object.HasHash() {
+		t.Fatalf("default conversion recorded a digest: %+v", converted.Object)
+	}
+	hashed, err := IngestWithOptions(context.Background(), bytes.NewReader(encodedPhoto(t, "png")), t.TempDir(), Options{ConvertWebP: true, WebPQuality: 80, ComputeHash: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(hashed.TempPath)
+	published, err := os.ReadFile(hashed.TempPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashed.Object.Ext != "webp" || hashed.Object.Hash != sha256.Sum256(published) || hashed.Object.Size != int64(len(published)) {
+		t.Fatalf("converted hash does not cover published bytes: %+v", hashed.Object)
 	}
 }
 

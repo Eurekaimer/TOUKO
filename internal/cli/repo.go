@@ -178,7 +178,10 @@ func (r *runtime) syncClone(ctx context.Context, s *app.Service, location reposi
 	if err != nil {
 		return err
 	}
-	dir := repository.CloneDir(s.Dir)
+	dir, err := s.CloneDir()
+	if err != nil {
+		return err
+	}
 	if err := localgit.Clone(ctx, location.RemoteURL(), dir, location.Branch, token); err != nil {
 		return err
 	}

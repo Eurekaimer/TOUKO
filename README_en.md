@@ -16,7 +16,7 @@ Keep your pictures in a Git repository you own.
 
 TOUKO is an image library backed by a Git repository. Image bytes and metadata live in the repository, GitHub hosts it, and jsDelivr serves the default public URLs. An optional Cloudflare R2 mirror can serve the same bytes from your own domain. The local SQLite database is a read cache; delete it and the library rebuilds from the repository.
 
-Uploads go to a staging area first. `commit` writes one Git commit. New image paths use the asset UUID, so identical uploads have independent paths. Each asset records its title, tags, collections, MIME type, size and SHA-256 for verification; the hash is not part of the new URL.
+Uploads enter staging first; `commit` publishes them. New filenames use the Unix nanosecond staging time with a suffix on collision and live at the repository root unless you choose a directory. Asset UUIDs remain stable identities. SHA-256 is off by default and can be enabled per upload or archived in the background for duplicate detection.
 
 ## Features
 
@@ -151,7 +151,7 @@ The Linux/Wayland interface has been checked by hand. Windows and macOS builds p
 
 ## Credits
 
-The name comes from Touko Nanami in *Yagate Kimi ni Naru*. Monaspace Radon, LXGW WenKai, Quicksand and Playfair Display are licensed under SIL OFL. The native window comes from [MyGo](https://github.com/egoist/mygo).
+The name comes from Touko Nanami in *Yagate Kimi ni Naru*. Monaspace Xenon, LXGW WenKai, Quicksand and Playfair Display are licensed under SIL OFL. The native window comes from [MyGo](https://github.com/egoist/mygo).
 
 ## License
 

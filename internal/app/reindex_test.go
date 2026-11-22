@@ -268,7 +268,11 @@ func TestReindexReadsOneImmutableSnapshot(t *testing.T) {
 
 func TestReindexBadPayloadDoesNotReplaceCommittedCache(t *testing.T) {
 	ctx, r, s := realRepository(t)
-	asset := stageImage(t, ctx, s)
+	added, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(pngBytes(t)), Name: "verified.png"}}, AddOptions{ComputeHash: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := added[0].Asset
 	committed := mustCommit(t, ctx, s, r)
 	data := pngBytes(t)
 	data[len(data)-1] ^= 1

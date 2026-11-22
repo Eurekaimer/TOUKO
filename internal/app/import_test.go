@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
@@ -210,13 +211,13 @@ func TestAddDirectoryControlsActualPublishedLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	asset := views[0].Asset
-	want := "img/new/" + asset.ID.String() + ".png"
-	if repository.ObjectPath(asset) != want || asset.Path != want {
+	want := "img/new/"
+	if !strings.HasPrefix(asset.Path, want) || !repository.IsTimestampObjectPath(asset.Path, "png") || repository.ObjectPath(asset) != asset.Path {
 		t.Fatalf("directory ignored: %#v", asset)
 	}
 	result := mustCommit(t, ctx, s, r)
 	snap, err := repository.ReadSnapshot(ctx, r, result.Head)
-	if err != nil || snap.Manifest.FormatVersion != 2 || snap.Assets[asset.ID].Path != want {
+	if err != nil || snap.Manifest.FormatVersion != 2 || snap.Assets[asset.ID].Path != asset.Path {
 		t.Fatalf("directory publication: %#v, %v", snap, err)
 	}
 	if _, err := s.Verify(ctx, r); err != nil {

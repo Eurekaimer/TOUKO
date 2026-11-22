@@ -14,16 +14,17 @@ type VerifyResult struct {
 	Assets  int                   `json:"assets"`
 	Objects int                   `json:"objects"`
 }
-// VerifyObject checks the expected SHA-256 and image description against a blob.
+// VerifyObject checks the image description against a blob and, when the
+// expected object carries one, its exact SHA-256. A hashless object is accepted
+// only because the caller reached it through an explicit asset path; its bytes
+// are checked by size, format and dimensions, which cannot detect a same-size
+// replacement. Legacy content-addressed placements always carry a hash.
 func VerifyObject(ctx context.Context, r Reader, blob BlobID, expected domain.ContentObject) (err error) {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
 	if err = expected.Validate(); err != nil {
 		return corrupt(err)
-	}
-	if !expected.HasHash() {
-		return corrupt(fmt.Errorf("blob %s has no content hash; exact-byte verification is unavailable", blob))
 	}
 	body, err := r.OpenBlob(ctx, blob)
 	if err != nil {
@@ -34,7 +35,12 @@ func VerifyObject(ctx context.Context, r Reader, blob BlobID, expected domain.Co
 			err = closeErr
 		}
 	}()
-	if err = toukoimage.Verify(ctx, body, expected); err != nil {
+	if expected.HasHash() {
+		err = toukoimage.Verify(ctx, body, expected)
+	} else {
+		err = toukoimage.VerifyDescription(ctx, body, expected)
+	}
+	if err != nil {
 		return fmt.Errorf("blob %s: %w", blob, err)
 	}
 	return nil

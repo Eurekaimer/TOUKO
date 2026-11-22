@@ -1034,6 +1034,15 @@ func (b uploadBatch) options() (app.AddOptions, error) {
 			return app.AddOptions{}, usage("convert_webp must be true or false")
 		}
 	}
+	if value, ok := b.fields["compute_hash"]; ok {
+		switch value {
+		case "true":
+			options.ComputeHash = true
+		case "false":
+		default:
+			return app.AddOptions{}, usage("compute_hash must be true or false")
+		}
+	}
 	if value, ok := b.fields["webp_quality"]; ok {
 		quality, err := strconv.Atoi(value)
 		if err != nil || quality < 1 || quality > 100 {
@@ -1134,7 +1143,7 @@ func parseUploadBatch(w http.ResponseWriter, r *http.Request, baseDir string, ma
 			continue
 		}
 		switch name {
-		case "namespace", "directory", "title", "tags", "collections", "convert_webp", "webp_quality":
+		case "namespace", "directory", "title", "tags", "collections", "convert_webp", "webp_quality", "compute_hash":
 		default:
 			return batch, usage("unknown multipart field %q", name)
 		}
@@ -1168,6 +1177,7 @@ func parseUploadBatch(w http.ResponseWriter, r *http.Request, baseDir string, ma
 		result, ingestErr := image.IngestWithOptions(r.Context(), contextReader{r.Context(), payload}, dir, image.Options{
 			ConvertWebP: options.ConvertWebP,
 			WebPQuality: options.WebPQuality,
+			ComputeHash: options.ComputeHash,
 		})
 		closeErr := payload.Close()
 		if ingestErr == nil {

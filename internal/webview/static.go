@@ -53,7 +53,7 @@ var assetTags = sync.OnceValue(func() map[string]string {
 var allowedAssets = map[string]bool{
 	"/":       true,
 	"/app.js": true, "/style.css": true, "/favicon.png": true, "/favicon.svg": true,
-	"/fonts/monaspace-radon-var.woff2":   true,
+	"/fonts/monaspace-xenon-var.woff2":   true,
 	"/fonts/lxgw-wenkai-regular.woff2":   true,
 	"/fonts/lxgw-wenkai-medium.woff2":    true,
 	"/fonts/wordmark-quicksand.woff2":    true,

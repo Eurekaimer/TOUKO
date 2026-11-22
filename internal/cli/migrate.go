@@ -14,7 +14,7 @@ func (r *runtime) migrateCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "migrate", Short: "Rewrite stored objects to the current layout"}
 	paths := &cobra.Command{
 		Use:   "paths",
-		Short: "Rewrite every asset to objects/<namespace>/<asset-id>.<ext> (preview unless --apply)",
+		Short: "Rewrite every managed legacy asset to its root timestamp name (preview unless --apply)",
 		Args:  arguments(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := r.service(cmd.Context())

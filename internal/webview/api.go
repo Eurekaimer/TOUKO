@@ -26,6 +26,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.appearanceAPI(w, r)
 		return
 	}
+	if path == "/api/hash-cache" {
+		s.hashCacheAPI(w, r)
+		return
+	}
 	// Login commands never take workMu: starting returns immediately and
 	// cancelling joins a background process without blocking gallery state.
 	if isLoginEndpoint(path) {
@@ -387,6 +391,7 @@ func (s *Server) state(ctx context.Context) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.queueHashes(st, assets)
 	changes := make([]domain.Change, 0, len(st.Changes))
 	for _, change := range st.Changes {
 		changes = append(changes, change)

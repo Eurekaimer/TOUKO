@@ -16,7 +16,7 @@
  *
  * Four faces, one job each:
  *   "Playfair Display" italic  the headline only. Never body copy.
- *   "Monaspace Radon"     Latin letters, figures, controls; photographs' titles
+ *   "Monaspace Xenon"     Latin letters, figures, controls; photographs' titles
  *                         use its oblique axis, like a caption in a hand.
  *   "LXGW WenKai"         every Chinese character.
  *   "TOUKO Wordmark"      the logotype's T O U K O, nothing else.
@@ -27,11 +27,11 @@
  */
 
 /* --- Fonts -------------------------------------------------------------- */
-/* Monaspace Radon: Latin display and interface letters, oblique through its
+/* Monaspace Xenon: Latin display and interface letters, oblique through its
  * slnt axis. Latin only by design, so Chinese falls through to LXGW WenKai. */
 @font-face {
-  font-family: "Monaspace Radon";
-  src: url("/fonts/monaspace-radon-var.woff2") format("woff2-variations");
+  font-family: "Monaspace Xenon";
+  src: url("/fonts/monaspace-xenon-var.woff2") format("woff2-variations");
   font-style: oblique 0deg 11deg;
   font-weight: 200 800;
   font-stretch: 100% 125%;
@@ -125,13 +125,13 @@
   /* Type. Four faces, two of which are Latin-only and therefore always
    * followed by the Chinese face so a mixed line never renders tofu. */
   --font-ui:
-    "Monaspace Radon", "LXGW WenKai", "PingFang SC", "Hiragino Sans GB",
+    "Monaspace Xenon", "LXGW WenKai", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   --font-display:
-    "Monaspace Radon", "LXGW WenKai", "PingFang SC", "Hiragino Sans GB",
+    "Monaspace Xenon", "LXGW WenKai", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", ui-monospace, monospace;
-  --font-mark: "TOUKO Wordmark", "Monaspace Radon", sans-serif;
-  --font-hero: "Playfair Display", "Monaspace Radon", "LXGW WenKai", serif;
+  --font-mark: "TOUKO Wordmark", "Monaspace Xenon", sans-serif;
+  --font-hero: "Playfair Display", "Monaspace Xenon", "LXGW WenKai", serif;
 
   /* Scale: 12 / 13 / 14 / 16 / 19 / 24, then the headline. */
   --fs-micro: 0.75rem; /* 12px — file facts, metadata values */
@@ -2017,7 +2017,7 @@ progress {
 }
 .auth-code,
 .auth-url code {
-  font-family: "Monaspace Radon", ui-monospace, monospace;
+  font-family: "Monaspace Xenon", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
@@ -2839,6 +2839,51 @@ progress {
 }
 .settings-section > .notice {
   margin: 0 0 var(--space-4);
+}
+.local-copy-paths {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 var(--space-4);
+}
+.local-copy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.local-copy-name {
+  flex: 0 0 auto;
+  min-width: 9rem;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+.local-copy-path {
+  flex: 1 1 14rem;
+  width: auto;
+  min-width: 0;
+  color: var(--ink-secondary);
+}
+.local-copy-button {
+  flex: 0 0 auto;
+}
+.local-copy-note {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: var(--fs-micro);
+}
+.local-copy-move > label {
+  margin-bottom: var(--space-3);
+}
+.local-copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+.local-copy-move .notice {
+  margin: var(--space-3) 0 0;
 }
 
 @media (max-width: 360px) {

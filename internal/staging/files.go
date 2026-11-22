@@ -13,15 +13,32 @@ import (
 )
 
 // PayloadPath resolves a staged payload from its durable Asset metadata.
-// Staged bytes stay content-addressed: the digest is the corruption check that
-// keeps an interrupted upload from being published under an Asset UUID. The
-// repository placement itself is still the independent Asset-ID path.
+// Hashed payloads stay content-addressed: the digest is the corruption check
+// that keeps an interrupted upload from being published under an Asset UUID.
+// Hashless uploads cannot be content-addressed without inventing a digest, so
+// they are keyed by Asset ID instead; old staged payloads remain readable
+// because they all came from hashed ingests.
 func PayloadPath(stateDir string, asset domain.Asset) string {
-	return PayloadPathFor(stateDir, asset.Namespace, asset.Object)
+	return PayloadPathForAsset(stateDir, asset.Namespace, asset.ID, asset.Object)
 }
 
+// PayloadPathFor is the legacy content-addressed staging location. It stays the
+// resolver for every hashed payload, including ones staged by older builds.
 func PayloadPathFor(stateDir string, ns domain.Namespace, object domain.ContentObject) string {
 	path := filepath.Join(stateDir, "stage", "objects", string(ns), object.Hash.String()+"."+object.Ext)
+	if absolute, err := filepath.Abs(path); err == nil {
+		return absolute
+	}
+	return path
+}
+
+// PayloadPathForAsset resolves a staged payload for one asset. Hashless payloads
+// are keyed by Asset ID, which is unique per upload and never shared.
+func PayloadPathForAsset(stateDir string, ns domain.Namespace, id domain.AssetID, object domain.ContentObject) string {
+	if object.HasHash() {
+		return PayloadPathFor(stateDir, ns, object)
+	}
+	path := filepath.Join(stateDir, "stage", "objects", string(ns), id.String()+"."+object.Ext)
 	if absolute, err := filepath.Abs(path); err == nil {
 		return absolute
 	}
@@ -53,7 +70,14 @@ func Install(ctx context.Context, stateDir string, asset domain.Asset, result im
 		return "", false, fmt.Errorf("staged asset has no identity")
 	}
 	if !asset.Object.HasHash() {
-		return "", false, fmt.Errorf("staged asset has no content hash")
+		// Without a digest the only trustworthy identity is an explicit
+		// per-upload path; domain.Asset.Validate enforces the same rule.
+		if asset.Path == "" {
+			return "", false, fmt.Errorf("staged asset has no content hash or explicit path")
+		}
+		if err := domain.ValidateRepositoryPath(asset.Path); err != nil {
+			return "", false, err
+		}
 	}
 	if asset.Object != result.Object {
 		return "", false, fmt.Errorf("staged metadata describes different bytes than the payload")
@@ -83,6 +107,12 @@ func Install(ctx context.Context, stateDir string, asset domain.Asset, result im
 		}
 	}
 	if _, err := os.Lstat(path); err == nil {
+		if !asset.Object.HasHash() {
+			// A hashless destination cannot prove its bytes. Its name belongs to
+			// this asset, so an existing file there is unmanaged and merging it
+			// by size alone would silently publish foreign content.
+			return "", false, fmt.Errorf("refusing to reuse unverified staged payload: %s", path)
+		}
 		if err := verifyFile(ctx, path, result.Object, false); err != nil {
 			return "", false, err
 		}
@@ -122,7 +152,13 @@ func verifyFile(ctx context.Context, path string, object domain.ContentObject, s
 		return fmt.Errorf("open payload: %w", err)
 	}
 	defer file.Close()
-	if err := image.Verify(ctx, file, object); err != nil {
+	if object.HasHash() {
+		if err := image.Verify(ctx, file, object); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	} else if err := image.VerifyHeader(ctx, file, object); err != nil {
+		// The file length was already checked with Lstat; a hashless ingest
+		// only needs its format and dimensions confirmed, never a hash pass.
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	if syncFile {

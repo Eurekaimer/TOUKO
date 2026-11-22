@@ -518,6 +518,80 @@
           </section>
           <section
             class="settings-section"
+            aria-labelledby="settings-local-copy-heading"
+          >
+            <h3 id="settings-local-copy-heading">本地读图副本</h3>
+            <p class="field-help">
+              预览优先读取本机固定的 Git 对象，缺少时才访问 GitHub。
+              GitHub 仓库默认使用状态目录的 clone/；本地仓库直接读取原路径。
+            </p>
+            <div id="local-copy-paths" class="local-copy-paths"></div>
+            <p id="local-copy-empty" class="field-help" hidden>
+              尚未连接仓库。
+            </p>
+            <div id="local-copy-move" class="local-copy-move" hidden>
+              <p class="field-help">
+                迁移作用于下方「工作区 / 成员」当前选中的 GitHub 仓库。
+              </p>
+              <label for="local-copy-destination"
+                >迁移当前 GitHub 成员到（绝对路径）<input
+                  id="local-copy-destination"
+                  type="text"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="/home/you/Touko/clone"
+                /><small
+                  >目标目录必须不存在或为空；父目录会自动创建。迁移会移动
+                  .git 和全部工作树文件，不会重新克隆，也不会联系远端。</small
+                ></label
+              >
+              <div class="local-copy-actions">
+                <button
+                  type="button"
+                  class="button secondary"
+                  id="local-copy-move-button"
+                  data-mutation
+                >
+                  移动副本
+                </button>
+                <button
+                  type="button"
+                  class="text-button"
+                  id="local-copy-reset"
+                  data-mutation
+                >
+                  恢复默认位置
+                </button>
+              </div>
+              <p
+                id="local-copy-status"
+                class="field-help"
+                role="status"
+              ></p>
+              <div
+                id="local-copy-error"
+                class="notice error"
+                role="alert"
+                hidden
+              ></div>
+            </div>
+          </section>
+          <section class="settings-section" aria-labelledby="settings-hash-heading">
+            <h3 id="settings-hash-heading">图片查重</h3>
+            <p class="field-help">
+              开启后在后台为本机图片归档 SHA-256；不阻塞上传或预览。
+              查重只比较已归档的内容，不会删除文件。
+            </p>
+            <label class="settings-check">
+              <input type="checkbox" id="hash-cache-enabled" disabled />
+              后台归档图片哈希（默认关闭）
+            </label>
+            <button type="button" class="button secondary" id="hash-cache-check" disabled>查重</button>
+            <p id="hash-cache-status" class="field-help" role="status"></p>
+            <ul id="hash-cache-results" aria-live="polite"></ul>
+          </section>
+          <section
+            class="settings-section"
             aria-labelledby="settings-cloudflare-heading"
           >
             <h3 id="settings-cloudflare-heading">Cloudflare R2（可选）</h3>
@@ -723,8 +797,8 @@
                 maxlength="63"
               /><small>小写字母、数字、下划线或连字符</small></label>
           </div>
-          <label>目标目录（可选）<input id="upload-directory" placeholder="例如 images/blog，留空使用默认内容路径" />
-            <small>相对仓库根目录，使用 / 分隔；图片以 Asset UUID 命名，不覆盖原文件名。</small>
+          <label>目标目录（可选）<input id="upload-directory" placeholder="例如 images/blog，留空使用仓库根目录" />
+            <small>以加入待发布时的时间戳命名；同一批次的图片不会重名。</small>
           </label>
           <div class="webp-option">
             <label class="webp-toggle"
@@ -745,6 +819,10 @@
               GIF 与已有 WebP 保持原样，避免丢失动画或二次压缩。选中图片后会按当前质量预估转换后的体积。</small
             >
           </div>
+          <label class="settings-check">
+            <input type="checkbox" id="upload-hash" />
+            本次上传同时计算 SHA-256
+          </label>
           <div id="upload-progress-area" class="progress-area" hidden>
             <progress id="upload-progress" max="100" value="0"></progress
             ><span id="upload-progress-text">等待上传</span>

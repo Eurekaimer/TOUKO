@@ -34,6 +34,7 @@ const cloudflareTestConfig = `{"enabled":true,"endpoint":"https://acct.r2.cloudf
 type cloudflareObject struct {
 	etag         string
 	sha256       string
+	blobSHA      string
 	repositoryID string
 	sourceID     string
 	size         int64
@@ -63,7 +64,7 @@ func (m *cloudflareMirror) HeadObject(ctx context.Context, key string) (r2.Objec
 	}
 	return r2.ObjectInfo{
 		ETag: object.etag, RepositoryID: object.repositoryID, SourceID: object.sourceID,
-		SHA256: object.sha256, Size: object.size,
+		SHA256: object.sha256, BlobSHA: object.blobSHA, Size: object.size,
 	}, true, nil
 }
 
@@ -82,8 +83,12 @@ func (m *cloudflareMirror) PutObject(ctx context.Context, key string, body io.Re
 	}
 	m.seq++
 	etag := fmt.Sprintf("etag-%d", m.seq)
+	var digest string
+	if opts.Object.HasHash() {
+		digest = opts.Object.Hash.String()
+	}
 	m.objects[key] = cloudflareObject{
-		etag: etag, sha256: opts.Object.Hash.String(),
+		etag: etag, sha256: digest, blobSHA: opts.BlobSHA,
 		repositoryID: opts.RepositoryID.String(), sourceID: opts.SourceID,
 		size: opts.Object.Size, data: append([]byte(nil), data...),
 	}
@@ -412,6 +417,10 @@ func TestCloudflareAPISyncAndDeliveryURL(t *testing.T) {
 	if result.Status != "synced" || result.Uploaded != len(f.assets) || result.Failed != 0 || result.Pending != 0 {
 		t.Fatalf("first sync: %+v", result)
 	}
+	st, err := f.service.Store.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, view := range f.assets {
 		path := cloudflareObjectPath(view.Asset)
 		f.mirror.mu.Lock()
@@ -420,8 +429,9 @@ func TestCloudflareAPISyncAndDeliveryURL(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing mirrored object %s", path)
 		}
-		if object.sha256 != view.Asset.Object.Hash.String() || object.size != view.Asset.Object.Size || int64(len(object.data)) != view.Asset.Object.Size {
-			t.Fatalf("mirrored bytes for %s: sha=%s size=%d data=%d want sha=%s size=%d", path, object.sha256, object.size, len(object.data), view.Asset.Object.Hash, view.Asset.Object.Size)
+		if object.sha256 != "" || object.blobSHA != string(st.ImageBlobs[view.Asset.ID]) ||
+			object.size != view.Asset.Object.Size || int64(len(object.data)) != view.Asset.Object.Size {
+			t.Fatalf("wrong hashless mirror proof for %s: sha=%s blob=%s size=%d", path, object.sha256, object.blobSHA, object.size)
 		}
 	}
 	state, status = cloudflareState(t, f.fixture)

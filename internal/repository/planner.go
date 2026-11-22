@@ -15,6 +15,7 @@ type MetadataWrite struct {
 type ObjectPlacement struct {
 	Path      string
 	Namespace domain.Namespace
+	AssetID   domain.AssetID
 	Object    domain.ContentObject
 	Blob      BlobID
 }
@@ -40,15 +41,21 @@ func placements(assets map[domain.AssetID]domain.Asset) (map[string]ObjectPlacem
 		if err := a.Validate(); err != nil {
 			return nil, corrupt(err)
 		}
-		if old, ok := descriptions[a.Object.Hash]; ok && old != a.Object {
-			return nil, corrupt(fmt.Errorf("contradictory object description %s", a.Object.Hash))
+		// Only a real digest identifies shared bytes. A zero hash is unknown
+		// content, so two hashless objects are never assumed to be equal.
+		if a.Object.HasHash() {
+			if old, ok := descriptions[a.Object.Hash]; ok && old != a.Object {
+				return nil, corrupt(fmt.Errorf("contradictory object description %s", a.Object.Hash))
+			}
+			descriptions[a.Object.Hash] = a.Object
 		}
-		descriptions[a.Object.Hash] = a.Object
 		p := ObjectPath(a)
-		if previous, ok := out[p]; ok && previous.Object != a.Object {
-			return nil, corrupt(fmt.Errorf("contradictory descriptions for path %s", p))
+		if previous, ok := out[p]; ok {
+			if !a.Object.HasHash() || previous.Object != a.Object {
+				return nil, corrupt(fmt.Errorf("contradictory descriptions for path %s", p))
+			}
 		}
-		out[p] = ObjectPlacement{Path: p, Namespace: a.Namespace, Object: a.Object}
+		out[p] = ObjectPlacement{Path: p, Namespace: a.Namespace, AssetID: a.ID, Object: a.Object}
 	}
 	return out, nil
 }
@@ -169,6 +176,15 @@ func PlanCommit(base Snapshot, changes domain.ChangeSet) (CommitPlan, error) {
 			return CommitPlan{}, corrupt(fmt.Errorf("occupied object placement %s", path))
 		}
 		if touched[path] {
+			previous, wasReferenced := before[path]
+			if !placement.Object.HasHash() {
+				// Without a digest a size match proves nothing. Reuse is only
+				// safe for the same asset's own unchanged object; an unmanaged
+				// file or another asset's path must never be adopted silently.
+				if !wasReferenced || previous.AssetID != placement.AssetID || previous.Object != placement.Object {
+					return CommitPlan{}, fmt.Errorf("%w: hashless object path is already occupied: %s", domain.ErrConflict, path)
+				}
+			}
 			placement.Blob = BlobID(entry.SHA)
 			p.ReusedObjects = append(p.ReusedObjects, placement)
 		}

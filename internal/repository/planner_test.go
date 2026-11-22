@@ -39,6 +39,76 @@ func mustPlan(t *testing.T, s Snapshot, changes ...domain.Change) CommitPlan {
 	}
 	return p
 }
+func hashlessAsset(t *testing.T) domain.Asset {
+	t.Helper()
+	a := sampleAsset(t)
+	a.Object.Hash = domain.ObjectHash{}
+	a.Path = "1789000000000000000.png"
+	return a
+}
+
+func TestPlanHashlessExplicitPathPublishesNewObject(t *testing.T) {
+	a := hashlessAsset(t)
+	base := planBase(t)
+	plan := mustPlan(t, base, domain.Change{Kind: domain.Add, AssetID: a.ID, Asset: &a})
+	if len(plan.NewObjects) != 1 || plan.NewObjects[0].Path != a.Path || plan.NewObjects[0].AssetID != a.ID || len(plan.ReusedObjects) != 0 {
+		t.Fatalf("hashless add = %#v", plan)
+	}
+	manifestWrites := 0
+	for _, write := range plan.MetadataWrites {
+		if write.Path == ManifestPath {
+			manifestWrites++
+		}
+	}
+	if manifestWrites != 1 || len(plan.MetadataWrites) != 2 {
+		t.Fatalf("explicit path did not upgrade the manifest: %#v", plan.MetadataWrites)
+	}
+}
+
+func TestPlanReusesCommittedHashlessObjectForMetadataEdit(t *testing.T) {
+	a := hashlessAsset(t)
+	base := planBase(t, a)
+	edited := a
+	edited.Title = "edited"
+	plan := mustPlan(t, base, domain.Change{Kind: domain.Update, AssetID: a.ID, Asset: &edited})
+	if len(plan.NewObjects) != 0 || len(plan.ReusedObjects) != 1 || plan.ReusedObjects[0].Blob != "blob" {
+		t.Fatalf("hashless edit = %#v", plan)
+	}
+}
+
+func TestPlanRejectsUnmanagedHashlessPath(t *testing.T) {
+	a := hashlessAsset(t)
+	base := planBase(t)
+	base.Manifest.FormatVersion = 2
+	base.Entries = append(base.Entries, GitEntry{Path: a.Path, Type: "blob", Mode: "100644", SHA: "unmanaged", Size: a.Object.Size})
+	_, err := PlanCommit(base, domain.ChangeSet{BaseHead: base.Head, Changes: []domain.Change{{Kind: domain.Add, AssetID: a.ID, Asset: &a}}})
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("unmanaged same-size file was adopted: %v", err)
+	}
+}
+
+func TestPlanRejectsTwoHashlessAssetsAtOnePath(t *testing.T) {
+	a := hashlessAsset(t)
+	b := cloneIdentity(t, a)
+	base := planBase(t)
+	_, err := PlanCommit(base, domain.ChangeSet{BaseHead: base.Head, Changes: []domain.Change{
+		{Kind: domain.Add, AssetID: a.ID, Asset: &a},
+		{Kind: domain.Add, AssetID: b.ID, Asset: &b},
+	}})
+	if !errors.Is(err, domain.ErrRepositoryCorrupt) {
+		t.Fatalf("shared hashless path was accepted: %v", err)
+	}
+}
+
+func TestPlanDeleteHashlessLastReference(t *testing.T) {
+	a := hashlessAsset(t)
+	s := planBase(t, a)
+	p := mustPlan(t, s, domain.Change{Kind: domain.Delete, AssetID: a.ID})
+	if len(p.FinalAssets) != 0 || !slices.Contains(p.Deletions, a.Path) {
+		t.Fatalf("hashless delete = %#v", p)
+	}
+}
+
 func TestPlanDeleteSharedObject(t *testing.T) {
 	a := sampleAsset(t)
 	b := cloneIdentity(t, a)

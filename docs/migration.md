@@ -1,6 +1,6 @@
-# URL 迁移：从内容哈希到 Asset ID
+# URL 迁移：从旧路径到时间戳
 
-新上传的图片路径是 `objects/<namespace>/<asset-id>.<ext>`，URL 由实际路径推导，所以 GitHub Raw、jsDelivr 和 Cloudflare R2 三种链接自动一致。旧仓库里没有显式 `path` 的 Asset 仍按 `objects/<namespace>/sha256/aa/bb/<sha256>.<ext>` 读取，不需要先迁移才能打开。
+新图默认使用 `<unix-nanoseconds>[-<collision>].<ext>`。已有图从其 `created_at` 分配稳定的时间戳文件名，冲突加序号。已使用时间戳的路径，包括自定义上传目录中的路径，会原样保留。GitHub Raw、jsDelivr 和 Cloudflare R2 仍按实际路径生成 URL。
 
 迁移分两次提交完成，任何一次失败都不会让旧 metadata 指向不存在的新对象，也不会删除旧对象：
 
@@ -10,7 +10,7 @@
 
 GitHub 与 R2 之间没有事务。迁移只能保证：metadata 切换之前，新 Git 对象和新 R2 key 已经实际可读；任何校验失败都会停在旧 metadata。它不能保证跨服务同时可见，也不能抵御另一个客户端并发强推分支。
 
-所有 Asset 的 `object.hash` 都是必需的 SHA-256。迁移用它与 Git blob 字节、公开 URL 字节逐字节比对；不存在无 hash 的迁移旁路。
+已有 SHA-256 的 Asset 校验摘要；无摘要时用固定 Git blob、大小和图片描述作为证明。迁移不会为无摘要的 Asset 补写 SHA-256。
 
 ## 0. 先处理 staged 改动
 
@@ -43,12 +43,12 @@ touko migrate paths --apply
 <state-dir>/migration/plan.json
 ```
 
-它记录每个 Asset 的 `asset_id`、旧路径、新路径、对象描述、源 Git blob、源 SHA-256。恢复、校验、映射重建和后续清理都只认这份映射，绝不从当前 hash 猜测旧路径。`--output` 不会移动 `plan.json`。
+它记录 Asset ID、旧路径、新路径、对象描述、源 Git blob 及已知的 SHA-256，也保留前次迁移的历史别名。恢复、校验和清理不从当前 hash 猜测旧路径。`--output` 不移动 `plan.json`。
 
 迁移过程：
 
-1. 校验旧对象类型、大小、内容摘要；同仓库内新路径直接复用旧 Git blob，不重复上传图片。
-2. 对象提交发布后，读取新 Git 对象并校验；GitHub 公开 URL 与 R2 公开 URL 逐字节校验（大小 + SHA-256）。GitHub 公开 URL 失败会让迁移停在旧 metadata；重跑即可。
+1. 校验旧对象并在同一 Git tree 中复用同一个 blob，不重复上传图片。
+2. 对象提交发布后，验证 Git 中的新路径与公开 GitHub/R2 地址。公开地址不可读或校验失败时不切换 metadata；重跑可继续。
 3. 只有全部目标校验通过后才发布 metadata 提交，并把 v1/v2 原子升级为 v3。旧客户端会拒绝 v3，避免它们把旧 R2 key 误判为待删除；先升级并重启所有设备。
 4. 写出映射文件。
 
@@ -105,13 +105,13 @@ touko migrate paths --prune-old            # 只预览会删哪些
 touko migrate paths --prune-old --apply    # 真正删除
 ```
 
-清理默认也是预演；没有 `--apply` 不会写任何东西。它拒绝和 metadata 迁移在同一次调用里执行：如果当前仍有 Asset 未使用 asset-id 路径，命令返回 `conflict`。
+清理默认也是预演；没有 `--apply` 不会写任何东西。必须先完成时间戳迁移，再用独立命令清理旧 Git 路径。
 
 `--prune-old --apply` 只删除 `plan.json` 里记录、且仍存在于当前 tree 的旧对象，并要求：
 
-- 每个 Asset 都已使用 asset-id 路径，且新对象通过内容校验；
+- 当前使用的时间戳路径通过固定 blob 及已有摘要校验；
 - 旧路径没有被任何当前 Asset 引用；
-- 旧路径的 Git blob、大小、SHA-256 与映射完全一致；
+- 旧路径的 Git blob、大小及已有 SHA-256 与映射一致；
 - 删除前重新读取每个新对象的公开 GitHub/R2 URL 并逐字节校验；任何一个不可读都会中止清理。
 
 它不会删除其他 `objects/` 文件、历史遗留对象、metadata 或映射之外的路径。自定义旧路径也由映射精确记录，不靠 hash 推导。
@@ -134,4 +134,4 @@ metadata 切换是普通提交，旧 Git object 仍在同一棵树里。确认�
 
 ## 7. 格式
 
-支持 v1/v2/v3：迁移在 metadata 提交中原子升级到 v3，作为旧客户端的安全屏障；正常提交不会降级。所有版本都要求 Asset 有 SHA-256，迁移、发布、verify 和 R2 校验依赖它。迁移不改变 object 描述。
+读取支持 v1/v2/v3。迁移不会降级仓库格式，也不改变图片对象描述。显式路径可不含 SHA-256；旧客户端读取这类记录前需要升级。

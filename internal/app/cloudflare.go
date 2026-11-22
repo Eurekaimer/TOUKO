@@ -66,7 +66,8 @@ type CloudflareOptions struct {
 	SuppressDeletes bool
 	// ExtraAssets adds canonical destinations that are not yet referenced by
 	// asset metadata. Phase one of migration publishes them in Git first and
-	// uploads them here before metadata switches.
+	// uploads them here before metadata switches. Each asset carries its exact
+	// destination in Path, so a hashless target is never guessed from an ID.
 	ExtraAssets []domain.Asset
 }
 
@@ -264,9 +265,11 @@ func (s *Service) cloudflareSyncLocked(ctx context.Context, r repository.Git, op
 
 // cloudflarePublication is the only automatic hook. It runs after a confirmed
 // GitHub publication has been saved; it mirrors only new Add paths from this
-// batch plus previously pending/deleted intents. Errors never become commit
+// batch plus previously pending/deleted intents. publishedBlobs maps object
+// paths to the immutable blob this commit created from the staged payload; a
+// nil map (journal recovery) disables staged reuse. Errors never become commit
 // errors.
-func (s *Service) cloudflarePublication(ctx context.Context, r repository.Git, st index.State, snap repository.Snapshot) *CloudflareResult {
+func (s *Service) cloudflarePublication(ctx context.Context, r repository.Git, st index.State, snap repository.Snapshot, publishedBlobs map[string]repository.BlobID) *CloudflareResult {
 	if err := ctx.Err(); err != nil {
 		result := cloudflareInternalResult(cloudflareCodeCanceled)
 		return &result
@@ -311,8 +314,24 @@ func (s *Service) cloudflarePublication(ctx context.Context, r repository.Git, s
 		if !ok || final.Object != change.Asset.Object || final.Path != change.Asset.Path || final.Namespace != change.Asset.Namespace {
 			continue
 		}
-		candidates[repository.ObjectPath(final)] = true
-		payloads[repository.ObjectPath(final)] = staging.PayloadPath(s.Dir, final)
+		path := repository.ObjectPath(final)
+		candidates[path] = true
+		if final.Object.HasHash() {
+			// The staged bytes are usable only because ingest re-verifies them
+			// against this digest before the PUT.
+			payloads[path] = staging.PayloadPath(s.Dir, final)
+			continue
+		}
+		// A hashless object has no digest to re-verify, so staged reuse needs a
+		// separate proof: this commit created exactly the blob now referenced by
+		// the published tree from that staged payload. Without it (journal
+		// recovery, a reused object, an unplanned path) the mirror must read the
+		// authoritative Git blob instead.
+		published, ok := publishedBlobs[path]
+		ref, referenced := refs[path]
+		if ok && published != "" && referenced && string(published) == ref.entry.SHA {
+			payloads[path] = staging.PayloadPath(s.Dir, final)
+		}
 	}
 	uploads := cloudflareUploadKeys(refs, candidates, entries, true)
 	deletes := cloudflareDeleteKeys(refs, entries)
@@ -536,7 +555,12 @@ func mergeExtraRefs(refs map[string]cloudflareRef, snapshot repository.Snapshot,
 		if err := asset.Object.Validate(); err != nil {
 			return fmt.Errorf("%w: %v", domain.ErrRepositoryCorrupt, err)
 		}
-		path := repository.AssetObjectPath(asset.Namespace, asset.ID, asset.Object.Ext)
+		if !asset.Object.HasHash() && asset.Path == "" {
+			return fmt.Errorf("%w: extra hashless object %s has no explicit path", domain.ErrRepositoryCorrupt, asset.ID)
+		}
+		// changedAssets() carries the exact published destination in Path; a
+		// hashless migration target has no asset-id fallback that could name it.
+		path := repository.ObjectPath(asset)
 		entry, ok := entries[path]
 		if !ok || entry.Size != asset.Object.Size {
 			return fmt.Errorf("%w: extra migration object %s is missing", domain.ErrRepositoryCorrupt, path)
@@ -827,6 +851,7 @@ func (r *cloudflareReconcile) writeIntent(ctx context.Context) error {
 		r.markEntry(key, func(e *index.MirrorEntry) {
 			e.Key = key
 			e.Object = ref.object
+			e.Blob = ref.entry.SHA
 			// Keep the last known ETag, but a pending entry is never a receipt.
 			e.State = cloudflarePending
 			e.ErrorCode = ""
@@ -869,7 +894,7 @@ func (r *cloudflareReconcile) reconcileUploadDry(ctx context.Context, key string
 	if !exists {
 		return "would_upload", "put", "", "", nil
 	}
-	if cloudflareObjectMatches(info, ref.object, r.repository.String(), r.sourceID) {
+	if cloudflareObjectMatches(info, ref, r.repository.String(), r.sourceID) {
 		return "exists", "skip", "", "", nil
 	}
 	if cloudflareOwnedMetadata(info, r.repository.String(), r.sourceID) {
@@ -899,9 +924,10 @@ func (r *cloudflareReconcile) reconcileUpload(ctx context.Context, key string) (
 	}
 	ifMatch := ""
 	if exists {
-		if cloudflareObjectMatches(info, ref.object, r.repository.String(), r.sourceID) {
+		if cloudflareObjectMatches(info, ref, r.repository.String(), r.sourceID) {
 			r.markEntry(key, func(e *index.MirrorEntry) {
 				e.Object = ref.object
+				e.Blob = ref.entry.SHA
 				e.ETag = info.ETag
 				e.State = cloudflareSynced
 				e.ErrorCode = ""
@@ -955,7 +981,7 @@ func (r *cloudflareReconcile) reconcileUpload(ctx context.Context, key string) (
 		})
 		return "failed", "put", code, "", err
 	}
-	if !exists || !cloudflareObjectMatches(confirmed, ref.object, r.repository.String(), r.sourceID) {
+	if !exists || !cloudflareObjectMatches(confirmed, ref, r.repository.String(), r.sourceID) {
 		r.markEntry(key, func(e *index.MirrorEntry) {
 			e.State = cloudflareFailed
 			e.ErrorCode = cloudflareCodeObjectConflict
@@ -974,6 +1000,7 @@ func (r *cloudflareReconcile) reconcileUpload(ctx context.Context, key string) (
 	}
 	r.markEntry(key, func(e *index.MirrorEntry) {
 		e.Object = ref.object
+		e.Blob = ref.entry.SHA
 		e.ETag = etag
 		e.State = cloudflareSynced
 		e.ErrorCode = ""
@@ -998,7 +1025,7 @@ func (r *cloudflareReconcile) recoverPrecondition(ctx context.Context, key strin
 		})
 		return "failed", "put", code, "", err
 	}
-	if !exists || !cloudflareObjectMatches(info, ref.object, r.repository.String(), r.sourceID) || !cloudflareValidETag(info.ETag) {
+	if !exists || !cloudflareObjectMatches(info, ref, r.repository.String(), r.sourceID) || !cloudflareValidETag(info.ETag) {
 		r.markEntry(key, func(e *index.MirrorEntry) {
 			e.State = cloudflareFailed
 			e.ErrorCode = cloudflareCodeObjectConflict
@@ -1007,6 +1034,7 @@ func (r *cloudflareReconcile) recoverPrecondition(ctx context.Context, key strin
 	}
 	r.markEntry(key, func(e *index.MirrorEntry) {
 		e.Object = ref.object
+		e.Blob = ref.entry.SHA
 		e.ETag = info.ETag
 		e.State = cloudflareSynced
 		e.ErrorCode = ""
@@ -1014,9 +1042,32 @@ func (r *cloudflareReconcile) recoverPrecondition(ctx context.Context, key strin
 	return "synced", "put", "", "", nil
 }
 
-func cloudflareObjectMatches(info r2.ObjectInfo, object domain.ContentObject, repositoryID, sourceID string) bool {
-	return info.RepositoryID == repositoryID && info.SourceID == sourceID &&
-		info.Size == object.Size && info.SHA256 == object.Hash.String() && cloudflareValidETag(info.ETag)
+// cloudflareObjectMatches is the strict current-state proof for one expected
+// object. A hashless object is identified only by its immutable Git blob: it
+// must carry no SHA-256 metadata at all, and the remote blob must equal the
+// published one. A zero object hash is never treated as a digest.
+func cloudflareObjectMatches(info r2.ObjectInfo, ref cloudflareRef, repositoryID, sourceID string) bool {
+	if info.RepositoryID != repositoryID || info.SourceID != sourceID ||
+		info.Size != ref.object.Size || !cloudflareValidETag(info.ETag) {
+		return false
+	}
+	if ref.object.HasHash() {
+		if info.SHA256 != ref.object.Hash.String() {
+			return false
+		}
+		// Older receipts and objects carry no blob metadata; when both sides
+		// know the blob it must still agree.
+		return ref.entry.SHA == "" || info.BlobSHA == "" || info.BlobSHA == ref.entry.SHA
+	}
+	return info.SHA256 == "" && cloudflareValidBlob(ref.entry.SHA) && info.BlobSHA == ref.entry.SHA
+}
+
+// stagedPayloadReady guards the direct hashless stream: the advertised file
+// must still be the regular file of the expected length. Content proof comes
+// from the commit's published-blob mapping, not from hashing again.
+func stagedPayloadReady(file *os.File, size int64) bool {
+	info, err := file.Stat()
+	return err == nil && info.Mode().IsRegular() && info.Size() == size
 }
 
 const cloudflareMaxObjectSize int64 = 100_000_000
@@ -1041,9 +1092,23 @@ func cloudflareValidETag(value string) bool {
 	return true
 }
 
+func cloudflareValidBlob(value string) bool {
+	if (len(value) != 40 && len(value) != 64) || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+// cloudflareOwnedMetadata decides whether a conditional overwrite is allowed.
+// Ownership requires both identities plus at least one well-formed byte-level
+// evidence field: a content digest or an immutable Git blob. A hashless object
+// is still owned, so its key may be conditionally replaced; an unmarked foreign
+// object is never touched.
 func cloudflareOwnedMetadata(info r2.ObjectInfo, repositoryID, sourceID string) bool {
 	return info.RepositoryID == repositoryID && info.SourceID == sourceID &&
-		cloudflareValidSHA256(info.SHA256) && info.Size > 0 && info.Size <= cloudflareMaxObjectSize &&
+		(cloudflareValidSHA256(info.SHA256) || cloudflareValidBlob(info.BlobSHA)) &&
+		info.Size > 0 && info.Size <= cloudflareMaxObjectSize &&
 		cloudflareValidETag(info.ETag)
 }
 
@@ -1051,17 +1116,36 @@ func (r *cloudflareReconcile) putBlob(ctx context.Context, key string, ref cloud
 	if ref.entry.Type != "blob" || ref.entry.SHA == "" {
 		return "", cloudflareCodeSourceUnavailable, fmt.Errorf("%w: object entry %s is unavailable", domain.ErrRepositoryCorrupt, key)
 	}
+	putOptions := r2.PutOptions{
+		Object: ref.object, RepositoryID: r.repository, SourceID: r.sourceID,
+		IfMatch: ifMatch, BlobSHA: ref.entry.SHA,
+	}
 	var body io.ReadCloser
 	var err error
+	// A staged payload is private and replayable. For a hashful object the
+	// ingest pass below re-verifies it against the digest. For a hashless object
+	// cloudflarePublication only advertises a payload when this commit created
+	// the referenced Git blob from it; a size and regular-file check then lets
+	// the exact bytes stream straight to the put without a GitHub blob read.
 	if payload := r.payloads[key]; payload != "" {
 		file, openErr := os.Open(payload)
 		if openErr == nil {
-			body = file
+			if ref.object.HasHash() {
+				body = file
+			} else if stagedPayloadReady(file, ref.object.Size) {
+				defer file.Close()
+				etag, putErr := r.mirror.PutObject(ctx, key, file, putOptions)
+				return etag, "", putErr
+			} else {
+				_ = file.Close()
+			}
 		} else if !errors.Is(openErr, os.ErrNotExist) {
 			return "", cloudflareCodeSourceUnavailable, openErr
 		}
 	}
 	if body == nil {
+		// Authoritative fallback and recovery source: the committed blob named
+		// by the published tree.
 		body, err = r.repo.OpenBlob(ctx, repository.BlobID(ref.entry.SHA))
 		if err != nil {
 			return "", cloudflareCodeSourceUnavailable, err
@@ -1073,7 +1157,7 @@ func (r *cloudflareReconcile) putBlob(ctx context.Context, key string, ref cloud
 		return "", cloudflareCodeMirrorStateWrite, err
 	}
 	defer os.RemoveAll(tempDir)
-	ingested, ingestErr := ingest.Ingest(ctx, body, tempDir)
+	ingested, ingestErr := ingest.IngestWithOptions(ctx, body, tempDir, ingest.Options{ComputeHash: ref.object.HasHash()})
 	closeErr := body.Close()
 	if ingestErr != nil {
 		code := cloudflareCodeHashMismatch
@@ -1094,9 +1178,7 @@ func (r *cloudflareReconcile) putBlob(ctx context.Context, key string, ref cloud
 		return "", cloudflareCodeSourceUnavailable, err
 	}
 	defer file.Close()
-	etag, err := r.mirror.PutObject(ctx, key, file, r2.PutOptions{
-		Object: ref.object, RepositoryID: r.repository, SourceID: r.sourceID, IfMatch: ifMatch,
-	})
+	etag, err := r.mirror.PutObject(ctx, key, file, putOptions)
 	if err != nil {
 		return "", "", err
 	}
@@ -1216,9 +1298,15 @@ func (r *cloudflareReconcile) reconcileDeletes(ctx context.Context, keys []strin
 }
 
 func cloudflareOwnedForDelete(info r2.ObjectInfo, entry index.MirrorEntry, repositoryID, sourceID string) bool {
-	return info.RepositoryID == repositoryID && info.SourceID == sourceID &&
-		cloudflareValidSHA256(info.SHA256) && info.Size > 0 && info.Size <= cloudflareMaxObjectSize &&
-		info.SHA256 == entry.Object.Hash.String() && info.Size == entry.Object.Size
+	if info.RepositoryID != repositoryID || info.SourceID != sourceID ||
+		info.Size <= 0 || info.Size > cloudflareMaxObjectSize ||
+		info.Size != entry.Object.Size {
+		return false
+	}
+	if entry.Object.HasHash() {
+		return cloudflareValidSHA256(info.SHA256) && info.SHA256 == entry.Object.Hash.String()
+	}
+	return info.SHA256 == "" && cloudflareValidBlob(entry.Blob) && info.BlobSHA == entry.Blob
 }
 
 func (r *cloudflareReconcile) failDeleteAttempt(key, code string) {
@@ -1301,6 +1389,12 @@ func (s *Service) CloudflareURL(ctx context.Context, selector string) (string, e
 	if !ok || entry.State != cloudflareSynced || entry.Object != asset.Object || entry.ETag == "" {
 		return "", cloudflareDeliveryError(cloudflareCodeNotSynced)
 	}
+	// The receipt must describe the bytes currently published, not merely an
+	// equal-looking content description. For a hashless object the Git blob is
+	// the only identity, so a stale blob means the receipt is out of date.
+	if !cloudflareBlobCurrent(st.ImageBlobs, asset, entry) {
+		return "", cloudflareDeliveryError(cloudflareCodeNotSynced)
+	}
 	mirror, err := s.cloudflareMirror(ctx, cfg)
 	if err != nil {
 		return "", cloudflareDeliveryError(cloudflareConfigCode(err))
@@ -1319,7 +1413,11 @@ func (s *Service) CloudflareURL(ctx context.Context, selector string) (string, e
 		}
 		return "", cloudflareDeliveryError(cloudflareCodeNotSynced)
 	}
-	if !cloudflareObjectMatches(info, asset.Object, st.Manifest.ID.String(), sourceID) {
+	ref := cloudflareRef{
+		object: asset.Object,
+		entry:  repository.GitEntry{Path: objectPath, Type: "blob", SHA: entry.Blob},
+	}
+	if !cloudflareObjectMatches(info, ref, st.Manifest.ID.String(), sourceID) {
 		if saveErr := s.cloudflareURLReceipt(ctx, ledger, entries, objectPath, cloudflareFailed, cloudflareCodeObjectConflict); saveErr != nil {
 			return "", cloudflareDeliveryError(cloudflareCodeMirrorStateWrite)
 		}
@@ -1345,6 +1443,17 @@ func (s *Service) cloudflareURLReceipt(ctx context.Context, ledger index.MirrorL
 		return fmt.Errorf("invalidate mirror receipt: %w", err)
 	}
 	return nil
+}
+
+// cloudflareBlobCurrent checks receipt evidence against the committed blob
+// index. An empty Blob is a legacy known-SHA receipt and carries no blob claim;
+// a hashless receipt must match the blob currently published.
+func cloudflareBlobCurrent(blobs map[domain.AssetID]repository.BlobID, asset domain.Asset, entry index.MirrorEntry) bool {
+	if entry.Blob == "" {
+		return asset.Object.HasHash()
+	}
+	current, ok := blobs[asset.ID]
+	return ok && string(current) == entry.Blob
 }
 
 // CloudflareStatus derives UI state from the caller's single ReadView and the
@@ -1393,7 +1502,8 @@ func (s *Service) CloudflareStatus(ctx context.Context, st index.State, views []
 		state := cloudflarePending
 		reason := ""
 		if committedOK && committed.Object == view.Asset.Object && hasEntry &&
-			entry.State == cloudflareSynced && entry.Object == committed.Object {
+			entry.State == cloudflareSynced && entry.Object == committed.Object &&
+			cloudflareBlobCurrent(st.ImageBlobs, view.Asset, entry) {
 			state = cloudflareSynced
 		} else if hasEntry && entry.State == cloudflareFailed {
 			state = cloudflareFailed

@@ -27,6 +27,7 @@ func snapshotState(st index.State, snap repository.Snapshot, clear bool) index.S
 	m := snap.Manifest
 	st.Manifest = &m
 	st.Assets = snap.Assets
+	st.ImageBlobs = snap.ImageBlobs()
 	if clear {
 		st.Changes = make(map[domain.AssetID]domain.Change)
 		st.BaseHead = ""

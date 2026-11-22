@@ -13,7 +13,7 @@ go build -o /tmp/touko-web ./cmd/touko
 
 `serve` 默认自动打开浏览器；不想自动打开时使用 `/tmp/touko-web --state-dir "$HOME/.local/share/touko-web-demo" serve --port 7788 --no-open`。若自动打开失败，终端会提示手动访问，服务仍然可用。访问终端打印的 `http://127.0.0.1:7788`；端口占用时换 `--port 7789`，`--port 0` 自动选择可用端口，以打印结果为准。使用打印的127.0.0.1地址，不改成localhost/局域网IP。Ctrl+C 停止服务；state-dir 保留，下次相同命令继续。
 
-不需要 npm、Node、外部字体服务或数据库进程。HTML/CSS/JS、字体和 favicon 都嵌入 Go binary。拉丁字母与数字使用自托管的 Monaspace Radon，中文使用 LXGW 文楷，左上角字标使用子集化的圆几何字体。
+不需要 npm、Node、外部字体服务或数据库进程。HTML/CSS/JS、字体和 favicon 都嵌入 Go binary。拉丁字母与数字使用自托管的 Monaspace Xenon，中文使用 LXGW 文楷，左上角字标使用子集化的圆几何字体。
 
 ### 先用离线 demo 体验
 
@@ -70,9 +70,9 @@ Windows 安装组件后若重检仍未发现 gh，请退出并重新打开 TOUKO
 ### A. 上传与预览
 
 1. 使用上传按钮或拖入 `logo/touko-logo.png`、`examples/images/red.png` 和 `blue.png`。上传接受 PNG、JPEG、GIF、WebP。
-2. Namespace 设为 `blog`。目标目录可留空使用默认 `objects/<namespace>/<asset-id>.<ext>`，或填 `images/blog`，文件以 Asset UUID 命名（目录空格换成 `-`），不是照搬本机文件名。可勾选“把 PNG / JPEG 转为 WebP”；只有编码结果更小时才替换原图，GIF 与已有 WebP 不重新编码。
+2. Namespace 设为 `blog`。留空目录使用仓库根目录，也可以填 `images/blog`。图片按进入暂存时的 Unix 纳秒时间戳命名，冲突加序号；目录空格换成 `-`。可选 WebP 转换和本次上传同时计算 SHA-256，两项均不要求开启。
 3. 确认上传，图片以各自文件名作为默认标题进入待发布区；这一步不发布到 GitHub 或 R2。
-4. 在待发布列表逐张点击「编辑图片信息」，分别设置标题、标签和分类；也可从图片卡片打开详情。检查原文件名、实际仓库路径、UUID、hash、尺寸与 MIME。
+4. 在待发布列表逐张点击「编辑图片信息」，分别设置标题、标签和分类；也可从图片卡片打开详情。检查原文件名、实际仓库路径、UUID、尺寸、MIME 和可选的 SHA-256。
 5. 此时去 GitHub 看分支 HEAD，**不应因为上传而产生 commit**。
 
 每张最高100,000,000 bytes，单个网页请求最多500,000,000 bytes、100个文件；不支持的图片或失败输入不应留下半个批次。网页预览读取原图，不是假缩略图服务。
@@ -82,6 +82,10 @@ Windows 安装组件后若重检仍未发现 gh，请退出并重新打开 TOUKO
 统一图库普通刷新只读本机状态，不逐个 clone 或计算容量。上传时，clone HEAD 与本地索引相同则读取本地 Git 对象；不同时先用 `git ls-remote` 确认远端分支，缺少索引对应的提交时只浅取该提交的 Git 对象，再从本地读取 metadata。这个 fetch 不 reset、clean 或修改分支引用及待发布内容，但可能更新 clone 的浅克隆边界；同一提交的对象仍在本机时不再下载。没有 clone，或 Git 传输失败或超过 30 秒时，仍会回退 GitHub API 读取完整固定快照；真实远端 HEAD 已变化则报告冲突，不把旧 clone 当成新状态。暂存前再次检查所选 reader 的 HEAD，并按最新待发布内容重算容量。
 
 上传进度先显示文件发往本地服务的比例，发送完成后改为不确定进度，并显示校验阶段与经过秒数；不代表 GitHub 或 R2 传输进度。首次需要补取整个当前 tree、网络慢、API 回退或启用 WebP 转换时仍可能耗时；同一批选择多张图片可以共用一次成员快照校验。
+
+「设置 → 本地读图副本」显示各仓库的绝对路径并可复制。GitHub 副本可移到空目录或恢复默认位置；迁移不下载仓库。本地 Git 仓库显示原路径，不通过 TOUKO 移动。
+
+「设置 → 图片查重」默认关闭。开启后仅用本地可读数据后台归档，缺失的字节可在同步后补齐。「查重」比较已归档的 SHA-256，包括统一图库的多个成员；不发布、不删除图片。
 
 ### A2. 旧图库 / PicGo 原地纳管
 
@@ -194,7 +198,7 @@ WORKSPACE_STATE="$HOME/.local/share/touko-my-gallery" # 换成当前工作区实
 /tmp/touko-web --state-dir "$WORKSPACE_STATE" sync
 ```
 
-CLI `reindex` 对 GitHub 先更新 clone，完整验证源快照与 hash 后恢复 committed cache，物理损坏旧文件保留在 `index-corrupt-*`。网页重建读取现有 clone，不自动 fetch；需要远端新状态先同步。schema2 已把未发布状态迁至耐久 `workspace.json`，但 staging payload 仍需保留，备份整个工作区。
+CLI `reindex` 对 GitHub 先更新 clone，完整校验固定快照、图片描述及已有 SHA-256，再恢复 committed cache。物理损坏旧文件保留在 `index-corrupt-*`。网页使用现有 clone，不自动 fetch；需要远端新状态先同步。schema2 已把未发布状态迁至耐久 `workspace.json`，但 staging payload 仍需保留，备份整个工作区。
 
 **尚未迁移的 schema1 是例外**：stage/journal 唯一副本仍在旧 `index.db`，先用当前版本打开健康旧索引完成自动迁移，不能先删 DB；迁移前源已坏且无备份时无法从远端重建未发布数据，程序明确拒绝猜空。不要删除 `workspace.json` 或暂存目录，也不要在服务仍连接数据库时手动删除 DB/WAL/SHM。
 
@@ -208,16 +212,16 @@ CLI `reindex` 对 GitHub 先更新 clone，完整验证源快照与 hash 后恢�
 
 - 只监听127.0.0.1，校验精确Host/Origin和会话CSRF；不提供局域网共享或公网部署开关。不要用反向代理绕过边界后当作多人云服务。
 - API/图片不允许跨域，页面有 CSP、nosniff、no-referrer、frame保护；详情只按 UUID 查图，没有任意文件路径下载接口。
-- 凭据只在 Go server 内部；已有 GitHub clone 时从本地读图（包括 private），不会把 token/授权链接发给浏览器。界面会显示本地副本是否可用，不应把网络 fallback 当作本地读图。首次 clone、同步和认证需要网络，已有副本的预览/校验不自动 fetch。
+- 凭据只在 Go server 内部。预览优先按索引中的 Git blob ID 读本地对象，即使浅克隆缺少索引 HEAD；未命中才读 GitHub API。ETag 命中时不打开字节。预览不 fetch 或创建 clone；使用显式同步更新它。
 - GitHub `force:false` 是 fast-forward保护，不是针对任意外部管理员force/reset的严格expected-old-SHA CAS。禁止force-push是测试前提之一。
 - GitHub header版本固定2026-03-10；错误、限流、branch protection和truncated tree不会被伪装成部分成功。
 - 历史公开仓库验收及尚未验证的权限场景见 [GitHub 接入](github.md#协议与限制)。公开仓库成功不能证明私有仓库、分支保护拒绝或组织审批已实测。浏览器剪贴板受宿主权限约束，生成 Markdown 或出现手动复制框不等于已自动写入剪贴板。
 
 ## 7. 视觉资源与设计
 
-色板来自用户指定方向：奶油米色（纸 #f7f3ea）与深藏蓝（墨 #1b2a3d）呼应校服，珊瑚橙作「已暂存/当前」强调色，暗樱红只用于破坏性操作与「已修改」，卡纸色（#e5dcc9）作侧栏与照片衬底。整套设计由 Anthropic 公开的 `frontend-design` skill 逐条审查后重建：页面只有一种材质（纸），状态靠**材质**而非阴影区分——已提交的照片坐在卡纸衬底上，暂存中的坐在牛皮纸色衬底上并把压边线变成珊瑚色；圆角分四级承担层级；全页 `text-transform` 为 0、无渐变、无 `rgba(0,0,0,…)` 页面阴影。中文用 LXGW 文楷（楷体笔画更细，故正文 16px/行高 1.85，对比度 5.64:1，相对旧设定实测墨量 +7.6%），拉丁与数字用 Monaspace Radon，hero 标题用 Playfair Display 斜体（`--font-hero`，仅此一处使用）；刻意避开带光学尺寸轴的字面，否则字号越大笔画越细、观感发虚。
+色板来自用户指定方向：奶油米色（纸 #f7f3ea）与深藏蓝（墨 #1b2a3d）呼应校服，珊瑚橙作「已暂存/当前」强调色，暗樱红只用于破坏性操作与「已修改」，卡纸色（#e5dcc9）作侧栏与照片衬底。整套设计由 Anthropic 公开的 `frontend-design` skill 逐条审查后重建：页面只有一种材质（纸），状态靠**材质**而非阴影区分——已提交的照片坐在卡纸衬底上，暂存中的坐在牛皮纸色衬底上并把压边线变成珊瑚色；圆角分四级承担层级；全页 `text-transform` 为 0、无渐变、无 `rgba(0,0,0,…)` 页面阴影。中文用 LXGW 文楷（楷体笔画更细，故正文 16px/行高 1.85，对比度 5.64:1，相对旧设定实测墨量 +7.6%），拉丁与数字用 Monaspace Xenon，hero 标题用 Playfair Display 斜体（`--font-hero`，仅此一处使用）；刻意避开带光学尺寸轴的字面，否则字号越大笔画越细、观感发虚。
 
-英数与拉丁文本使用自托管的 Monaspace Radon（oblique 走 slnt 轴），中文使用 LXGW 文楷（霞鹜文楷，楷体正文面），左上角 TOUKO 字标另有子集化的圆几何字体（Quicksand，仅 T/O/U/K 四字形，1.3KB，并按字对做光学字距）。五者均为 SIL OFL，许可证随字体内嵌；LXGW 的附加许可明确允许为 web 交付子集化为 WOFF2。原图 `logo/touko-logo.png` 保持不变，页面内只使用从它派生的 favicon（`favicon.png`），不再放角色图条带；不主张角色或原图版权，分发衍生图片前应自行确认授权。界面无需外部 CDN 即可显示字体、图标与 favicon。
+英数与拉丁文本使用自托管的 Monaspace Xenon（oblique 走 slnt 轴），中文使用 LXGW 文楷（霞鹜文楷，楷体正文面），左上角 TOUKO 字标另有子集化的圆几何字体（Quicksand，仅 T/O/U/K 四字形，1.3KB，并按字对做光学字距）。五者均为 SIL OFL，许可证随字体内嵌；LXGW 的附加许可明确允许为 web 交付子集化为 WOFF2。原图 `logo/touko-logo.png` 保持不变，页面内只使用从它派生的 favicon（`favicon.png`），不再放角色图条带；不主张角色或原图版权，分发衍生图片前应自行确认授权。界面无需外部 CDN 即可显示字体、图标与 favicon。
 
 ## 8. 已实现的连接交互与桌面计划
 

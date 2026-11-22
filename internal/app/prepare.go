@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
@@ -35,6 +35,10 @@ var ErrCapacityFull = errors.New("capacity full")
 type PreparedInput struct {
 	Asset   domain.Asset
 	Payload image.Result
+	// Directory is the repository-relative upload prefix captured when the
+	// input was prepared. The path itself is assigned from the staging clock
+	// under the service lock, so parsing a batch never fixes its timestamp.
+	Directory string
 }
 
 // PreparedOptions configures AddPrepared. Reader is required: capacity and
@@ -101,7 +105,9 @@ func optionNamespace(opts AddOptions) (domain.Namespace, error) {
 
 // PrepareInput builds the asset identity and metadata for one ingested payload.
 // It performs no staging or repository access, so callers can prepare a batch,
-// preview its capacity, and then install it through AddPrepared.
+// preview its capacity, and then install it through AddPrepared. The object path
+// is deliberately left empty: only the service lock knows the actual staging
+// time, and only then can a batch resolve same-nanosecond collisions exactly.
 func PrepareInput(result image.Result, name string, opts AddOptions) (PreparedInput, error) {
 	if err := result.Object.Validate(); err != nil {
 		return PreparedInput{}, err
@@ -124,16 +130,7 @@ func PrepareInput(result image.Result, name string, opts AddOptions) (PreparedIn
 	}
 	now := time.Now().UTC()
 	a := domain.Asset{ID: id, Namespace: ns, Object: result.Object, OriginalName: original, Title: title, Tags: normalize(opts.Tags), Collections: normalize(opts.Collections), CreatedAt: now, UpdatedAt: now}
-	// Every new asset records its own path: the Asset ID names the file, so the
-	// URL, the GitHub blob and the R2 key are one identity with no hashing.
-	a.Path = repository.AssetObjectPath(ns, id, a.Object.Ext)
-	if opts.Directory != "" {
-		a.Path = path.Join(repository.DirectoryPath(opts.Directory), id.String()+"."+a.Object.Ext)
-	}
-	if err := a.Validate(); err != nil {
-		return PreparedInput{}, err
-	}
-	return PreparedInput{Asset: a, Payload: result}, nil
+	return PreparedInput{Asset: a, Payload: result, Directory: opts.Directory}, nil
 }
 
 func validatePrepared(inputs []PreparedInput, requirePayload bool) error {
@@ -153,11 +150,73 @@ func validatePrepared(inputs []PreparedInput, requirePayload bool) error {
 		if a.Object != input.Payload.Object {
 			return fmt.Errorf("input %d: prepared metadata describes different bytes than the payload", i)
 		}
+		if a.Path == "" {
+			return fmt.Errorf("input %d: prepared asset has no object path", i)
+		}
 		if requirePayload && input.Payload.TempPath == "" {
 			return fmt.Errorf("input %d: prepared payload has no source file", i)
 		}
 		if err := a.Validate(); err != nil {
 			return fmt.Errorf("input %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// occupiedObjectPaths collects every repository path the index already claims,
+// plus every leaf the repository base tree holds (including files TOUKO does
+// not manage, which a new upload must never adopt).
+func occupiedObjectPaths(st index.State, base *repository.Snapshot) map[string]domain.ContentObject {
+	paths := make(map[string]domain.ContentObject, len(st.Assets)+len(st.Changes))
+	for _, asset := range st.Assets {
+		paths[repository.ObjectPath(asset)] = asset.Object
+	}
+	for _, change := range st.Changes {
+		if change.Asset != nil {
+			paths[repository.ObjectPath(*change.Asset)] = change.Asset.Object
+		}
+	}
+	if base != nil {
+		for _, entry := range base.Entries {
+			if entry.Type == "tree" {
+				continue
+			}
+			if _, ok := paths[entry.Path]; !ok {
+				paths[entry.Path] = domain.ContentObject{}
+			}
+		}
+	}
+	return paths
+}
+
+// allocateTimestampPaths assigns one exact repository path per prepared input
+// and is only called while the service lock is held. A batch shares one staging
+// timestamp; inputs that land in the same nanosecond step through the shared
+// "-N" collision suffix so no two assets ever own one path. Inputs that already
+// carry a path (explicit imports) are left alone.
+func allocateTimestampPaths(inputs []PreparedInput, at time.Time, occupied map[string]domain.ContentObject) error {
+	for i := range inputs {
+		a := &inputs[i].Asset
+		if a.Path != "" {
+			continue
+		}
+		prefix := ""
+		if inputs[i].Directory != "" {
+			prefix = repository.DirectoryPath(inputs[i].Directory) + "/"
+		}
+		assigned := false
+		for collision := 0; collision < 1<<20; collision++ {
+			candidate := prefix + repository.TimestampObjectPath(at, a.Object.Ext, collision)
+			if _, taken := occupied[candidate]; taken {
+				continue
+			}
+			occupied[candidate] = a.Object
+			a.Path = candidate
+			assigned = true
+			break
+		}
+		if !assigned {
+			return fmt.Errorf("input %d: could not allocate a unique object path", i)
 		}
 	}
 	return nil
@@ -190,8 +249,12 @@ func applyPrepared(st index.State, inputs []PreparedInput) (index.State, error) 
 			return index.State{}, fmt.Errorf("%w: input %d asset already has staged changes: %s", domain.ErrConflict, i, a.ID)
 		}
 		objectPath := repository.ObjectPath(a)
-		if existing, ok := paths[objectPath]; ok && existing != a.Object {
-			return index.State{}, fmt.Errorf("occupied image path %s", objectPath)
+		if existing, ok := paths[objectPath]; ok {
+			// A zero hash is unknown content, so it can never prove that two
+			// assets share the bytes at one path.
+			if !a.Object.HasHash() || existing != a.Object {
+				return index.State{}, fmt.Errorf("occupied image path %s", objectPath)
+			}
 		}
 		paths[objectPath] = a.Object
 		asset := a
@@ -201,19 +264,18 @@ func applyPrepared(st index.State, inputs []PreparedInput) (index.State, error) 
 	return next, nil
 }
 
-// projectCapacity reads the current repository HEAD and computes the full tree
-// bytes plus the proposed batch through the real CommitPlan. Missing or stale
-// remote state is an error, never a zero-byte projection.
-func projectCapacity(ctx context.Context, reader repository.Reader, st index.State, next index.State, cached *repository.Snapshot) (repository.Snapshot, int64, int64, error) {
+// capacityBase reads the current repository HEAD and returns the full tree byte
+// count. Missing or stale remote state is an error, never a zero-byte reading.
+func capacityBase(ctx context.Context, reader repository.Reader, st index.State, cached *repository.Snapshot) (repository.Snapshot, int64, error) {
 	if reader == nil {
-		return repository.Snapshot{}, 0, 0, fmt.Errorf("capacity requires repository access")
+		return repository.Snapshot{}, 0, fmt.Errorf("capacity requires repository access")
 	}
 	head, err := reader.Head(ctx)
 	if err != nil {
-		return repository.Snapshot{}, 0, 0, err
+		return repository.Snapshot{}, 0, err
 	}
 	if head != st.Head {
-		return repository.Snapshot{}, 0, 0, &domain.ConflictError{Base: st.Head, Remote: head, Reason: "head_changed"}
+		return repository.Snapshot{}, 0, &domain.ConflictError{Base: st.Head, Remote: head, Reason: "head_changed"}
 	}
 	var base repository.Snapshot
 	if cached != nil && cached.Head == head {
@@ -221,29 +283,31 @@ func projectCapacity(ctx context.Context, reader repository.Reader, st index.Sta
 	} else {
 		base, err = repository.ReadSnapshot(ctx, reader, head)
 		if err != nil {
-			return repository.Snapshot{}, 0, 0, err
+			return repository.Snapshot{}, 0, err
 		}
 	}
 	if err := sameRepository(st, base); err != nil {
-		return repository.Snapshot{}, 0, 0, err
+		return repository.Snapshot{}, 0, err
 	}
 	used, err := repository.BlobBytes(base.Entries)
 	if err != nil {
-		return repository.Snapshot{}, 0, 0, err
+		return repository.Snapshot{}, 0, err
 	}
+	return base, used, nil
+}
+
+// projectedBlobBytes applies the exact CommitPlan for the staged batch. It must
+// run after paths are allocated so the plan and the final state agree.
+func projectedBlobBytes(base repository.Snapshot, used int64, next index.State) (int64, error) {
 	changes := stagedChanges(next)
 	if len(changes.Changes) == 0 {
-		return base, used, used, nil
+		return used, nil
 	}
 	plan, err := repository.PlanCommit(base, changes)
 	if err != nil {
-		return repository.Snapshot{}, 0, 0, err
+		return 0, err
 	}
-	projected, err := repository.ProjectedBlobBytes(base, plan)
-	if err != nil {
-		return repository.Snapshot{}, 0, 0, err
-	}
-	return base, used, projected, nil
+	return repository.ProjectedBlobBytes(base, plan)
 }
 
 func capacityFor(base repository.Snapshot, used, projected, limit int64) Capacity {
@@ -256,7 +320,8 @@ func capacityFor(base repository.Snapshot, used, projected, limit int64) Capacit
 
 // PreviewPrepared reports proposed capacity without changing durable state.
 // AddPrepared may reuse its immutable snapshot only after checking the same
-// reader's current HEAD; it always replans against the current staged state.
+// reader's current HEAD; it always replans against the current staged state and
+// reassigns paths from its own staging clock.
 func (s *Service) PreviewPrepared(ctx context.Context, reader repository.Reader, inputs []PreparedInput, limit int64) (Capacity, error) {
 	if reader == nil {
 		return Capacity{}, fmt.Errorf("capacity requires repository access")
@@ -272,6 +337,14 @@ func (s *Service) PreviewPrepared(ctx context.Context, reader repository.Reader,
 	if err := mutable(st); err != nil {
 		return Capacity{}, err
 	}
+	base, used, err := capacityBase(ctx, reader, st, nil)
+	if err != nil {
+		return Capacity{}, err
+	}
+	inputs = slices.Clone(inputs)
+	if err := allocateTimestampPaths(inputs, time.Now().UTC(), occupiedObjectPaths(st, &base)); err != nil {
+		return Capacity{}, err
+	}
 	if len(inputs) > 0 {
 		if err := validatePrepared(inputs, false); err != nil {
 			return Capacity{}, err
@@ -281,7 +354,7 @@ func (s *Service) PreviewPrepared(ctx context.Context, reader repository.Reader,
 	if err != nil {
 		return Capacity{}, err
 	}
-	base, used, projected, err := projectCapacity(ctx, reader, st, next, nil)
+	projected, err := projectedBlobBytes(base, used, next)
 	if err != nil {
 		return Capacity{}, err
 	}
@@ -326,6 +399,26 @@ func (s *Service) addPrepared(ctx context.Context, inputs []PreparedInput, opts 
 	if err := mutable(st); err != nil {
 		return nil, err
 	}
+	var base repository.Snapshot
+	var used int64
+	if opts != nil {
+		var cached *repository.Snapshot
+		if opts.Preview != nil && opts.Preview.preview != nil &&
+			reflect.ValueOf(opts.Reader).Comparable() &&
+			reflect.ValueOf(opts.Preview.preview.reader).Comparable() && opts.Preview.preview.reader == opts.Reader {
+			cached = &opts.Preview.preview.base
+		}
+		base, used, err = capacityBase(ctx, opts.Reader, st, cached)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// The lock is held, so this is the staging instant: every path assigned
+	// here is the exact path the plan and the saved state will use.
+	inputs = slices.Clone(inputs)
+	if err := allocateTimestampPaths(inputs, time.Now().UTC(), occupiedObjectPaths(st, &base)); err != nil {
+		return nil, err
+	}
 	if err := validatePrepared(inputs, true); err != nil {
 		return nil, err
 	}
@@ -334,13 +427,7 @@ func (s *Service) addPrepared(ctx context.Context, inputs []PreparedInput, opts 
 		return nil, err
 	}
 	if opts != nil {
-		var cached *repository.Snapshot
-		if opts.Preview != nil && opts.Preview.preview != nil &&
-			reflect.ValueOf(opts.Reader).Comparable() &&
-			reflect.ValueOf(opts.Preview.preview.reader).Comparable() && opts.Preview.preview.reader == opts.Reader {
-			cached = &opts.Preview.preview.base
-		}
-		base, used, projected, err := projectCapacity(ctx, opts.Reader, st, next, cached)
+		projected, err := projectedBlobBytes(base, used, next)
 		if err != nil {
 			return nil, err
 		}

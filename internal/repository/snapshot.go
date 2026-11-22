@@ -187,13 +187,17 @@ func readSnapshot(ctx context.Context, r Reader, head domain.RepositoryHead, bas
 			if _, ok := s.Assets[a.ID]; ok {
 				return s, corrupt(fmt.Errorf("duplicate asset %s", a.ID))
 			}
-			if previous, ok := descriptions[a.Object.Hash]; ok && previous != a.Object {
-				return s, corrupt(fmt.Errorf("contradictory object description %s", a.Object.Hash))
+			if a.Object.HasHash() {
+				if previous, ok := descriptions[a.Object.Hash]; ok && previous != a.Object {
+					return s, corrupt(fmt.Errorf("contradictory object description %s", a.Object.Hash))
+				}
+				descriptions[a.Object.Hash] = a.Object
 			}
-			descriptions[a.Object.Hash] = a.Object
 			objectPath := ObjectPath(a)
-			if previous, ok := pathDescriptions[objectPath]; ok && previous != a.Object {
-				return s, corrupt(fmt.Errorf("contradictory object descriptions for path %s", objectPath))
+			if previous, ok := pathDescriptions[objectPath]; ok {
+				if !a.Object.HasHash() || previous != a.Object {
+					return s, corrupt(fmt.Errorf("contradictory object descriptions for path %s", objectPath))
+				}
 			}
 			pathDescriptions[objectPath] = a.Object
 			e, ok := entries[objectPath]

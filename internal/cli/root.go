@@ -194,7 +194,11 @@ func (r *runtime) reader(ctx context.Context, s *app.Service) (repository.Git, e
 	if err != nil {
 		return nil, err
 	}
-	return localgit.WorkingCopy(ctx, location.RemoteURL(), repository.CloneDir(s.Dir), location.Branch, token)
+	dir, err := s.CloneDir()
+	if err != nil {
+		return nil, err
+	}
+	return localgit.WorkingCopy(ctx, location.RemoteURL(), dir, location.Branch, token)
 }
 
 // commitReader keeps HEAD and every write on the API, but reads immutable
@@ -216,7 +220,11 @@ func (r *runtime) commitReader(ctx context.Context, s *app.Service) (repository.
 	if err != nil {
 		return nil, err
 	}
-	local := localgit.IndexedObjects(ctx, repository.CloneDir(s.Dir), location.RemoteURL(), location.Branch, st.Head, token)
+	dir, err := s.CloneDir()
+	if err != nil {
+		return nil, err
+	}
+	local := localgit.IndexedObjects(ctx, dir, location.RemoteURL(), location.Branch, st.Head, token)
 	if local == nil {
 		return git, nil
 	}

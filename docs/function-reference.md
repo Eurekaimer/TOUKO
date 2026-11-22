@@ -660,9 +660,9 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 
 | 精确符号 | 作用与不变量 |
 | --- | --- |
-| `(*Server).preview` | openImage后设置真实MIME/长度，CopyN流出原图；断流则ErrAbortHandler中止，不把JSON拼进图像或假装图片完整。 |
-| `(*Server).openImage` | 先staged payload，其次本地图/固定 tree 的 Git blob，必要时API fallback；返回真实内容身份用于缓存校验，不追branch外链。 |
-| `(*Server).imageSnapshot` | 已提交图片直接读一致视图，不等待长时间 mutation；新增 payload 才持 workMu 重新读取并 Open/Stat，避免 cleanup 竞争。导入显式path无payload时读原Git blob，delete不可见。 |
+| `(*Server).preview` | 从一致视图计算 ETag；命中时不打开字节。未命中使用实际 MIME/长度流式返回，断流则中止。 |
+| `(*Server).openCommittedImage` | 用缓存 Git blob ID 优先读本地对象，缺失时才回退 API；不读可变 checkout 文件或追 branch 外链。 |
+| `(*Server).imageSnapshot` | 在打开内容前匹配缓存验证器；需要读暂存文件时持 `workMu` 重新读取并打开，防止 cleanup 竞争。 |
 | `(*Server).imageBlob` | cached tree与真实path → GitEntry；缓存该tree的引用映射、验mode/type/SHA，不缓存binary。 |
 | `serveStatic`、`matchesETag` | embed.FS白名单GET/HEAD，按内容ETag与If-None-Match（含weak/*）返回304；HTML/JS/CSS字体等仍私有且每次重验证，不暴露文件系统。 |
 
@@ -682,7 +682,7 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `webview.(*Server).capacityReader` | 单工作区/统一图库容量读取：clone HEAD 等于索引 HEAD 直接用本地对象；落后时先用 `RemoteHead` 核对，`FetchCommit` 补固定提交，返回每次 `Head` 都重新核对的 reader。clone 缺失、Git 失败或超过 30 秒回退 GitHub API；真实 HEAD 变化报 conflict，不把旧 clone 当新状态。 |
 | `localgit.validateRemote`、`validateBranch`、`redact` | 拒绝嵌入凭据/危险选项及非法branch，错误脱敏；不修改用户全局Git配置。 |
 | `webview.(*Server).ensureClone` | cloneOnce下复用已有副本；缺失时用运行时凭据首次Clone。绝不fetch已有clone，不能把“缺失时创建可能联网”写成所有预览都离线。 |
-| `webview.localImage` | canonical从checkout读取并验regular/size；显式Path不读可变同名文件，而由openImage按immutable Git blob读取。未命中可回退其他固定快照读取。 |
+| `webview.(*Server).openLocalCommitted` | 按 Git blob ID 读图，无需计算 SHA-256；旧索引可按已有摘要匹配本地快照。 |
 | `webview.(*Server).updateClone`、`CloneStatus` | 显式sync创建/更新clone；state调用CloneStatus报告实际可用性/路径。并非未使用helper，不在gallery/preview偷偷fetch。 |
 | `cli.(*runtime).reader` | GitHub经Resolve与WorkingCopy取得本地clone（缺失可创建），不刷新已有clone；localgit直接backend。verify不fetch，sync由syncClone显式先更新。 |
 | `cli.(*runtime).commitReader` | commit专用：backend writer + `localgit.IndexedObjects`/`NewLocalFirst`。 | 只读对象走本地clone，HEAD/写入仍走API；fetch失败或对象缺失时逐对象回退，不移动checkout。 |

@@ -103,6 +103,7 @@ func TestPutObjectSendsBytesMetadataAndVerifiesHead(t *testing.T) {
 			w.Header().Set("X-Amz-Meta-Touko-Repository-Id", repositoryID.String())
 			w.Header().Set("X-Amz-Meta-Touko-Source-Id", sourceID)
 			w.Header().Set("X-Amz-Meta-Touko-Sha256", object.Hash.String())
+			w.Header().Set("X-Amz-Meta-Touko-Blob-Sha", strings.Repeat("e", 40))
 			w.WriteHeader(http.StatusOK)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL)
@@ -117,6 +118,7 @@ func TestPutObjectSendsBytesMetadataAndVerifiesHead(t *testing.T) {
 		Object:       object,
 		RepositoryID: repositoryID,
 		SourceID:     sourceID,
+		BlobSHA:      strings.Repeat("e", 40),
 	})
 	if err != nil {
 		t.Fatalf("PutObject: %v", err)
@@ -158,6 +160,7 @@ func TestPutObjectSendsBytesMetadataAndVerifiesHead(t *testing.T) {
 		"X-Amz-Meta-Touko-Repository-Id": repositoryID.String(),
 		"X-Amz-Meta-Touko-Source-Id":     sourceID,
 		"X-Amz-Meta-Touko-Sha256":        object.Hash.String(),
+		"X-Amz-Meta-Touko-Blob-Sha":      strings.Repeat("e", 40),
 	}
 	for name, want := range metadata {
 		if got := putHeader.Get(name); got != want {
@@ -180,6 +183,121 @@ func TestPutObjectSendsBytesMetadataAndVerifiesHead(t *testing.T) {
 				t.Fatalf("header %s leaked the secret access key", name)
 			}
 		}
+	}
+}
+
+// TestPutObjectHashlessUsesBlobEvidence proves a hashless object is written
+// without any SHA-256 claim and is accepted only after the immutable Git blob
+// identity survives the read-back.
+func TestPutObjectHashlessUsesBlobEvidence(t *testing.T) {
+	object, repositoryID, sourceID, payload := testObject()
+	object.Hash = domain.ObjectHash{}
+	blob := strings.Repeat("a", 40)
+	const etag = "etag-hashless"
+
+	var mu sync.Mutex
+	var putHeader http.Header
+	puts := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodPut:
+			puts++
+			putHeader = r.Header.Clone()
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("ETag", strconv.Quote(etag))
+			w.WriteHeader(http.StatusOK)
+		case http.MethodHead:
+			w.Header().Set("ETag", strconv.Quote(etag))
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			w.Header().Set("X-Amz-Meta-Touko-Repository-Id", repositoryID.String())
+			w.Header().Set("X-Amz-Meta-Touko-Source-Id", sourceID)
+			w.Header().Set("X-Amz-Meta-Touko-Blob-Sha", blob)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	got, err := client.PutObject(context.Background(), "images/hashless.webp", bytes.NewReader(payload), PutOptions{
+		Object:       object,
+		RepositoryID: repositoryID,
+		SourceID:     sourceID,
+		BlobSHA:      blob,
+	})
+	if err != nil {
+		t.Fatalf("PutObject: %v", err)
+	}
+	if got != etag {
+		t.Fatalf("etag = %q, want %q", got, etag)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if puts != 1 {
+		t.Fatalf("PUT requests = %d, want 1", puts)
+	}
+	if got := putHeader.Get("X-Amz-Meta-Touko-Blob-Sha"); got != blob {
+		t.Fatalf("blob metadata = %q, want %q", got, blob)
+	}
+	if got := putHeader.Get("X-Amz-Meta-Touko-Sha256"); got != "" {
+		t.Fatalf("hashless PUT claimed a SHA-256: %q", got)
+	}
+}
+
+func TestPutObjectHashlessReadBackMustProveTheBlob(t *testing.T) {
+	object, repositoryID, sourceID, payload := testObject()
+	object.Hash = domain.ObjectHash{}
+	blob := strings.Repeat("b", 40)
+
+	for _, tc := range []struct {
+		name       string
+		storedSHA  string
+		storedBlob string
+	}{
+		{name: "missing blob", storedSHA: "", storedBlob: ""},
+		{name: "different blob", storedBlob: strings.Repeat("c", 40)},
+		{name: "stray digest", storedSHA: strings.Repeat("0", 64), storedBlob: blob},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodPut:
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.Header().Set("ETag", strconv.Quote("etag-hashless"))
+					w.WriteHeader(http.StatusOK)
+				case http.MethodHead:
+					w.Header().Set("ETag", strconv.Quote("etag-hashless"))
+					w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+					w.Header().Set("X-Amz-Meta-Touko-Repository-Id", repositoryID.String())
+					w.Header().Set("X-Amz-Meta-Touko-Source-Id", sourceID)
+					w.Header().Set("X-Amz-Meta-Touko-Blob-Sha", tc.storedBlob)
+					w.Header().Set("X-Amz-Meta-Touko-Sha256", tc.storedSHA)
+					w.WriteHeader(http.StatusOK)
+				default:
+					t.Errorf("unexpected request %s %s", r.Method, r.URL)
+					w.WriteHeader(http.StatusMethodNotAllowed)
+				}
+			}))
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			etag, err := client.PutObject(context.Background(), "images/hashless.webp", bytes.NewReader(payload), PutOptions{
+				Object:       object,
+				RepositoryID: repositoryID,
+				SourceID:     sourceID,
+				BlobSHA:      blob,
+			})
+			if err == nil || etag != "" {
+				t.Fatalf("PutObject accepted an unproven hashless read-back: etag=%q err=%v", etag, err)
+			}
+			if code := ErrorCode(err); code != "object_conflict" {
+				t.Fatalf("ErrorCode = %q, want object_conflict (err=%v)", code, err)
+			}
+		})
 	}
 }
 
@@ -303,6 +421,7 @@ func TestHeadObjectReturnsVerifiedMetadata(t *testing.T) {
 			w.Header().Set("X-Amz-Meta-Touko-Repository-Id", repositoryID.String())
 			w.Header().Set("X-Amz-Meta-Touko-Source-Id", sourceID)
 			w.Header().Set("X-Amz-Meta-Touko-Sha256", object.Hash.String())
+			w.Header().Set("X-Amz-Meta-Touko-Blob-Sha", strings.Repeat("d", 40))
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -332,6 +451,9 @@ func TestHeadObjectReturnsVerifiedMetadata(t *testing.T) {
 	}
 	if info.SHA256 != object.Hash.String() {
 		t.Fatalf("SHA256 = %q, want %q", info.SHA256, object.Hash.String())
+	}
+	if want := strings.Repeat("d", 40); info.BlobSHA != want {
+		t.Fatalf("BlobSHA = %q, want %q", info.BlobSHA, want)
 	}
 }
 
@@ -823,7 +945,9 @@ func TestPutObjectValidatesObjectAndCondition(t *testing.T) {
 		check func(*testing.T, error)
 	}{
 		{name: "nil body", body: nil, opts: PutOptions{Object: validObject, RepositoryID: repositoryID, SourceID: sourceID}, check: wantConfigError},
-		{name: "missing hash", body: bytes.NewReader(payload), opts: PutOptions{Object: domain.ContentObject{MIME: validObject.MIME, Ext: validObject.Ext, Size: validObject.Size, Width: 1, Height: 1}, RepositoryID: repositoryID, SourceID: sourceID}, check: wantConfigError},
+		{name: "missing hash and blob", body: bytes.NewReader(payload), opts: PutOptions{Object: domain.ContentObject{MIME: validObject.MIME, Ext: validObject.Ext, Size: validObject.Size, Width: 1, Height: 1}, RepositoryID: repositoryID, SourceID: sourceID}, check: wantConfigError},
+		{name: "uppercase blob", body: bytes.NewReader(payload), opts: PutOptions{Object: validObject, RepositoryID: repositoryID, SourceID: sourceID, BlobSHA: strings.Repeat("AB", 20)}, check: wantConfigError},
+		{name: "short blob", body: bytes.NewReader(payload), opts: PutOptions{Object: validObject, RepositoryID: repositoryID, SourceID: sourceID, BlobSHA: "abc"}, check: wantConfigError},
 		{name: "invalid object", body: bytes.NewReader(payload), opts: PutOptions{Object: domain.ContentObject{MIME: "text/plain", Ext: "webp", Size: 10, Width: 1, Height: 1}, RepositoryID: repositoryID, SourceID: sourceID}, check: wantConfigError},
 		{name: "zero repository", body: bytes.NewReader(payload), opts: PutOptions{Object: validObject, SourceID: sourceID}, check: wantConfigError},
 		{name: "short source id", body: bytes.NewReader(payload), opts: PutOptions{Object: validObject, RepositoryID: repositoryID, SourceID: "abc"}, check: wantConfigError},

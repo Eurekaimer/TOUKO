@@ -245,14 +245,14 @@ func TestConcurrentCommitDoesNotOverwrite(t *testing.T) {
 		t.Fatal(snap)
 	}
 }
-func TestCommitRejectsDamagedStageBeforePublication(t *testing.T) {
+func TestCommitRejectsInvalidHashlessStageBeforePublication(t *testing.T) {
 	ctx, r, s := realRepository(t)
 	asset := stageImage(t, ctx, s)
 	base, _ := r.Head(ctx)
 	if err := os.WriteFile(staging.PayloadPath(s.Dir, asset), bytes.Repeat([]byte{'x'}, int(asset.Object.Size)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Commit(ctx, r, "damaged"); !errors.Is(err, domain.ErrHashMismatch) {
+	if _, err := s.Commit(ctx, r, "damaged"); !errors.Is(err, domain.ErrRepositoryCorrupt) {
 		t.Fatal(err)
 	}
 	head, _ := r.Head(ctx)
