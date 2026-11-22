@@ -9,6 +9,7 @@
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-9c5238)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-1b2a3d)](#安装)
+[![Awesome MyGo](https://img.shields.io/badge/Awesome%20MyGo-listed-3fd3f5)](https://awesomemygo.dev/apps/touko)
 
 [简体中文](README.md) · [English](README_en.md)
 
@@ -77,6 +78,8 @@ touko url <UUID> --provider jsdelivr
 touko serve --port 7788        # 浏览器，加 --no-open 不自动打开
 touko-desktop                  # 原生窗口
 ```
+
+![TOUKO 图片库界面：左侧分类与标签导航，右侧测试图片卡片](docs/images/webview-gallery.png)
 
 服务只监听 `127.0.0.1`，校验 Host、Origin 和 CSRF。GitHub 凭据留在服务端进程内。
 

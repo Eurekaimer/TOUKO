@@ -9,6 +9,7 @@ Keep your pictures in a Git repository you own.
 [![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-9c5238)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-1b2a3d)](#install)
+[![Awesome MyGo](https://img.shields.io/badge/Awesome%20MyGo-listed-3fd3f5)](https://awesomemygo.dev/apps/touko)
 
 [简体中文](README.md) · [English](README_en.md)
 
@@ -78,7 +79,9 @@ touko serve --port 7788        # browser; add --no-open to skip opening it
 touko-desktop                  # native window
 ```
 
-The server listens on `127.0.0.1` and checks Host, Origin and CSRF. GitHub credentials stay inside the server process.
+![TOUKO gallery interface: category and tag navigation on the left, test image cards on the right](docs/images/webview-gallery.png)
+
+The server listens on `127.0.0.1` and validates Host, Origin and CSRF. GitHub credentials stay inside the server process.
 
 The gear button opens settings:
 
