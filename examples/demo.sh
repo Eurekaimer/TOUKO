@@ -39,6 +39,7 @@ export GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local GONOPROXY=none
 python3 - "$root" <<'PY'
 import json
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -119,7 +120,7 @@ def tree_counts(metadata, objects, blobs):
     current = tree_entries()
     require(len([p for p in current if p.startswith('.touko/assets/')]) == metadata,
             f'Expected {metadata} asset metadata paths')
-    object_paths = [p for p in current if p.startswith('objects/')]
+    object_paths = [p for p in current if not p.startswith('.touko/')]
     require(len(object_paths) == objects, f'Expected {objects} object paths')
     require(len({current[p] for p in object_paths}) == blobs,
             f'Expected {blobs} distinct object blobs')
@@ -146,10 +147,11 @@ def verify(device, asset_count, object_count):
 
 
 def placement(asset):
-    """Require the asset-id path recorded in metadata and return it."""
-    expected = f'objects/{asset["namespace"]}/{asset["id"]}.{asset["object"]["ext"]}'
-    require(asset.get('path') == expected,
-            f'Asset {asset["id"]} must own {expected!r}, got {asset.get("path")!r}')
+    """Require the timestamp path recorded in metadata and return it."""
+    expected = asset.get('path')
+    require(isinstance(expected, str) and
+            re.fullmatch(r'[0-9]{14}-[0-9]{4}\.(?:png|jpg|gif|webp)', expected),
+            f'Asset {asset["id"]} must own a root timestamp path, got {expected!r}')
     return expected
 
 

@@ -85,7 +85,7 @@ printf 'Asset ID: %s\n' "$ID"
 "$ROOT/touko" --state-dir "$ROOT/device-a" verify
 ```
 
-`add` 不发布远端。每次上传都生成新 UUID，并以它命名独立对象路径；相同 bytes 在 Git 内部仍可共用 blob，但链接和删除互不影响。`--output id` 只输出 UUID，适合 shell 捕获，不能和 `--json` 合用；在旧 Git 图库原地纳管已有图片用后文的 `import`。
+`add` 不发布远端。每次上传都生成新 UUID，默认使用时间戳文件名（可保留原名或自定义）作为独立对象路径；相同 bytes 在 Git 内部仍可共用 blob，但链接和删除互不影响。`--output id` 只输出 UUID，适合 shell 捕获，不能和 `--json` 合用；在旧 Git 图库原地纳管已有图片用后文的 `import`。
 
 ## 4. 从零建一个自己的离线 gallery
 

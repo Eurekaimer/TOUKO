@@ -69,6 +69,8 @@ touko url <UUID> --provider jsdelivr
 
 `touko --help` 列出全部命令：`add`、`edit`、`rm`、`ls`、`find`、`show`、`status`、`commit`、`sync`、`verify`、`reindex`、`import`、`repo`、`auth`、`serve`、`url`、`cloudflare`、`reset`、`version`。命令都支持 `--json`。
 
+不需要 GitHub 凭据的本地端到端验收：`bash examples/demo.sh`。它会构建 CLI、创建临时 bare 仓库并检查发布、同步、删除与缓存重建。
+
 ## 图形界面
 
 ```sh

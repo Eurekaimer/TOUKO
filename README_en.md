@@ -69,6 +69,8 @@ touko url <UUID> --provider jsdelivr
 
 `touko --help` lists the commands: `add`, `edit`, `rm`, `ls`, `find`, `show`, `status`, `commit`, `sync`, `verify`, `reindex`, `import`, `repo`, `auth`, `serve`, `url`, `cloudflare`, `reset`, `version`. All accept `--json`.
 
+Local end-to-end check without GitHub credentials: `bash examples/demo.sh`. It builds the CLI, creates a temporary bare repository, and verifies publication, sync, removal and cache reconstruction.
+
 ## Interface
 
 ```sh
