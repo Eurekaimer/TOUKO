@@ -20,12 +20,13 @@ Uploads enter staging first; `commit` publishes them. New filenames use the read
 
 ## Features
 
-- UUID-named images and metadata, published as one atomic commit
+- Timestamp filenames with stable Asset UUIDs, published as one atomic commit
 - Separate staging, commit and sync steps; `rm` only removes from the latest tree, Git history stays
 - Multi-repository galleries, each with its own staging and publication flow
 - Web and desktop interface: drag or paste uploads, search, filters by tag, collection and directory, Markdown copy
+- Local previews verify clone working-tree files first, then fall back to fixed Git objects; settings show and copy the clone path
 - Optional Cloudflare R2 mirror, written only after GitHub confirms the publication
-- Settings panel for interface and font scaling, Cloudflare configuration and locally stored R2 keys
+- Settings panel for interface and font scaling, local image copies, duplicate checks, Cloudflare configuration and locally stored R2 keys
 - Collapsible tags and collections, 12 entries per page
 
 ## Install
@@ -80,6 +81,8 @@ The server listens on `127.0.0.1` and checks Host, Origin and CSRF. GitHub crede
 The gear button opens settings:
 
 - Display: interface and font scaling
+- Local image copies: absolute path and availability per repository, with copy; GitHub copies can be moved
+- Duplicate checks: archive SHA-256 in the background and compare archived images
 - Cloudflare R2: enable switch, endpoint, bucket, public base URL and keys
 - Keys are stored in the workspace state directory at `cloudflare/credentials.json` (directory 0700, file 0600). The form fills them back masked; press Show to read them
 
@@ -132,6 +135,13 @@ Three passes over the same images measured **0.111 ms/image** for one in-memory
 SHA-256 pass, excluding disk, conversion and network. Historical single-image
 request counts, methodology and limits are in [Benchmark](docs/benchmark.md).
 The current client adds a pre-publication HEAD read.
+
+A separate local-preview reference run used a real 202-image gallery whose clone
+was one commit behind the indexed HEAD. After cooling, 20 sequential previews
+took **0.227 s**, one cold image took **8 ms**, and an `If-None-Match`
+revalidation took **2 ms**. The same 20-image sequence took **98.4 s** before
+the fix. These numbers cover local clone and HTTP overhead only, not GitHub or
+R2 transfer speed.
 
 **Migration safety:** Older published `migrate paths` / `--prune-old` commands
 do not have the current recovery and legacy-object protections. Use the current

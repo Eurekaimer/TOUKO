@@ -18,7 +18,7 @@ Selectors accept a full UUID or an unambiguous UUID prefix of at least eight cha
 
 ## Importing existing images
 
-`ImportLegacy` scans one fixed initialized HEAD, optionally within a directory, hashes and inspects existing PNG/JPEG/GIF/WebP blobs, and stages metadata referencing their original paths. It does not move, copy, or re-upload image bytes, so existing links remain valid. Already managed paths (including staged additions and canonical placements) are skipped; repeated import is idempotent. Non-images and unsupported entry types count as skipped; validation/read failures reject the batch. An uninitialized repository requires explicit initialization first. Import only stages changes; commit publishes metadata and any required v2 upgrade.
+`ImportLegacy` scans one fixed initialized HEAD, optionally within a directory, hashes and inspects existing PNG/JPEG/GIF/WebP blobs, and stages metadata referencing their original paths. It does not move, copy, or re-upload image bytes, so existing links remain valid. Already managed paths (including staged additions and managed placements) are skipped; repeated import is idempotent. Non-images and unsupported entry types count as skipped; validation/read failures reject the batch. An uninitialized repository requires explicit initialization first. Import only stages changes; commit publishes metadata and any required v2 upgrade.
 
 `--directory` keeps a normalized destination prefix, replacing spaces with hyphens. All new owned filenames are timestamps; existing UUID placements and imported paths remain readable.
 

@@ -16,7 +16,7 @@
 4. **恢复与重建**：`app/{sync,refresh,reindex}.go`、`index/{workspace,rebuild}.go` → `app/commit.go` journal helper。
 5. **用户入口**：`cmd/touko/main.go` → `cli/root.go` → 各命令构造函数。
 
-三个不同身份不能混用：Asset UUID是记录身份，ObjectHash是bytes身份，RepositoryHead/BlobID/TreeID是Git身份。相同bytes可以有不同Asset ID；canonical放置受namespace影响，但显式Path直接指定真实位置，完整ObjectPath才决定placement是否共享。
+三个不同身份不能混用：Asset UUID 是记录身份，ObjectHash 是 bytes 身份，RepositoryHead/BlobID/TreeID 是 Git 身份。相同 bytes 可以有不同 Asset ID；新上传的时间戳路径默认不受 namespace 影响，指定目录决定前缀；显式 Path 直接指定真实位置，完整 ObjectPath 才决定 placement 是否共享。
 
 ## 2. `internal/domain`：不依赖 Git、SQL 或 CLI 的规则
 
@@ -88,10 +88,10 @@
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
 | `AssetPath` | AssetID → `.touko/assets/<uuid>.json`。 | 纯函数；元数据路径与标题、原文件名无关。 |
-| `AssetObjectPath` | namespace/asset-id/ext → `objects/<namespace>/<uuid>.<ext>`。 | 新上传默认路径；不计算或读取 hash，每个 Asset 独占一个 object。 |
+| `AssetObjectPath` | namespace/asset-id/ext → `objects/<namespace>/<uuid>.<ext>`。 | 旧 Asset ID 布局和未分配上传的路由目标；新上传使用时间戳 + 显式 Path，不再默认写这里。不计算或读取 hash。 |
 | `LegacyObjectPath` | namespace/object → `objects/<namespace>/sha256/<前2位>/<后2位>/<hash>.<ext>`。 | 仅供旧仓库在 Asset 无显式 path 时回退读取；新代码不产生该路径。 |
 | `DirectoryPath` | 上传目录 → 规范化目录前缀。 | 每段按 `unicode.IsSpace` 把所有空白替换为 `-`（含非 ASCII 空格），让 URL 无需转义；不做其他改写。 |
-| `ObjectPath` | Asset → 实际图片路径；非空 Path 优先，否则 `LegacyObjectPath`。 | 纯函数，调用方先验证 Asset；导入、preview、verify、引用计数、URL 均使用它，不能重新假设 canonical。 |
+| `ObjectPath` | Asset → 实际图片路径；非空 Path 优先，无 hash 时用 `AssetObjectPath`，旧有 hash 且无 Path 时用 `LegacyObjectPath`。 | 纯函数，调用方先验证 Asset；导入、preview、verify、引用计数、URL 均使用它，不能重新假设 canonical。 |
 | `(Location).Validate` | 检查非空安全 branch、支持 backend 和 backend-specific 字段。 | localgit 必须绝对 path 且无 owner/name；github 必须 owner/name 且无 path。这里不是完整 Git branch validator，adapter 继续验证；不保存 token。 |
 | `(Location).RemoteURL`、`CloneDir` | GitHub Location → HTTPS clone URL；stateDir → `<state-dir>/clone`。 | 不携带凭据，复用同一位置派生规则，避免 CLI/Web 各自拼地址。 |
 
@@ -102,7 +102,7 @@
 | 精确符号 | 作用、输入与输出 | 副作用、错误与设计理由 |
 | --- | --- | --- |
 | `readMetadata` | Reader、tree entry、上限 → metadata bytes。 | 必须是 `100644/blob`、大小合法；限量读并 Close，校验实际长度等于 tree size。读取/关闭失败向上传递。 |
-| `ReadSnapshot` | Reader、固定 HEAD → manifest、Assets、tree、完整 Entries。 | 验证安全/重复路径、完整 metadata、UUID/文件名、hash 描述、真实 ObjectPath 引用的 blob/mode/size；v1 非空 path 拒绝，v2/v3 允许 canonical 与 explicit 混用。图片接受普通 `100644/100755`，不接受 symlink。无 manifest 为 uninitialized；失败不写 cache，不下载全部图片。Asset metadata 每批最多 8 个并发读取，单线程按 `Entries` 顺序解码和校验；错误或取消后不再启动新读取，按原顺序返回第一个错误。 |
+| `ReadSnapshot` | Reader、固定 HEAD → manifest、Assets、tree、完整 Entries。 | 验证安全/重复路径、完整 metadata、UUID/文件名、hash 描述、真实 ObjectPath 引用的 blob/mode/size；v1 非空 path 拒绝，v2/v3 允许显式 Path 与旧 canonical/导入路径混用。图片接受普通 `100644/100755`，不接受 symlink。无 manifest 为 uninitialized；失败不写 cache，不下载全部图片。Asset metadata 每批最多 8 个并发读取，单线程按 `Entries` 顺序解码和校验；错误或取消后不再启动新读取，按原顺序返回第一个错误。 |
 | `ReadSnapshotReusing` | Reader、候选 HEAD、已完整验证的 base Snapshot → Snapshot。 | 仅当 manifest 或某条 asset metadata 的完整 Git entry（path/type/mode/size/SHA）与 base 相同才复用其解析结果；新增或变化的条目仍从候选 SHA 读取。候选的引用、版本、重复与冲突校验全部重跑。只用于刚刚成功读取的 base（正常 commit），journal 恢复仍用 `ReadSnapshot`。 |
 
 ### [`planner.go`](../internal/repository/planner.go)
@@ -215,7 +215,7 @@
 | `mutable` | 检查 State 是否允许 stage mutation。 | 有未解 publication 返回 conflict；没有 committed manifest/head 提示先 sync。禁止一边恢复旧候选一边修改其 durable stage。 |
 | `bindBase` | 按 Changes 更新 State.BaseHead。 | 空 stage 清 base；第一条 change 绑定当前 Head，后续 change 不漂移 base。只改内存。 |
 | `(*Service).cleanup` | State → 清理无 staged 引用 payload。 | 从带 Asset 的 changes 构造绝对 PayloadPath 集合，再调用 staging.Cleanup；共享 payload 被任一 staged 引用时保留。 |
-| `(*Service).Add` | 一批Input与AddOptions → added AssetViews。 | 持锁、Load/mutable、逐个Ingest/Install、新UUID/UTC时间、规范列表，最后一次Save；默认canonical，Directory非空校验并设置`<directory>/<hash>.<ext>`显式Path。整批失败不留下部分stage；按旧引用清理payload。内容重复仍独立UUID，placement是否共享看完整path。 |
+| `(*Service).Add` | 一批Input与AddOptions → added AssetViews。 | 持锁、Load/mutable、逐个Ingest/Install、新UUID/UTC时间、规范列表，最后一次Save；默认使用同一批次的时间戳文件名和显式Path，Directory 非空时加目录前缀。整批失败不留下部分stage；按旧引用清理payload。内容重复仍独立UUID，placement是否共享看完整path。 |
 | `union` | base Assets + staged adds → selector 候选 map。 | 刻意保留 staged-delete 的 base ID；供 Edit/Remove 区分 delete→edit 冲突和重复 rm 幂等，而非将两者都误报 not found。 |
 | `overlay` | State → 按 CreatedAt/ID 排序的 AssetView 列表。 | 在 union 上应用 update/delete，隐藏已删记录，标 `added/modified/committed`；纯内存视图，不移动 base。 |
 | `(*Service).List` | Load 后返回 overlay。 | 只读本地cache+workspace；CLI ls/find不隐式sync。 |
@@ -549,11 +549,11 @@ Bash 部分负责参数/依赖检查、创建默认临时目录、关闭网络�
 | `assets` | 检查全为 committed，并按 UUID 比较完整 Asset metadata，而非只比较长度。 |
 | `clean` | 要求 status changes=[]，判断没有未发布修改。 |
 | `verify` | 要求 verifier 的 head/assets/objects 与真实 Git 和预期一致。 |
-| `placement` | 要求 Asset metadata 记录 `objects/<namespace>/<uuid>.<ext>`，用于检查 UUID 路径归属与末引用删除。 |
+| `placement` | 要求 Asset metadata 记录实际 Path；旧记录无 Path 时回退 UUID 或 legacy hash 布局，用于检查归属与末引用删除。 |
 | `filesystem_state` | 记录 scratch 树条目、mode、size、mtime，证明非空目标拒绝没有写入。 |
 | `main` | 按四图单批提交→fresh device→stale edit conflict→末引用删除→scratch SQLite 重建→Unicode stdin→delivery preflight→拒绝重跑的顺序完成验收。保留结果并打印可继续操作的命令；不接触 token、不清历史。 |
 
-`examples/images/` 三张 64×48 RGB PNG 为自生成红/绿/蓝图案，hash 不同；重复 add red 产生两个独立 Asset/UUID 路径与一个共享 Git blob，不额外复制 fixture。用户 `logo/touko-logo.png` 不属于脚本生成物，只有用户执行打印的 add 命令时才被读取。
+`examples/images/` 三张 64×48 RGB PNG 为自生成红/绿/蓝图案，hash 不同；重复 add red 产生两个独立 Asset/UUID 与两个时间戳路径，但共享 Git blob，不额外复制 fixture。用户 `logo/touko-logo.png` 不属于脚本生成物，只有用户执行打印的 add 命令时才被读取。
 
 ## 14. `internal/webview`：本地图库边界与浏览器控制器
 

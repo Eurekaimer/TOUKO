@@ -203,7 +203,7 @@ LEGACY_STATE="$HOME/.local/share/touko-legacy"
 /tmp/touko reset --staged
 ```
 
-最后一个**实际完整路径**引用删除才删当前 tree 的 binary；默认 canonical 路径包含 namespace，自定义路径和旧图路径则按各自完整路径计数。`rm` 不擦 Git 历史，不承诺 CDN 全球缓存立刻失效。对 staged add 执行 rm 只是取消新增；已 staged-delete 再 rm 幂等，但 delete→edit 是冲突，不隐式恢复。
+最后一个**实际完整路径**引用删除才删当前 tree 的 binary；默认时间戳路径不含 namespace，`--directory` 只加目录前缀，旧 canonical/自定义/导入路径按各自完整路径计数。`rm` 不擦 Git 历史，不承诺 CDN 全球缓存立刻失效。对 staged add 执行 rm 只是取消新增；已 staged-delete 再 rm 幂等，但 delete→edit 是冲突，不隐式恢复。
 
 另一个设备或 state-dir：
 

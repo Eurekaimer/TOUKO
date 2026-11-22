@@ -242,6 +242,18 @@ not thresholds. Warm page cache and this synthetic corpus apply.
 rewrite repository metadata. This baseline records that shape; it does not make
 those operations targets for speculative optimization.
 
+### Local preview when the clone lags the indexed HEAD
+
+A real 202-image gallery was served read-only from `serve --no-open` on the same
+host. Its GitHub clone was one commit behind the indexed HEAD, so the old code
+could not read the indexed Git objects and fell back to GitHub API blob reads.
+After the local working-tree verification fix, 20 sequential
+`GET /api/assets/<id>/image` requests took **0.227 s** total, one cold request
+took **8 ms**, and an `If-None-Match` revalidation returned 304 in **2 ms**.
+The same 20-image sequence took **98.4 s** before the fix. These are local clone,
+hash verification and loopback HTTP measurements; they exclude GitHub/R2
+transfer latency and browser rendering.
+
 ### Remote-path comparison with injected latency
 
 Four behaviours cannot be measured by the local CLI harness, so they were

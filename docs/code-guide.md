@@ -16,7 +16,7 @@
 | 内容 SHA-256 | `domain.ObjectHash [32]byte` | 原始输入 bytes 的内容身份，文本是 64 位小写十六进制 | 不是 Asset ID，也不是 Git blob ID |
 | Git 对象 SHA | `domain.RepositoryHead`、`repository.BlobID`、`repository.TreeID` | commit、blob、tree 的 Git 身份；当前后端采用 SHA-1 Git 仓库 | 不等于直接对图片 bytes 求 SHA-256 |
 
-例如，连续两次默认添加同一图片会生成两个UUID，Object.Hash相同、Git 可能复用同一个 blob，但两条 Asset 各自拥有独立的 `objects/<namespace>/<uuid>.<ext>` placement。相同bytes放在不同显式目录仍是不同路径。只改title会改变metadata的Git blob和新commit，不改变图片SHA-256、路径或Asset UUID。
+例如，连续两次默认添加同一图片会生成两个 UUID；若都计算 SHA-256，Object.Hash 相同、Git 可能复用同一个 blob，但两条 Asset 各自拥有独立的时间戳 placement（默认在仓库根，指定目录时在目录下）。相同 bytes 放在不同显式目录仍是不同路径。只改 title 会改变 metadata 的 Git blob 和新 commit，不改变图片 SHA-256、路径或 Asset UUID。
 
 `RepositoryID` 保存在 `.touko/repository.json`。它用于识别“同一个 gallery”，而不是识别 Git 托管平台。`sameRepository` 会阻止把一个不同 RepositoryID 的快照悄悄覆盖到现有缓存中。
 
@@ -104,15 +104,17 @@ flowchart TD
 
 ### 3.2 repository：持久化格式与 Git 协议，不是通用云存储框架
 
-`format.go` 负责稳定 JSON、字段校验及大小限制；`path.go` 区分 canonical 新放置与实际图片路径：
+`format.go` 负责稳定 JSON、字段校验及大小限制；`path.go` 区分时间戳新放置、显式路径与旧兼容路径：
 
 ```text
 .touko/repository.json
 .touko/assets/<asset-uuid>.json
-objects/<namespace>/<asset-uuid>.<ext>（旧仓库仍按 sha256/<前2位>/<接着2位>/<完整hash>.<ext> 读取无显式 path 的 Asset）
+<timestamp>.<ext>（默认上传；指定目录时为 <directory>/<timestamp>.<ext>）
+objects/<namespace>/<asset-uuid>.<ext>（旧 Asset ID 布局，兼容读取/迁移目标）
+objects/<namespace>/sha256/<前2位>/<接着2位>/<完整hash>.<ext>（旧无显式 path 的回退）
 ```
 
-`ObjectPath(asset)` 优先取非空 `Asset.Path`，否则按 legacy SHA-256 路径回退。默认上传使用 `objects/<namespace>/<asset-uuid>.<ext>`；`--directory` 上传使用 `<directory>/<asset-uuid>.<ext>`，导入 PicGo 则保留原路径，不搬动、不重传 bytes。所有读取、删除、引用计数与 URL 都必须使用实际路径，不能各处重新假设 canonical。
+`ObjectPath(asset)` 优先取非空 `Asset.Path`，否则按 `AssetObjectPath`（无 hash）或 legacy SHA-256 路径回退。新上传总是写入显式 Path：默认是仓库根的 `YYYYMMDDHHMMSS-xxxx.<ext>`，`--directory` 时是 `<directory>/<timestamp>.<ext>`；导入 PicGo 则保留原路径，不搬动、不重传 bytes。所有读取、删除、引用计数与 URL 都必须使用实际路径，不能各处重新假设 canonical。
 
 `EncodeAsset` 将时间归一为 UTC，空 tags/collections 编码为 `[]`，JSON 末尾有换行。解码拒绝未知字段和尾随 JSON；manifest 最大 64 KiB，单条 metadata 最大 1 MiB。读取支持 format v1/v2/v3，均要求 SHA-256；v1 禁止非空 path。新仓库 init v1，首个上传发布原子升级 v2；路径迁移原子升级 v3，让旧客户端在可能删除旧 R2 key 前拒绝读取。正常提交不降级。Ingest 计算 SHA-256，staging、`VerifyObject` 和 R2 用于完整性验证。
 
@@ -323,9 +325,9 @@ hash/size 不符是 `ErrHashMismatch`，格式或描述冲突是 repository corr
 
 ## 6. 设计取舍：为什么先选择这些限制
 
-### namespace 是物理路由，不只是筛选标签
+### namespace 是筛选标签，默认不进入路径
 
-默认 canonical 路由下，`blog` 与 `notes` 中相同 bytes 拥有同一 SHA-256，但路径不同；引用计算必须按完整 path，否则会误删某个 namespace 的副本。显式 `Asset.Path` 则直接指定真实位置，namespace 不会搬动它；多个 namespace 的记录也可能引用同一原路径。
+默认时间戳放置不把 namespace 写进路径，但每次上传的时间戳不同；引用计算必须按完整 path，否则会误删某个目录或旧布局的副本。显式 `Asset.Path` 直接指定真实位置，namespace 不会搬动它；多个 namespace 的记录也可能引用同一原路径。
 
 Git 底层可以为相同 bytes 复用 blob ID；这是 Git 对象去重，不改变 placement 规则。修改路由须同时检查 `ObjectPath`、完整路径引用、format v1/v2/v3 与发布候选验证，不能只改 `AssetObjectPath`。
 
