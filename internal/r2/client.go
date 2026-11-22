@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	headTimeout = 15 * time.Second
+	headTimeout = 60 * time.Second
 	putTimeout  = 5 * time.Minute
 
 	metadataRepositoryID = "touko-repository-id"

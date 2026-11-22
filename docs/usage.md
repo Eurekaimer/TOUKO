@@ -169,7 +169,7 @@ cat logo/touko-logo.png | /tmp/touko add - --name '剪贴板.png' --namespace no
 /tmp/touko commit -m 'images: upload into images/blog'
 ```
 
-`--directory` 是**仓库内目标目录**，留空使用根目录。文件名是进入暂存时的 Unix 纳秒数，冲突加 `-N`。目录空格换成 `-`，必须是安全的相对 POSIX 路径。重复上传是不同 Asset 和路径，但 Git 可共享同一 blob。`add --hash` 可为本次上传记录 SHA-256；默认不算。
+`--directory` 是**仓库内目标目录**，留空使用根目录。默认文件名是进入暂存时的 `YYYYMMDDHHMMSS-xxxx`，`xxxx` 为同秒冲突递增的四位后缀。`--keep-name` 保留上传文件名，`--filename NAME` 指定单张图片的文件名；两者都会把扩展名换成实际存储格式。目录空格换成 `-`，必须是安全的相对 POSIX 路径。重复上传是不同 Asset 和路径，但 Git 可共享同一 blob。`add --hash` 可为本次上传记录 SHA-256；默认不算。
 
 ### 原地导入旧图库 / PicGo
 

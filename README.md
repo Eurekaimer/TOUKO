@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.eurekaimer.icu/objects/default/005181d9-b6c0-4a0e-84cf-eb4de76f998a.webp" alt="TOUKO" width="220" />
+<img src="https://img.eurekaimer.icu/20261018103503-0000.webp" alt="TOUKO" width="220" />
 
 # TOUKO
 
@@ -16,7 +16,7 @@
 
 TOUKO 是一个以 Git 仓库为数据源的图片库。图片字节和元数据都进仓库，GitHub 负责托管；默认用 jsDelivr 分发，也可以开启可选的 Cloudflare R2 镜像。本地 SQLite 只做读取缓存，删掉后能从仓库重建。
 
-图片先进入暂存区，`commit` 才发布。新图以入暂存区时的 Unix 纳秒时间戳命名，同批冲突自动加序号；留空目录就在仓库根目录。Asset UUID 仍是记录身份。SHA-256 默认关闭，可在上传时打开，或在设置中开启后台归档和查重。
+图片先进入暂存区，`commit` 才发布。默认以入暂存区时的 `YYYYMMDDHHMMSS-xxxx` 时间戳命名，同秒冲突自动递增后缀；上传时可关闭时间戳，保留原始文件名或填写自定义文件名。留空目录就在仓库根目录。Asset UUID 仍是记录身份。SHA-256 默认关闭，可在上传时打开，或在设置中开启后台归档和查重。
 
 ## 功能
 

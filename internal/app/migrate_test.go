@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -532,6 +533,20 @@ func TestMigratePathsCloudflareUploadsBeforeSwitchAndRetainsOldKeys(t *testing.T
 		oldPath = repository.LegacyObjectPath(a.Namespace, a.Object)
 		newPath = repository.TimestampObjectPath(a.CreatedAt.UTC(), a.Object.Ext, 0)
 	}
+	oldEntry, err := findEntry(ctx, r, oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldBody, err := r.OpenBlob(ctx, repository.BlobID(oldEntry.SHA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldBytes, err := io.ReadAll(oldBody)
+	closeErr := oldBody.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("read old object: %v %v", err, closeErr)
+	}
+	fake.setOwned(oldPath, oldBytes, testRepositoryID(t, ctx, s).String(), testSourceID(), "etag-old")
 
 	result, err := s.MigratePaths(ctx, r, false, false)
 	if err != nil {
@@ -1066,7 +1081,8 @@ func TestMigrationPlanAllowsMissingKnownSHA(t *testing.T) {
 func TestWriteURLMapping(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "migration")
 	items := []MigrateItem{
-		{AssetID: "a", OldPath: "objects/x/sha256/aa/bb/h.png", NewPath: "objects/x/a.png", OldGitHub: "u1", NewGitHub: "u2", OldR2: "r1", NewR2: "r2", SHA256: "abc", SizeBytes: 12, Status: "migrated"},
+		{AssetID: "a", OldPath: "objects/x/sha256/aa/bb/h.png", NewPath: "objects/x/a.png", OldGitHub: "u1", NewGitHub: "u2", OldR2: "r1", NewR2: "r2", SHA256: "abc", SizeBytes: 12, Status: "migrated",
+			Aliases: []MigrateAlias{{Path: "objects/x/old.png", GitHub: "u0", R2: "r0"}}},
 		{AssetID: "b", OldPath: "objects/x/b.png", NewPath: "objects/x/b.png", Status: "unchanged"},
 	}
 	csvPath, jsonPath, err := WriteURLMapping(context.Background(), dir, items)
@@ -1078,10 +1094,10 @@ func TestWriteURLMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := csv.NewReader(bytes.NewReader(data)).ReadAll()
-	if err != nil || len(rows) != 3 {
+	if err != nil || len(rows) != 4 {
 		t.Fatalf("csv rows = %d: %v", len(rows), err)
 	}
-	if rows[0][0] != "asset_id" || rows[1][8] != "migrated" || rows[1][7] != "12" || rows[2][8] != "unchanged" || rows[0][10] != "sha256" {
+	if rows[0][0] != "asset_id" || rows[1][8] != "migrated" || rows[1][7] != "12" || rows[3][8] != "unchanged" || rows[0][10] != "sha256" || rows[2][1] != "objects/x/old.png" {
 		t.Fatalf("csv content: %#v", rows)
 	}
 	raw, err := os.ReadFile(jsonPath)
@@ -1089,7 +1105,7 @@ func TestWriteURLMapping(t *testing.T) {
 		t.Fatalf("json mapping: %v %s", err, raw)
 	}
 	var decoded []MigrateItem
-	if err := json.Unmarshal(raw, &decoded); err != nil || len(decoded) != 2 {
+	if err := json.Unmarshal(raw, &decoded); err != nil || len(decoded) != 3 {
 		t.Fatalf("json mapping: %v %#v", err, decoded)
 	}
 }

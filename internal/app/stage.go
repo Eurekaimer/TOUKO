@@ -28,6 +28,12 @@ type AddOptions struct {
 	Tags, Collections []string
 	ConvertWebP       bool
 	WebPQuality       int
+	// KeepOriginalName uses the uploaded filename instead of the staging
+	// timestamp. Filename overrides it when both are set.
+	KeepOriginalName bool
+	// Filename is a repository basename without a directory. Its extension is
+	// replaced with the actual stored format.
+	Filename string
 	// ComputeHash records the SHA-256 of the published bytes. It is off by
 	// default: the timestamp path is the upload's identity, and hashing is an
 	// extra pass a caller must ask for.
@@ -124,7 +130,7 @@ func (s *Service) Add(ctx context.Context, inputs []Input, opts AddOptions) ([]A
 		if err != nil {
 			return nil, err
 		}
-		item, err := PrepareInput(result, input.Name, AddOptions{Namespace: ns, Directory: opts.Directory, Title: opts.Title, Tags: opts.Tags, Collections: opts.Collections})
+		item, err := PrepareInput(result, input.Name, AddOptions{Namespace: ns, Directory: opts.Directory, Title: opts.Title, Tags: opts.Tags, Collections: opts.Collections, KeepOriginalName: opts.KeepOriginalName, Filename: opts.Filename})
 		if err != nil {
 			_ = os.Remove(result.TempPath)
 			return nil, err

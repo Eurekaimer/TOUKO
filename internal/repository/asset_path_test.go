@@ -38,31 +38,38 @@ func TestAssetObjectPathUsesIdentityNotContent(t *testing.T) {
 
 func TestTimestampObjectPathUsesStagingClock(t *testing.T) {
 	at := time.Date(2026, 11, 22, 10, 23, 45, 123456789, time.UTC)
-	stamp := strconv.FormatInt(at.UnixNano(), 10)
-	if got := TimestampObjectPath(at, "webp", 0); got != stamp+".webp" {
+	stamp := at.Format("20060102150405")
+	if got := TimestampObjectPath(at, "webp", 0); got != stamp+"-0000.webp" {
 		t.Fatalf("path = %q", got)
 	}
-	if got := TimestampObjectPath(at, "png", 3); got != stamp+"-3.png" {
+	if got := TimestampObjectPath(at, "png", 3); got != stamp+"-0003.png" {
 		t.Fatalf("collision path = %q", got)
 	}
-	for _, value := range []string{stamp + ".webp", stamp + "-1.webp", "images/" + stamp + "-12.webp"} {
+	for _, value := range []string{stamp + "-0000.webp", stamp + "-0001.webp", "images/" + stamp + "-0012.webp"} {
 		if !IsTimestampObjectPath(value, "webp") {
 			t.Fatalf("valid timestamp path rejected: %q", value)
 		}
 	}
+	legacy := strconv.FormatInt(at.UnixNano(), 10)
 	for _, tc := range []struct{ value, ext string }{
 		{stamp, "webp"},
 		{stamp + ".png", "webp"},
-		{"0" + stamp + ".webp", "webp"},
+		{"0" + stamp + "-0000.webp", "webp"},
 		{stamp + "-.webp", "webp"},
 		{stamp + "-0.webp", "webp"},
 		{stamp + "-01.webp", "webp"},
+		{stamp + "-00000.webp", "webp"},
 		{stamp + ".webp", ""},
+		{"20261301000000-0000.webp", "webp"},
+		{legacy + ".webp", "webp"},
 		{"img/photo.webp", "webp"},
 	} {
 		if IsTimestampObjectPath(tc.value, tc.ext) {
 			t.Fatalf("invalid timestamp path accepted: %q (%q)", tc.value, tc.ext)
 		}
+	}
+	if !IsLegacyTimestampObjectPath(legacy+".webp", "webp") || !IsLegacyTimestampObjectPath(legacy+"-2.webp", "webp") {
+		t.Fatal("previous Unix-nanosecond plan names must stay readable")
 	}
 }
 

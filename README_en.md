@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.eurekaimer.icu/objects/default/005181d9-b6c0-4a0e-84cf-eb4de76f998a.webp" alt="TOUKO" width="220" />
+<img src="https://img.eurekaimer.icu/20261018103503-0000.webp" alt="TOUKO" width="220" />
 
 # TOUKO
 
@@ -16,7 +16,7 @@ Keep your pictures in a Git repository you own.
 
 TOUKO is an image library backed by a Git repository. Image bytes and metadata live in the repository, GitHub hosts it, and jsDelivr serves the default public URLs. An optional Cloudflare R2 mirror can serve the same bytes from your own domain. The local SQLite database is a read cache; delete it and the library rebuilds from the repository.
 
-Uploads enter staging first; `commit` publishes them. New filenames use the Unix nanosecond staging time with a suffix on collision and live at the repository root unless you choose a directory. Asset UUIDs remain stable identities. SHA-256 is off by default and can be enabled per upload or archived in the background for duplicate detection.
+Uploads enter staging first; `commit` publishes them. New filenames use the readable `YYYYMMDDHHMMSS-xxxx` staging time by default, with an incrementing suffix for same-second collisions. You can turn timestamps off to keep original names or choose a custom filename. Unprefixed files live at the repository root unless you choose a directory. Asset UUIDs remain stable identities. SHA-256 is off by default and can be enabled per upload or archived in the background for duplicate detection.
 
 ## Features
 

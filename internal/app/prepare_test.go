@@ -96,9 +96,17 @@ func TestAddAssignsStagingTimePathsAndOptionalHash(t *testing.T) {
 	if !hashed[0].Asset.Object.HasHash() || hashed[0].Asset.Object.Hash != domain.ObjectHash(sha256.Sum256(data)) {
 		t.Fatalf("opt-in digest: %+v", hashed[0].Asset.Object)
 	}
+	kept, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(data), Name: "original name.png"}}, AddOptions{Namespace: "blog", KeepOriginalName: true})
+	if err != nil || kept[0].Asset.Path != "original name.png" {
+		t.Fatalf("keep original name: %+v, %v", kept, err)
+	}
+	named, err := s.Add(ctx, []Input{{Reader: bytes.NewReader(data), Name: "ignored.png"}}, AddOptions{Namespace: "blog", Filename: "custom.name.jpg"})
+	if err != nil || named[0].Asset.Path != "custom.name.png" {
+		t.Fatalf("custom name did not use the stored format: %+v, %v", named, err)
+	}
 }
 
-func TestAllocateTimestampPathsResolvesSharedNanosecond(t *testing.T) {
+func TestAllocateTimestampPathsResolvesSharedSecond(t *testing.T) {
 	at := time.Date(2026, 11, 22, 10, 23, 45, 123456789, time.UTC)
 	object := domain.ContentObject{MIME: "image/png", Ext: "png", Size: 10, Width: 1, Height: 1}
 	inputs := make([]PreparedInput, 4)
@@ -115,7 +123,7 @@ func TestAllocateTimestampPathsResolvesSharedNanosecond(t *testing.T) {
 		t.Fatalf("first path = %q", got)
 	}
 	if got := inputs[1].Asset.Path; got != repository.TimestampObjectPath(at, "png", 1) {
-		t.Fatalf("shared nanosecond did not take the next suffix: %q", got)
+		t.Fatalf("shared timestamp did not take the next suffix: %q", got)
 	}
 	if got := inputs[2].Asset.Path; got != repository.TimestampObjectPath(at, "png", 2) {
 		t.Fatalf("shared collision counter did not advance: %q", got)

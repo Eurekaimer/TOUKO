@@ -17,7 +17,8 @@ import (
 func (r *runtime) addCommand() *cobra.Command {
 	var namespace, directory, title, name, output string
 	var tags, collections []string
-	var convertWebP, computeHash bool
+	var convertWebP, computeHash, keepName bool
+	var filename string
 	var webpQuality int
 	cmd := &cobra.Command{Use: "add FILE...", Short: "Stage images, or read one image from stdin with add -", Args: arguments(cobra.MinimumNArgs(1)), RunE: func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("output") && r.json {
@@ -51,10 +52,14 @@ func (r *runtime) addCommand() *cobra.Command {
 		opts := app.AddOptions{
 			Namespace: ns, Directory: directory, Tags: tags, Collections: collections,
 			ConvertWebP: convertWebP, WebPQuality: webpQuality,
+			KeepOriginalName: keepName, Filename: filename,
 			ComputeHash: computeHash,
 		}
 		if cmd.Flags().Changed("title") {
 			opts.Title = &title
+		}
+		if filename != "" && len(args) > 1 {
+			return usage("--filename can name only one image")
 		}
 		inputs := make([]app.Input, 0, len(args))
 		files := make([]*os.File, 0, len(args))
@@ -126,6 +131,8 @@ func (r *runtime) addCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&convertWebP, "webp", false, "Convert PNG/JPEG uploads to WebP when that reduces bytes; GIF and WebP stay unchanged")
 	cmd.Flags().IntVar(&webpQuality, "webp-quality", ingest.DefaultWebPQuality, "WebP quality 1-100 (with --webp)")
 	cmd.Flags().BoolVar(&computeHash, "hash", false, "Compute and record SHA-256 for this upload")
+	cmd.Flags().BoolVar(&keepName, "keep-name", false, "Use the uploaded filename instead of the staging timestamp")
+	cmd.Flags().StringVar(&filename, "filename", "", "Use NAME instead of the staging timestamp (one image)")
 	return cmd
 }
 

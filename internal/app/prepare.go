@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Eurekaimer/TOUKO/internal/domain"
@@ -107,7 +109,7 @@ func optionNamespace(opts AddOptions) (domain.Namespace, error) {
 // It performs no staging or repository access, so callers can prepare a batch,
 // preview its capacity, and then install it through AddPrepared. The object path
 // is deliberately left empty: only the service lock knows the actual staging
-// time, and only then can a batch resolve same-nanosecond collisions exactly.
+// time, and only then can a batch resolve same-second collisions exactly.
 func PrepareInput(result image.Result, name string, opts AddOptions) (PreparedInput, error) {
 	if err := result.Object.Validate(); err != nil {
 		return PreparedInput{}, err
@@ -130,7 +132,37 @@ func PrepareInput(result image.Result, name string, opts AddOptions) (PreparedIn
 	}
 	now := time.Now().UTC()
 	a := domain.Asset{ID: id, Namespace: ns, Object: result.Object, OriginalName: original, Title: title, Tags: normalize(opts.Tags), Collections: normalize(opts.Collections), CreatedAt: now, UpdatedAt: now}
+	filename := opts.Filename
+	if filename == "" && opts.KeepOriginalName {
+		filename = original
+	}
+	if filename != "" {
+		stored, err := uploadFilename(filename, result.Object.Ext)
+		if err != nil {
+			return PreparedInput{}, err
+		}
+		a.Path = stored
+		if opts.Directory != "" {
+			a.Path = path.Join(repository.DirectoryPath(opts.Directory), stored)
+		}
+		if err := domain.ValidateRepositoryPath(a.Path); err != nil {
+			return PreparedInput{}, err
+		}
+	}
 	return PreparedInput{Asset: a, Payload: result, Directory: opts.Directory}, nil
+}
+
+// uploadFilename keeps the chosen stem but always uses the stored format, so a
+// PNG converted to WebP cannot publish a .png name over WebP bytes.
+func uploadFilename(name, ext string) (string, error) {
+	if strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("upload filename %q must not contain a directory", name)
+	}
+	base := strings.TrimSuffix(name, path.Ext(name))
+	if base == "" || base == "." || base == ".." {
+		return "", fmt.Errorf("invalid upload filename %q", name)
+	}
+	return base + "." + ext, nil
 }
 
 func validatePrepared(inputs []PreparedInput, requirePayload bool) error {
@@ -191,8 +223,8 @@ func occupiedObjectPaths(st index.State, base *repository.Snapshot) map[string]d
 
 // allocateTimestampPaths assigns one exact repository path per prepared input
 // and is only called while the service lock is held. A batch shares one staging
-// timestamp; inputs that land in the same nanosecond step through the shared
-// "-N" collision suffix so no two assets ever own one path. Inputs that already
+// timestamp; inputs that land in the same second step through the shared
+// four-digit collision suffix so no two assets ever own one path. Inputs that already
 // carry a path (explicit imports) are left alone.
 func allocateTimestampPaths(inputs []PreparedInput, at time.Time, occupied map[string]domain.ContentObject) error {
 	for i := range inputs {
@@ -205,7 +237,7 @@ func allocateTimestampPaths(inputs []PreparedInput, at time.Time, occupied map[s
 			prefix = repository.DirectoryPath(inputs[i].Directory) + "/"
 		}
 		assigned := false
-		for collision := 0; collision < 1<<20; collision++ {
+		for collision := 0; collision < 10_000; collision++ {
 			candidate := prefix + repository.TimestampObjectPath(at, a.Object.Ext, collision)
 			if _, taken := occupied[candidate]; taken {
 				continue

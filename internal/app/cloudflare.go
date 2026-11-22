@@ -69,6 +69,9 @@ type CloudflareOptions struct {
 	// uploads them here before metadata switches. Each asset carries its exact
 	// destination in Path, so a hashless target is never guessed from an ID.
 	ExtraAssets []domain.Asset
+	// OnlyExtra reconciles just ExtraAssets. Migration uses it so a pending
+	// legacy key cannot block uploading the new targets; deletes are suppressed.
+	OnlyExtra bool
 }
 
 type CloudflareItem struct {
@@ -223,6 +226,17 @@ func (s *Service) cloudflareSyncLocked(ctx context.Context, r repository.Git, op
 	}
 	if err = mergeExtraRefs(refs, snapshot, opts.ExtraAssets); err != nil {
 		return cloudflareUnavailable(cloudflareCodeSourceUnavailable, nil), err
+	}
+	if opts.OnlyExtra {
+		extra := make(map[string]bool, len(opts.ExtraAssets))
+		for _, asset := range opts.ExtraAssets {
+			extra[repository.ObjectPath(asset)] = true
+		}
+		for path := range refs {
+			if !extra[path] {
+				delete(refs, path)
+			}
+		}
 	}
 	ledger, entries, err := s.cloudflareLedger(ctx, cfg, snapshot.Manifest.ID, cloudflareSourceID(location))
 	if err != nil {

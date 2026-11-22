@@ -1,6 +1,6 @@
 # URL 迁移：从旧路径到时间戳
 
-新图默认使用 `<unix-nanoseconds>[-<collision>].<ext>`。已有图从其 `created_at` 分配稳定的时间戳文件名，冲突加序号。已使用时间戳的路径，包括自定义上传目录中的路径，会原样保留。GitHub Raw、jsDelivr 和 Cloudflare R2 仍按实际路径生成 URL。
+新图默认使用 `<YYYYMMDDHHMMSS>-<xxxx>.<ext>`。已有图从其 `created_at` 分配稳定的可读时间戳文件名，同秒冲突递增四位后缀。上一版 Unix 纳秒名字会被再次迁移，并作为历史别名保留。已使用可读时间戳的路径，包括自定义上传目录中的路径，会原样保留。GitHub Raw、jsDelivr 和 Cloudflare R2 仍按实际路径生成 URL。
 
 迁移分两次提交完成，任何一次失败都不会让旧 metadata 指向不存在的新对象，也不会删除旧对象：
 
@@ -59,6 +59,8 @@ url-mapping.csv    asset_id, old_path, new_path, old_github_url, new_github_url,
                    old_r2_url, new_r2_url, size_bytes, status, error, sha256
 url-mapping.json   同一内容的数组，便于脚本处理
 ```
+
+每个历史路径都会写成独立行：旧内容哈希路径、Asset ID 路径、上一版纳秒路径都指向同一个最终时间戳路径，重写脚本不需要自己推断别名。
 
 两个文件用原子替换写入；失败或崩溃不会留下半份映射。只有本次存在至少一个 `old_path != new_path` 的条目时才写映射；全新仓库的空操作不会生成没有可用变更的映射。`--output DIR` 可改写映射输出目录。
 

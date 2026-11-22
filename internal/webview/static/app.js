@@ -1286,6 +1286,9 @@ function assetPath(asset) {
   const hash = asset.object.hash;
   return `objects/${asset.namespace}/sha256/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}.${asset.object.ext}`;
 }
+function repositoryName(asset) {
+  return assetPath(asset).split("/").at(-1);
+}
 function visibleAssets() {
   if (!view) return [];
   const query = filters.query.trim().toLocaleLowerCase();
@@ -1719,7 +1722,8 @@ function openPreview(key) {
   $("asset-metadata").replaceChildren();
   for (const [label, value] of [
     ["来源仓库", view.members.length > 1 ? memberName(entry.workspace) : null],
-    ["文件名", asset.original_name],
+    ["仓库文件名", repositoryName(asset)],
+    ["原始文件名", asset.original_name],
     ["命名空间", asset.namespace],
     ["格式", asset.object.mime],
     ["尺寸", `${asset.object.width} × ${asset.object.height}`],
@@ -2059,6 +2063,7 @@ function openUpload(files) {
   }
   closeNavigation();
   // A non-text control is focused so Ctrl+V pastes an image instead of text.
+  $("upload-filename").disabled = $("upload-timestamp").checked;
   showDialog("upload-dialog", "upload-paste");
   if (files)
     setUploadFiles(files, $("upload-dialog").open && uploadFiles.length > 0);
@@ -2067,6 +2072,9 @@ function uploadFields() {
   const data = new FormData();
   data.append("namespace", $("upload-namespace").value.trim());
   data.append("directory", $("upload-directory").value.trim());
+  if (!$("upload-timestamp").checked) data.append("keep_name", "true");
+  const filename = $("upload-filename").value.trim();
+  if (filename) data.append("filename", filename);
   if ($("upload-hash").checked) data.append("compute_hash", "true");
   if ($("upload-webp").checked) {
     data.append("convert_webp", "true");
@@ -3575,6 +3583,9 @@ function bindEvents() {
     void loadHashSettings({ enabled: event.target.checked }),
   );
   $("hash-cache-check").addEventListener("click", () => void loadHashSettings({ duplicates: true }));
+  $("upload-timestamp").addEventListener("change", (event) => {
+    $("upload-filename").disabled = event.target.checked;
+  });
   $("settings-form").addEventListener("submit", saveCloudflareSettings);
   for (const [field, id] of [["ui_scale", "ui-scale"], ["font_scale", "font-scale"]]) {
     $(id).addEventListener("input", () => changeAppearance(field, Number($(id).value)));

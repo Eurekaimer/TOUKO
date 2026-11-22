@@ -47,8 +47,8 @@ func TestReadSnapshotAcceptsDistinctHashlessAssets(t *testing.T) {
 		width, height int
 		path          string
 	}{
-		{3, 2, "1789000000000000000.png"},
-		{4, 5, "1789000000000000000-1.png"},
+		{3, 2, "20261122102345-0000.png"},
+		{4, 5, "20261122102345-0001.png"},
 	} {
 		data := hashlessPNG(t, spec.width, spec.height)
 		object := domain.ContentObject{MIME: "image/png", Ext: "png", Size: int64(len(data)), Width: spec.width, Height: spec.height}

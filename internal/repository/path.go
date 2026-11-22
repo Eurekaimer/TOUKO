@@ -1,8 +1,8 @@
 package repository
 
 import (
+	"fmt"
 	"path"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -22,24 +22,22 @@ func AssetObjectPath(namespace domain.Namespace, id domain.AssetID, ext string) 
 	return "objects/" + string(namespace) + "/" + id.String() + "." + ext
 }
 
-// TimestampObjectPath names a new upload after the moment it was staged. The
-// decimal Unix nanosecond clock keeps the name human-readable and sortable
-// without hashing the bytes; collision > 0 appends the shared "-N" suffix that
-// resolves uploads staged in the same nanosecond. The name is relative to the
+// TimestampObjectPath names a new upload after the moment it was staged:
+// YYYYMMDDHHMMSS-xxxx, where xxxx is a four-digit collision suffix. The name is
+// readable and sortable without hashing the bytes. It is relative to the
 // caller's upload directory, so an unprefixed asset publishes at the repository
 // root and its R2 key is the basename alone.
 func TimestampObjectPath(at time.Time, ext string, collision int) string {
-	name := strconv.FormatInt(at.UnixNano(), 10)
-	if collision > 0 {
-		name += "-" + strconv.Itoa(collision)
+	if collision < 0 {
+		collision = 0
 	}
-	return name + "." + ext
+	return at.UTC().Format("20060102150405") + "-" + fmt.Sprintf("%04d", collision) + "." + ext
 }
 
 // IsTimestampObjectPath reports whether value's basename is a name produced by
 // TimestampObjectPath for ext. A directory prefix (an explicit upload
-// directory) is allowed; the timestamp digits themselves must be canonical, so
-// a leading zero or an empty collision suffix is rejected.
+// directory) is allowed. The timestamp must be a real canonical UTC date-time
+// and the suffix exactly four digits.
 func IsTimestampObjectPath(value, ext string) bool {
 	if value == "" || ext == "" {
 		return false
@@ -49,17 +47,47 @@ func IsTimestampObjectPath(value, ext string) bool {
 	if !strings.HasSuffix(name, suffix) {
 		return false
 	}
-	stamp, collision, hasCollision := strings.Cut(strings.TrimSuffix(name, suffix), "-")
-	if !decimalDigits(stamp) {
+	base := strings.TrimSuffix(name, suffix)
+	if len(base) != 19 || base[14] != '-' {
 		return false
 	}
-	// The generator only appends a suffix for collision > 0.
+	stamp, collision := base[:14], base[15:]
+	if !digits(stamp) || !digits(collision) {
+		return false
+	}
+	parsed, err := time.Parse("20060102150405", stamp)
+	return err == nil && parsed.Format("20060102150405") == stamp
+}
+
+// IsLegacyTimestampObjectPath recognizes the earlier Unix-nanosecond naming.
+// It exists only so a durable migration plan written by that version stays
+// readable; current migration treats those names as legacy and renames them.
+func IsLegacyTimestampObjectPath(value, ext string) bool {
+	if value == "" || ext == "" {
+		return false
+	}
+	suffix := "." + ext
+	name := path.Base(value)
+	if !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	stamp, collision, hasCollision := strings.Cut(strings.TrimSuffix(name, suffix), "-")
+	if len(stamp) < 16 || len(stamp) > 20 || !digits(stamp) {
+		return false
+	}
 	return !hasCollision || (collision != "0" && decimalDigits(collision))
 }
 
 // decimalDigits accepts a canonical non-negative decimal integer: digits only,
 // with no redundant leading zero.
 func decimalDigits(value string) bool {
+	if !digits(value) {
+		return false
+	}
+	return len(value) == 1 || value[0] != '0'
+}
+
+func digits(value string) bool {
 	if value == "" {
 		return false
 	}
@@ -68,7 +96,7 @@ func decimalDigits(value string) bool {
 			return false
 		}
 	}
-	return len(value) == 1 || value[0] != '0'
+	return true
 }
 
 // LegacyObjectPath is the content-addressed layout written before asset-id

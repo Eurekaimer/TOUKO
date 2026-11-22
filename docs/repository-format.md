@@ -4,7 +4,7 @@ A TOUKO repository is a Git tree. Git is the committed source of truth; no datab
 
 - `.touko/repository.json`: `{"format_version":1,"repository_id":"<lowercase UUID>","hash_algorithm":"sha256"}` (maximum 64 KiB). Versions 2 and 3 use the same fields; SHA-256 is the algorithm for digests that are present.
 - `.touko/assets/<lowercase asset UUID>.json`: one full Asset per file (maximum 1 MiB), stable JSON plus newline. Fields: `id,namespace,object,original_name,title,tags,collections,created_at,updated_at`, plus optional `path` in v2/v3. Object fields: `hash,mime,ext,size,width,height`. Timestamps are UTC RFC3339Nano. Empty tags/collections encode as `[]`.
-- Default new placement: `<unix-nanoseconds>[-<collision>].<ext>`, using the time the batch enters staging. An explicitly chosen directory prefixes that filename.
+- Default new placement: `<YYYYMMDDHHMMSS>-<xxxx>.<ext>`, using the UTC time the batch enters staging; `xxxx` is a four-digit collision suffix. An explicitly chosen directory prefixes that filename.
 
 `Asset.Path` is the actual repository-relative image path. Legacy records without it still derive `objects/<namespace>/sha256/aa/bb/<sha256>.<ext>`, so they require a digest. Explicit paths need not have a digest. Paths are normalized relative POSIX without traversal, backslashes, control characters, or `.git`/`.touko` segments. Unicode, spaces and extensionless filenames are supported; placements must be regular Git blobs.
 

@@ -1034,6 +1034,16 @@ func (b uploadBatch) options() (app.AddOptions, error) {
 			return app.AddOptions{}, usage("convert_webp must be true or false")
 		}
 	}
+	if value, ok := b.fields["keep_name"]; ok {
+		switch value {
+		case "true":
+			options.KeepOriginalName = true
+		case "false":
+		default:
+			return app.AddOptions{}, usage("keep_name must be true or false")
+		}
+	}
+	options.Filename = b.fields["filename"]
 	if value, ok := b.fields["compute_hash"]; ok {
 		switch value {
 		case "true":
@@ -1143,7 +1153,7 @@ func parseUploadBatch(w http.ResponseWriter, r *http.Request, baseDir string, ma
 			continue
 		}
 		switch name {
-		case "namespace", "directory", "title", "tags", "collections", "convert_webp", "webp_quality", "compute_hash":
+		case "namespace", "directory", "title", "tags", "collections", "convert_webp", "webp_quality", "compute_hash", "keep_name", "filename":
 		default:
 			return batch, usage("unknown multipart field %q", name)
 		}
@@ -1168,6 +1178,9 @@ func parseUploadBatch(w http.ResponseWriter, r *http.Request, baseDir string, ma
 	options, err := batch.options()
 	if err != nil {
 		return batch, err
+	}
+	if options.Filename != "" && len(raw) > 1 {
+		return batch, usage("a custom filename can name only one image")
 	}
 	for _, item := range raw {
 		payload, e := os.Open(item.path)

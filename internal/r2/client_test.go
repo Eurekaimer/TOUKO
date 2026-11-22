@@ -817,14 +817,14 @@ func TestPerOperationTimeoutsAndParentDeadline(t *testing.T) {
 	if len(calls) != 3 {
 		t.Fatalf("HTTP calls = %d, want 3 (HEAD, PUT, verify HEAD): %+v", len(calls), calls)
 	}
-	if calls[0].method != http.MethodHead || calls[0].remaining <= 14*time.Second || calls[0].remaining > 15*time.Second {
-		t.Fatalf("HEAD deadline window = %v, want about 15s", calls[0].remaining)
+	if calls[0].method != http.MethodHead || calls[0].remaining <= 59*time.Second || calls[0].remaining > 60*time.Second {
+		t.Fatalf("HEAD deadline window = %v, want about 60s", calls[0].remaining)
 	}
 	if calls[1].method != http.MethodPut || calls[1].remaining <= 4*time.Minute || calls[1].remaining > 5*time.Minute {
 		t.Fatalf("PUT deadline window = %v, want about 5m", calls[1].remaining)
 	}
-	if calls[2].method != http.MethodHead || calls[2].remaining <= 14*time.Second || calls[2].remaining > 15*time.Second {
-		t.Fatalf("verify HEAD deadline window = %v, want about 15s", calls[2].remaining)
+	if calls[2].method != http.MethodHead || calls[2].remaining <= 59*time.Second || calls[2].remaining > 60*time.Second {
+		t.Fatalf("verify HEAD deadline window = %v, want about 60s", calls[2].remaining)
 	}
 
 	parent, cancel := context.WithTimeout(context.Background(), 2*time.Second)

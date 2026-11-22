@@ -305,6 +305,28 @@ func TestPreviewRevalidatesWithoutReadingBytes(t *testing.T) {
 	f.request("GET", "/api/assets/"+id+"/image", nil, 404)
 }
 
+func TestUploadKeepsOrNamesFiles(t *testing.T) {
+	f := newFixture(t)
+	f.setup()
+	pathOf := func(response *httptest.ResponseRecorder) string {
+		t.Helper()
+		var value struct {
+			Assets []app.AssetView `json:"assets"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil || len(value.Assets) != 1 {
+			t.Fatalf("upload response: %v %s", err, response.Body.String())
+		}
+		return value.Assets[0].Asset.Path
+	}
+	if got := pathOf(f.uploadOptions([][]byte{imageBytes(t)}, map[string]string{"keep_name": "true"}, http.StatusOK)); got != "剪贴板.png" {
+		t.Fatalf("keep-name path = %q", got)
+	}
+	if got := pathOf(f.uploadOptions([][]byte{imageBytes(t)}, map[string]string{"filename": "custom-name.jpg"}, http.StatusOK)); got != "custom-name.png" {
+		t.Fatalf("custom filename path = %q", got)
+	}
+	f.uploadOptions([][]byte{imageBytes(t), imageBytes(t)}, map[string]string{"filename": "one.png"}, http.StatusBadRequest)
+}
+
 func TestPreviewRevalidatesAfterRemoteContentChanges(t *testing.T) {
 	f := newFixture(t)
 	f.setup()

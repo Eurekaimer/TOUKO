@@ -39,6 +39,12 @@ const (
 
 // MigrateItem records one asset's old and new location plus the public URLs the
 // operator has to rewrite. It is written to migration/url-mapping.{csv,json}.
+type MigrateAlias struct {
+	Path   string `json:"path"`
+	GitHub string `json:"github_url,omitempty"`
+	R2     string `json:"r2_url,omitempty"`
+}
+
 type MigrateItem struct {
 	AssetID   string `json:"asset_id"`
 	OldPath   string `json:"old_path"`
@@ -51,6 +57,9 @@ type MigrateItem struct {
 	SizeBytes int64  `json:"size_bytes"`
 	Status    string `json:"status"`
 	Error     string `json:"error,omitempty"`
+	// Aliases are older public paths for the same bytes. They are expanded into
+	// extra mapping rows so link rewriting does not miss a previously used URL.
+	Aliases []MigrateAlias `json:"aliases,omitempty"`
 }
 
 type MigrateResult struct {
@@ -452,6 +461,22 @@ func (s *Service) analyzeMigration(ctx context.Context, r repository.Reader, bas
 		}
 		item.OldGitHub, item.NewGitHub = helpers.github(item.OldPath), helpers.github(item.NewPath)
 		item.OldR2, item.NewR2 = helpers.r2(item.OldPath), helpers.r2(item.NewPath)
+		aliases := []string{item.OldPath}
+		if a.changed[id] {
+			aliases = append(aliases, repository.ObjectPath(asset))
+		}
+		if hasPlan {
+			aliases = append(aliases, planned.OldPath)
+			aliases = append(aliases, planned.PriorPaths...)
+		}
+		seenAliases := make(map[string]bool, len(aliases))
+		for _, alias := range aliases {
+			if alias == "" || alias == target || seenAliases[alias] {
+				continue
+			}
+			seenAliases[alias] = true
+			item.Aliases = append(item.Aliases, MigrateAlias{Path: alias, GitHub: helpers.github(alias), R2: helpers.r2(alias)})
+		}
 		a.items = append(a.items, item)
 	}
 	return a, nil
@@ -486,7 +511,7 @@ func migrationTargetAvailable(candidate string, id domain.AssetID, reserved map[
 	return hasSource && entry.Type == "blob" && entry.SHA == source.SHA && entry.Size == source.Size
 }
 
-const migrationTimestampAttempts = 1_000_000
+const migrationTimestampAttempts = 10_000
 
 // migrationTimestampTarget derives the root filename from the asset's creation
 // time plus a stable collision suffix. An occupied path with different bytes is
@@ -712,7 +737,7 @@ func (s *Service) publishMigrationMetadata(ctx context.Context, r repository.Git
 func (s *Service) verifyMigrationTargets(ctx context.Context, r repository.Git, snap repository.Snapshot, assets []domain.Asset, location repository.Location, cfg r2.Config) (*CloudflareResult, error) {
 	var result *CloudflareResult
 	if cfg.Enabled {
-		mirror, err := s.cloudflareSyncLocked(ctx, r, CloudflareOptions{SuppressDeletes: true, ExtraAssets: assets})
+		mirror, err := s.cloudflareSyncLocked(ctx, r, CloudflareOptions{SuppressDeletes: true, OnlyExtra: true, ExtraAssets: assets})
 		result = &mirror
 		if err != nil {
 			return result, err
@@ -1702,10 +1727,11 @@ func validateMigrationPlan(plan migrationPlan) error {
 		if string(item.Namespace) == "" || item.OldPath == item.NewPath {
 			return fmt.Errorf("%w: inconsistent migration mapping for %s", domain.ErrRepositoryCorrupt, item.AssetID)
 		}
-		// New mappings use the root timestamp name. Mappings written by the
-		// previous asset-id migration stay readable so a resumed run can finish
-		// and so their old aliases keep protecting R2 keys.
+		// New mappings use the readable root timestamp name. Earlier timestamp
+		// and asset-id mappings stay readable so a resumed run can finish and
+		// their old aliases keep protecting R2 keys.
 		if !repository.IsTimestampObjectPath(item.NewPath, item.Object.Ext) &&
+			!repository.IsLegacyTimestampObjectPath(item.NewPath, item.Object.Ext) &&
 			item.NewPath != repository.AssetObjectPath(item.Namespace, id, item.Object.Ext) {
 			return fmt.Errorf("%w: inconsistent migration mapping for %s", domain.ErrRepositoryCorrupt, item.AssetID)
 		}
@@ -1795,8 +1821,6 @@ func (s *Service) writeMigrationPlan(ctx context.Context, plan migrationPlan) er
 	}
 	return atomicfile.Write(ctx, s.migrationPlanPath(), append(data, '\n'), 0o600)
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Shared helpers.
@@ -1969,6 +1993,30 @@ func (b urlBuilder) r2(objectPath string) string {
 	return url
 }
 
+// urlMappingRows expands each asset's historical aliases into independent
+// rows; the rewrite script matches one old path at a time.
+func urlMappingRows(items []MigrateItem) []MigrateItem {
+	rows := make([]MigrateItem, 0, len(items))
+	for _, item := range items {
+		seen := map[string]bool{}
+		add := func(path, github, r2 string, primary bool) {
+			if path == "" || seen[path] || (!primary && path == item.NewPath) {
+				return
+			}
+			seen[path] = true
+			row := item
+			row.OldPath, row.OldGitHub, row.OldR2 = path, github, r2
+			row.Aliases = nil
+			rows = append(rows, row)
+		}
+		add(item.OldPath, item.OldGitHub, item.OldR2, true)
+		for _, alias := range item.Aliases {
+			add(alias.Path, alias.GitHub, alias.R2, false)
+		}
+	}
+	return rows
+}
+
 // WriteURLMapping writes migration/url-mapping.csv and .json under dir. Both
 // files are replaced atomically so a crash never leaves a half-written mapping.
 func WriteURLMapping(ctx context.Context, dir string, items []MigrateItem) (string, string, error) {
@@ -1980,13 +2028,14 @@ func WriteURLMapping(ctx context.Context, dir string, items []MigrateItem) (stri
 	}
 	csvPath := filepath.Join(dir, "url-mapping.csv")
 	jsonPath := filepath.Join(dir, "url-mapping.json")
+	rows := urlMappingRows(items)
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 	header := []string{"asset_id", "old_path", "new_path", "old_github_url", "new_github_url", "old_r2_url", "new_r2_url", "size_bytes", "status", "error", "sha256"}
 	if err := w.Write(header); err != nil {
 		return "", "", err
 	}
-	for _, item := range items {
+	for _, item := range rows {
 		row := []string{item.AssetID, item.OldPath, item.NewPath, item.OldGitHub, item.NewGitHub, item.OldR2, item.NewR2, strconv.FormatInt(item.SizeBytes, 10), item.Status, item.Error, item.SHA256}
 		if err := w.Write(row); err != nil {
 			return "", "", err
@@ -1999,7 +2048,7 @@ func WriteURLMapping(ctx context.Context, dir string, items []MigrateItem) (stri
 	if err := atomicfile.Write(ctx, csvPath, buf.Bytes(), 0o600); err != nil {
 		return "", "", err
 	}
-	data, err := json.MarshalIndent(items, "", "  ")
+	data, err := json.MarshalIndent(rows, "", "  ")
 	if err != nil {
 		return "", "", err
 	}

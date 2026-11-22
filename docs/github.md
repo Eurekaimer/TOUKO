@@ -71,7 +71,7 @@ LEGACY_STATE="$HOME/.local/share/touko-picgo"
 
 `import` 只读取固定 Git HEAD 中已提交的普通 PNG/JPEG/GIF/WebP；按真实 header 识别，支持无后缀和 Unicode 文件。`--directory img` 递归限定仓库路径，留空扫描全仓库；已有管理路径/非图片跳过，重复导入幂等。导入只暂存 metadata，保留原路径、原 Git blob 和原链接，不重新上传、不复制到 `objects/`。未初始化会拒绝，错误不留下部分导入；检查 imported/skipped 及暂存后必须显式 commit。删除纳管图并提交会按完整路径末引用规则移除原文件，不是仅取消纳管。
 
-`add --directory` 是仓库内目录；留空使用根目录，以入暂存时的 Unix 纳秒时间戳命名。`--hash` 仅为本次上传计算 SHA-256。显式路径首次发布把 v1 升级到 v2；路径迁移升级到 v3。旧客户端不支持无摘要的新记录，请先升级。
+`add --directory` 是仓库内目录；留空使用根目录，默认以入暂存时的 `YYYYMMDDHHMMSS-xxxx` 命名；`--keep-name` 保留上传名，`--filename` 指定单张名称。`--hash` 仅为本次上传计算 SHA-256。显式路径首次发布把 v1 升级到 v2；路径迁移升级到 v3。旧客户端不支持无摘要的新记录，请先升级。
 
 缓存损坏/删除可用 `touko --state-dir "$LEGACY_STATE" reindex` 完整验证后重建 committed cache，保留独立耐久 `workspace.json` 和暂存；有 journal 之后仍需 `sync`，有 stage 且 HEAD 变化会冲突。旧 schema1 必须先从健康旧 DB 自动迁移，迁移前不可删除唯一未发布状态。具体物理损坏备份、工作区路径与恢复步骤见 [CLI 恢复指南](usage.md#8-恢复cache-与故障排查)。
 

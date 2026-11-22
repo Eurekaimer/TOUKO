@@ -766,9 +766,9 @@ summary {
 
 /* --- Hero -------------------------------------------------------------- *
  * The one loud moment. No eyebrow label, no rule, no supporting stat: a
- * didone italic at display size, its tracking pulled in as the size grows,
- * and one gloss line underneath. Everything else on the page is quiet so
- * this can be the thing that is remembered.
+ * Monaspace Xenon oblique at display size, its tracking pulled in as the size
+ * grows, and one gloss line underneath. Everything else is quiet so this can be
+ * the thing that is remembered.
  */
 .main-content {
   max-width: 1560px;
@@ -780,9 +780,9 @@ summary {
 }
 .gallery-intro h1 {
   margin: 0;
-  font-family: var(--font-hero);
+  font-family: var(--font-display);
   font-size: var(--fs-hero);
-  font-style: italic;
+  font-style: oblique 8deg;
   font-weight: 600;
   line-height: var(--lh-hero);
   letter-spacing: -0.018em;

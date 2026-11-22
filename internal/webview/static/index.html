@@ -798,7 +798,14 @@
               /><small>小写字母、数字、下划线或连字符</small></label>
           </div>
           <label>目标目录（可选）<input id="upload-directory" placeholder="例如 images/blog，留空使用仓库根目录" />
-            <small>以加入待发布时的时间戳命名；同一批次的图片不会重名。</small>
+            <small>默认以加入待发布时的时间戳命名；同一批次的图片不会重名。</small>
+          </label>
+          <label class="settings-check">
+            <input type="checkbox" id="upload-timestamp" checked />
+            使用时间戳重命名
+          </label>
+          <label>自定义文件名（可选，单张）<input id="upload-filename" placeholder="留空则使用原始文件名" disabled />
+            <small>关闭时间戳后生效；扩展名会按实际存储格式写入。</small>
           </label>
           <div class="webp-option">
             <label class="webp-toggle"
